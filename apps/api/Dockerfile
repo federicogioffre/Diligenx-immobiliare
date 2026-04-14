@@ -20,6 +20,9 @@ COPY packages/ ./packages/
 
 WORKDIR /app/apps/api
 
+# Make both `app` and `packages` importable
+ENV PYTHONPATH=/app/apps/api:/app
+
 # Run migrations then start server
 # PORT is injected by Railway automatically
-CMD alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD alembic upgrade head; uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
