@@ -242,7 +242,10 @@
       "Bash(python -m pytest ../../tests -q --tb=line --ignore=../../tests/test_agent_models.py)",
       "Bash(python -m pytest ../../tests/test_documents.py ../../tests/test_ingestion.py ../../tests/test_embeddings.py -q --tb=short)",
       "Bash(python -m pytest ../../tests/test_documents.py ../../tests/test_ingestion.py ../../tests/test_embeddings.py -q --tb=line)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(git rm:*)",
+      "Bash(git remote:*)",
+      "Bash(del \"C:\\\\Dealmind\\\\vercel.json\")"
     ]
   }
 }
