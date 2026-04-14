@@ -25,4 +25,4 @@ ENV PYTHONPATH=/app/apps/api:/app
 
 # Run migrations then start server
 # PORT is injected by Railway automatically
-CMD alembic upgrade head; uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD sh -c 'echo "=== ALEMBIC START ===" && alembic upgrade head; echo "=== ALEMBIC EXIT: $? ===" && echo "=== UVICORN START ===" && exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --log-level info'
