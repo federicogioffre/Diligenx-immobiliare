@@ -1,0 +1,537 @@
+"""Multi-agent orchestrator for deal analysis.
+
+Runs a structured pipeline of specialist agents, each tracked by an
+``AgentRun`` record.  Stages execute sequentially and each stage is
+**idempotent** — re-running the pipeline deletes previous outputs for
+that stage before writing new ones.
+
+Pipeline stages:
+
+1. **Intake** — validates the deal, transitions status to ``analyzing``,
+   inventories documents, and records ``MissingDocument`` entries when
+   expected standard document categories are absent.
+2. **Document routing** — classifies each processed document and records
+   the classification as an ``AgentFinding``.
+3. **Contract analysis** — extracts clauses from contracts/agreements
+   and stores them as ``ClauseFinding`` rows via
+   :class:`~packages.agents.contract_agent.ContractAgent`.
+4. **Corporate governance analysis** — analyses governance documents
+   (articles of association, bylaws, shareholder agreements, etc.) via
+   :class:`~packages.agents.corporate_agent.CorporateAgent`.
+5. **Red-flag aggregation** — reviews all findings across the deal and
+   produces ``RedFlag`` rows plus ``OpenQuestion`` entries for items
+   requiring human follow-up.
+6. **Report generation** — delegates to ``generate_due_diligence_report``
+   to produce the final Markdown report stored in the ``Report`` table.
+
+Design principles:
+
+* Every stage is wrapped in its own ``AgentRun``; a failing stage marks
+  its run as *failed* but does **not** abort the pipeline.
+* All logging includes agent name and deal_id for easy filtering.
+* The pipeline returns a summary dict with per-stage outcomes.
+"""
+import json
+import logging
+from datetime import datetime, timezone
+
+from sqlalchemy.orm import Session
+
+from packages.agents.deal_analysis_agent import (
+    LLMProvider,
+    get_llm_provider,
+    _safe_json,
+    _VALID_SEVERITIES,
+    _CONTRACT_TYPES,
+)
+
+logger = logging.getLogger(__name__)
+
+# Agent names used for AgentRun records — one per stage.
+AGENT_INTAKE = "intake"
+AGENT_ROUTER = "document_router"
+AGENT_SPECIALIST = "contract_analysis"   # == ContractAgent.AGENT_NAME
+AGENT_CORPORATE = "corporate_governance"  # == CorporateAgent.AGENT_NAME
+AGENT_RED_FLAG = "red_flag_aggregation"
+AGENT_REPORT = "report_generation"
+
+# Standard document categories expected in due diligence.
+_EXPECTED_DOC_CATEGORIES = {
+    "contract": "Primary contract or service agreement",
+    "financial": "Audited financial statements or projections",
+    "legal": "Legal opinions, regulatory filings, or compliance certificates",
+    "insurance": "Certificate of insurance or policy summary",
+}
+
+
+# ── Helper: AgentRun lifecycle ────────────────────────────────────────────
+
+def _create_run(
+    db: Session,
+    deal_id: int,
+    agent_name: str,
+    *,
+    document_id: int | None = None,
+    input_hash: str | None = None,
+) -> "AgentRun":  # noqa: F821
+    """Create an AgentRun in *running* state with ``started_at = now()``."""
+    from app.models.agent_run import AgentRun, AgentRunStatus
+
+    run = AgentRun(
+        deal_id=deal_id,
+        document_id=document_id,
+        agent_name=agent_name,
+        status=AgentRunStatus.running,
+        started_at=datetime.now(timezone.utc),
+        input_hash=input_hash,
+    )
+    db.add(run)
+    db.flush()
+    return run
+
+
+def _complete_run(db: Session, run, *, error: str | None = None) -> None:
+    """Mark an AgentRun as *completed* or *failed* and log the duration."""
+    from app.models.agent_run import AgentRunStatus
+
+    run.completed_at = datetime.now(timezone.utc)
+    _started = run.started_at
+    if _started is not None and _started.tzinfo is None:
+        _started = _started.replace(tzinfo=timezone.utc)
+    duration = (
+        (run.completed_at - _started).total_seconds()
+        if _started is not None
+        else None
+    )
+    if error:
+        run.status = AgentRunStatus.failed
+        run.error_message = error[:2000]  # cap to avoid huge payloads
+        logger.warning(
+            "[%s] deal=%d — FAILED in %.2fs: %s",
+            run.agent_name,
+            run.deal_id,
+            duration or 0.0,
+            error[:200],
+        )
+    else:
+        run.status = AgentRunStatus.completed
+        logger.info(
+            "[%s] deal=%d — completed in %.2fs",
+            run.agent_name,
+            run.deal_id,
+            duration or 0.0,
+        )
+    db.flush()
+
+
+# ── Helper: idempotency cleanup ──────────────────────────────────────────
+
+def _clear_previous_runs(db: Session, deal_id: int, agent_name: str) -> None:
+    """Delete AgentRun rows from a previous execution of the same stage."""
+    from app.models.agent_run import AgentRun
+
+    db.query(AgentRun).filter(
+        AgentRun.deal_id == deal_id,
+        AgentRun.agent_name == agent_name,
+    ).delete(synchronize_session=False)
+    db.flush()
+
+
+# ── Stage 1: Intake ──────────────────────────────────────────────────────
+
+def _stage_intake(deal_id: int, db: Session) -> dict:
+    """Validate deal, inventory documents, detect missing document categories."""
+    from app.models.deal import Deal, DealStatus
+    from app.models.document import Document, DocumentStatus
+    from app.models.missing_document import MissingDocument
+    from app.models.open_question import Priority
+
+    agent = AGENT_INTAKE
+    logger.info("[%s] deal=%d — starting intake stage", agent, deal_id)
+
+    # Idempotency: remove previous intake runs and missing-documents
+    _clear_previous_runs(db, deal_id, agent)
+    db.query(MissingDocument).filter(
+        MissingDocument.deal_id == deal_id,
+    ).delete(synchronize_session=False)
+    db.flush()
+
+    run = _create_run(db, deal_id, agent)
+
+    try:
+        deal = db.query(Deal).filter(Deal.id == deal_id).first()
+        if deal is None:
+            raise ValueError(f"Deal {deal_id} not found")
+
+        # Transition status
+        deal.status = DealStatus.analyzing
+        db.flush()
+
+        # Inventory documents
+        docs = (
+            db.query(Document)
+            .filter(Document.deal_id == deal_id)
+            .all()
+        )
+        processed = [d for d in docs if d.status == DocumentStatus.processed]
+
+        logger.info(
+            "[%s] deal=%d — %d total documents, %d processed",
+            agent, deal_id, len(docs), len(processed),
+        )
+
+        # Detect missing standard categories (simple heuristic based on
+        # filenames / raw text keywords — real implementation would be
+        # more sophisticated).
+        present_categories: set[str] = set()
+        for doc in processed:
+            name_lower = (doc.filename or "").lower()
+            text_lower = (doc.raw_text or "")[:500].lower()
+            for cat in _EXPECTED_DOC_CATEGORIES:
+                if cat in name_lower or cat in text_lower:
+                    present_categories.add(cat)
+            # Contracts/agreements are detected liberally
+            if any(kw in name_lower or kw in text_lower for kw in ("contract", "agreement", "service")):
+                present_categories.add("contract")
+
+        missing_docs: list[MissingDocument] = []
+        for cat, description in _EXPECTED_DOC_CATEGORIES.items():
+            if cat not in present_categories:
+                md = MissingDocument(
+                    deal_id=deal_id,
+                    document_category=cat,
+                    expected_item=description,
+                    reason=f"No document matching category '{cat}' was found in the deal.",
+                    priority=Priority.medium,
+                )
+                db.add(md)
+                missing_docs.append(md)
+
+        db.flush()
+        _complete_run(db, run)
+
+        result = {
+            "total_documents": len(docs),
+            "processed_documents": len(processed),
+            "missing_categories": len(missing_docs),
+        }
+        logger.info("[%s] deal=%d — intake complete: %s", agent, deal_id, result)
+        return result
+
+    except Exception as exc:
+        logger.exception("[%s] deal=%d — intake failed", agent, deal_id)
+        _complete_run(db, run, error=str(exc))
+        return {"error": str(exc)}
+
+
+# ── Stage 2: Document routing (classification) ───────────────────────────
+
+def _stage_document_routing(
+    deal_id: int, db: Session, llm: LLMProvider
+) -> dict:
+    """Classify every processed document and record AgentFinding rows."""
+    from app.models.document import Document, DocumentStatus
+    from app.models.agent_finding import AgentFinding
+    from app.models.red_flag import Severity
+    from packages.prompts.deal_prompts import DOCUMENT_CLASSIFICATION_PROMPT
+
+    agent = AGENT_ROUTER
+    logger.info("[%s] deal=%d — starting document routing", agent, deal_id)
+
+    # Idempotency
+    _clear_previous_runs(db, deal_id, agent)
+    db.query(AgentFinding).filter(
+        AgentFinding.deal_id == deal_id,
+        AgentFinding.agent_name == agent,
+    ).delete(synchronize_session=False)
+    db.flush()
+
+    run = _create_run(db, deal_id, agent)
+
+    try:
+        documents = (
+            db.query(Document)
+            .filter(
+                Document.deal_id == deal_id,
+                Document.status == DocumentStatus.processed,
+            )
+            .all()
+        )
+
+        classifications: list[dict] = []
+
+        for doc in documents:
+            text = doc.raw_text or ""
+            if not text:
+                logger.warning("[%s] deal=%d doc=%d — no text, skipping", agent, deal_id, doc.id)
+                continue
+
+            prompt = DOCUMENT_CLASSIFICATION_PROMPT.format(
+                filename=doc.filename,
+                text=text[:3000],
+            )
+            raw = llm.complete(prompt, max_tokens=256)
+
+            try:
+                classification = _safe_json(raw)
+            except Exception:
+                logger.warning(
+                    "[%s] deal=%d doc=%d — parse error: %r",
+                    agent, deal_id, doc.id, raw,
+                )
+                classification = {
+                    "document_type": "other",
+                    "confidence": 0.0,
+                    "rationale": raw,
+                }
+
+            doc_type = classification.get("document_type", "other")
+            confidence = classification.get("confidence", 0.0)
+
+            finding = AgentFinding(
+                deal_id=deal_id,
+                document_id=doc.id,
+                agent_name=agent,
+                category="document_classification",
+                title=f"Classified as '{doc_type}'",
+                description=classification.get("rationale", ""),
+                severity=Severity.low,  # classification is informational
+                confidence=confidence,
+                structured_payload_json=classification,
+            )
+            db.add(finding)
+
+            classifications.append({
+                "document_id": doc.id,
+                "document_type": doc_type,
+                "confidence": confidence,
+            })
+
+            logger.info(
+                "[%s] deal=%d doc=%d — classified as '%s' (conf=%.2f)",
+                agent, deal_id, doc.id, doc_type, confidence,
+            )
+
+        db.flush()
+        _complete_run(db, run)
+
+        result = {"documents_classified": len(classifications), "classifications": classifications}
+        logger.info("[%s] deal=%d — routing complete: %d documents", agent, deal_id, len(classifications))
+        return result
+
+    except Exception as exc:
+        logger.exception("[%s] deal=%d — routing failed", agent, deal_id)
+        _complete_run(db, run, error=str(exc))
+        return {"error": str(exc)}
+
+
+# ── Stage 3: Specialist analysis (clause extraction via ContractAgent) ────────
+
+def _stage_specialist_analysis(
+    deal_id: int,
+    db: Session,
+    llm: LLMProvider,
+    classifications: list[dict],
+) -> dict:
+    """Delegate clause extraction to :class:`ContractAgent`.
+
+    Identifies contract-type documents from Stage-2 classifications and
+    passes their IDs to :class:`~packages.agents.contract_agent.ContractAgent`,
+    which manages its own ``AgentRun`` record (``agent_name = "contract_analysis"``),
+    idempotency, ``ClauseFinding`` persistence, and ``AgentFinding`` summaries.
+    """
+    from packages.agents.contract_agent import ContractAgent
+
+    logger.info("[%s] deal=%d — starting specialist analysis", AGENT_SPECIALIST, deal_id)
+
+    # Collect document IDs classified as contract-type by the routing stage.
+    contract_doc_ids: set[int] = {
+        c["document_id"]
+        for c in classifications
+        if c.get("document_type") in _CONTRACT_TYPES
+    }
+
+    logger.info(
+        "[%s] deal=%d — %d contract document(s) identified from routing",
+        AGENT_SPECIALIST, deal_id, len(contract_doc_ids),
+    )
+
+    try:
+        # ContractAgent handles AgentRun tracking, idempotency, and DB writes.
+        return ContractAgent(provider=llm).run(
+            deal_id, db, contract_document_ids=contract_doc_ids,
+        )
+    except Exception as exc:
+        logger.exception(
+            "[%s] deal=%d — ContractAgent failed", AGENT_SPECIALIST, deal_id
+        )
+        return {"error": str(exc)}
+
+
+# ── Stage 4: Corporate governance analysis ────────────────────────────────
+
+def _stage_corporate_analysis(
+    deal_id: int, db: Session, llm: LLMProvider
+) -> dict:
+    """Delegate corporate governance analysis to :class:`CorporateAgent`.
+
+    The agent manages its own ``AgentRun`` record
+    (``agent_name = "corporate_governance"``), idempotency (clearing previous
+    ``AgentFinding`` rows), and ``AgentFinding`` persistence.
+    """
+    from packages.agents.corporate_agent import CorporateAgent
+
+    logger.info("[%s] deal=%d — starting corporate governance analysis", AGENT_CORPORATE, deal_id)
+
+    try:
+        return CorporateAgent(provider=llm).run(deal_id, db)
+    except Exception as exc:
+        logger.exception(
+            "[%s] deal=%d — CorporateAgent failed", AGENT_CORPORATE, deal_id
+        )
+        return {"error": str(exc)}
+
+
+# ── Stage 5: Red-flag aggregation ─────────────────────────────────────────
+
+def _stage_red_flag_aggregation(
+    deal_id: int, db: Session, llm: LLMProvider
+) -> dict:
+    """Delegate red-flag aggregation to :class:`RedFlagAggregationAgent`.
+
+    The agent manages its own ``AgentRun`` record
+    (``agent_name = "red_flag_aggregation"``), idempotency (clearing previous
+    ``RedFlag`` and ``OpenQuestion`` rows), deduplication, and ``RedFlag`` /
+    ``OpenQuestion`` persistence.
+    """
+    from packages.agents.red_flag_aggregator import RedFlagAggregationAgent
+
+    logger.info("[%s] deal=%d — starting red-flag aggregation", AGENT_RED_FLAG, deal_id)
+
+    try:
+        return RedFlagAggregationAgent(provider=llm).run(deal_id, db)
+    except Exception as exc:
+        logger.exception(
+            "[%s] deal=%d — RedFlagAggregationAgent failed", AGENT_RED_FLAG, deal_id
+        )
+        return {"error": str(exc)}
+
+
+# ── Stage 6: Report generation ────────────────────────────────────────────
+
+def _stage_report_generation(
+    deal_id: int, db: Session, llm: LLMProvider
+) -> dict:
+    """Generate the due-diligence report (delegates to report_agent)."""
+    agent = AGENT_REPORT
+    logger.info("[%s] deal=%d — starting report generation", agent, deal_id)
+
+    _clear_previous_runs(db, deal_id, agent)
+
+    run = _create_run(db, deal_id, agent)
+
+    try:
+        from packages.agents.report_agent import generate_due_diligence_report
+
+        report_result = generate_due_diligence_report(deal_id, db, provider=llm)
+
+        _complete_run(db, run)
+
+        result = {
+            "report_id": report_result["report_id"],
+            "markdown_length": len(report_result.get("markdown", "")),
+        }
+        logger.info("[%s] deal=%d — report generated (id=%d)", agent, deal_id, result["report_id"])
+        return result
+
+    except Exception as exc:
+        logger.exception("[%s] deal=%d — report generation failed", agent, deal_id)
+        _complete_run(db, run, error=str(exc))
+        return {"error": str(exc)}
+
+
+# ── Public entry point ────────────────────────────────────────────────────
+
+def run_deal_analysis_pipeline(
+    deal_id: int,
+    db: Session,
+    *,
+    provider: LLMProvider | None = None,
+) -> dict:
+    """Run the full multi-agent analysis pipeline for a deal.
+
+    Returns a summary dict::
+
+        {
+            "deal_id": int,
+            "stages": {
+                "intake": {...},
+                "document_routing": {...},
+                "specialist_analysis": {...},
+                "corporate_analysis": {...},
+                "red_flag_aggregation": {...},
+                "report_generation": {...},
+            },
+            "completed": bool,   # True if all stages succeeded
+        }
+
+    Individual stage failures are recorded but do **not** abort the
+    pipeline.  The ``"error"`` key is present in a stage result only
+    when that stage failed.
+
+    Raises ``ValueError`` if *deal_id* does not exist.
+    """
+    from app.models.deal import Deal, DealStatus
+
+    # Validate early — avoids FK constraint issues in AgentRun inserts.
+    if db.query(Deal).filter(Deal.id == deal_id).first() is None:
+        raise ValueError(f"Deal {deal_id} not found")
+
+    llm = provider or get_llm_provider()
+
+    logger.info("=== Pipeline START for deal %d ===", deal_id)
+
+    stages: dict[str, dict] = {}
+
+    # ── Stage 1: Intake ────────────────────────────────────────────────
+    stages["intake"] = _stage_intake(deal_id, db)
+
+    # ── Stage 2: Document routing ──────────────────────────────────────
+    stages["document_routing"] = _stage_document_routing(deal_id, db, llm)
+
+    # Extract classifications for stage 3
+    classifications = stages["document_routing"].get("classifications", [])
+
+    # ── Stage 3: Specialist analysis ───────────────────────────────────
+    stages["specialist_analysis"] = _stage_specialist_analysis(
+        deal_id, db, llm, classifications,
+    )
+
+    # ── Stage 4: Corporate governance analysis ─────────────────────────
+    stages["corporate_analysis"] = _stage_corporate_analysis(deal_id, db, llm)
+
+    # ── Stage 5: Red-flag aggregation ──────────────────────────────────
+    stages["red_flag_aggregation"] = _stage_red_flag_aggregation(deal_id, db, llm)
+
+    # ── Stage 6: Report generation ─────────────────────────────────────
+    stages["report_generation"] = _stage_report_generation(deal_id, db, llm)
+
+    # ── Finalise deal status ───────────────────────────────────────────
+    all_ok = all("error" not in s for s in stages.values())
+
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if deal:
+        deal.status = DealStatus.reviewed if all_ok else DealStatus.draft
+        db.commit()
+
+    logger.info(
+        "=== Pipeline %s for deal %d ===",
+        "COMPLETE" if all_ok else "FINISHED WITH ERRORS",
+        deal_id,
+    )
+
+    return {
+        "deal_id": deal_id,
+        "stages": stages,
+        "completed": all_ok,
+    }

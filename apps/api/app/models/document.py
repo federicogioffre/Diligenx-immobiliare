@@ -35,3 +35,12 @@ class Document(TimestampMixin, Base):
     clause_findings = relationship(
         "ClauseFinding", back_populates="document", cascade="all, delete-orphan"
     )
+    # nullable back-refs — DB handles SET NULL via ondelete="SET NULL" on FK
+    red_flags = relationship(
+        "RedFlag", foreign_keys="RedFlag.source_document_id",
+        passive_deletes=True, overlaps="source_document",
+    )
+    agent_runs = relationship(
+        "AgentRun", foreign_keys="AgentRun.document_id",
+        passive_deletes=True, overlaps="document",
+    )

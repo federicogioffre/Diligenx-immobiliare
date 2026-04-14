@@ -7,6 +7,10 @@ from packages.retrieval.embedding_service import (
     get_embedding_provider,
     set_embedding_provider,
 )
+from packages.retrieval.retrieval_service import (
+    search_similar_chunks,
+    ChunkMatch,
+)
 
 __all__ = [
     "VectorStore",
@@ -16,4 +20,6 @@ __all__ = [
     "generate_embeddings_for_document",
     "get_embedding_provider",
     "set_embedding_provider",
+    "search_similar_chunks",
+    "ChunkMatch",
 ]

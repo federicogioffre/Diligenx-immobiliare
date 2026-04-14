@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker, Session
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "apps", "api"))
 
 # Override DATABASE_URL before importing app
-os.environ["DATABASE_URL"] = "sqlite:///./test_dealmind.db"
+os.environ["DATABASE_URL"] = "sqlite:///./test_diligenx.db"
 
 from app.main import app  # noqa: E402
 from app.db.session import Base, get_db  # noqa: E402
@@ -19,7 +19,7 @@ from app.models.document_chunk import EMBEDDING_DIM  # noqa: E402
 from app.core.security import hash_password, create_access_token  # noqa: E402
 from packages.retrieval.embedding_service import FakeEmbeddingProvider, set_embedding_provider  # noqa: E402
 
-TEST_DATABASE_URL = "sqlite:///./test_dealmind.db"
+TEST_DATABASE_URL = "sqlite:///./test_diligenx.db"
 engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
 TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

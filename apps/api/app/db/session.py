@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
@@ -14,6 +14,17 @@ engine = create_engine(
     connect_args=connect_args,
     pool_pre_ping=True,
 )
+
+# Enable WAL mode + generous busy-timeout for SQLite so that long-running
+# background analysis (which holds write locks while making LLM calls) does
+# not block concurrent HTTP polling requests.
+if settings.DATABASE_URL.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragmas(dbapi_conn, _record):  # noqa: ANN001
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")   # readers never block writers
+        cursor.execute("PRAGMA busy_timeout=30000")  # wait up to 30 s on lock
+        cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

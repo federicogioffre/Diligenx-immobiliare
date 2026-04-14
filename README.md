@@ -1,4 +1,4 @@
-# DealMind AI
+# Diligenx
 
 AI-powered deal intelligence platform. Analyze, score, and track deals using Claude AI.
 

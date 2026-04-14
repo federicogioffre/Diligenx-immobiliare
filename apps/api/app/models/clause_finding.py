@@ -3,6 +3,7 @@ import enum
 from sqlalchemy import String, Float, Text, Integer, ForeignKey, Enum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+
 from app.db.session import Base
 from app.models.base import TimestampMixin
 
@@ -17,6 +18,7 @@ class ClauseType(str, enum.Enum):
     warranty = "warranty"
     intellectual_property = "intellectual_property"
     governing_law = "governing_law"
+    change_of_control = "change_of_control"
     other = "other"
 
 
@@ -30,5 +32,7 @@ class ClauseFinding(TimestampMixin, Base):
     content: Mapped[str] = mapped_column(Text)
     page_number: Mapped[int | None] = mapped_column(Integer)
     confidence: Mapped[float | None] = mapped_column(Float)
+    relevance_score: Mapped[str | None] = mapped_column(String(20))   # "high" | "medium" | "low"
+    relevance_reason: Mapped[str | None] = mapped_column(Text)
 
     document = relationship("Document", back_populates="clause_findings")

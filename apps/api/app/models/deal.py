@@ -30,3 +30,7 @@ class Deal(TimestampMixin, Base):
     documents = relationship("Document", back_populates="deal", cascade="all, delete-orphan")
     red_flags = relationship("RedFlag", back_populates="deal", cascade="all, delete-orphan")
     reports = relationship("Report", back_populates="deal", cascade="all, delete-orphan")
+    agent_runs = relationship("AgentRun", back_populates="deal", cascade="all, delete-orphan")
+    agent_findings = relationship("AgentFinding", back_populates="deal", cascade="all, delete-orphan")
+    open_questions = relationship("OpenQuestion", back_populates="deal", cascade="all, delete-orphan")
+    missing_documents = relationship("MissingDocument", back_populates="deal", cascade="all, delete-orphan")

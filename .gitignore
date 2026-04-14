@@ -26,3 +26,6 @@ uploads/
 
 # Pytest
 .pytest_cache/
+
+# PM2 config (contiene riferimenti a .env — non committare)
+ecosystem.config.js

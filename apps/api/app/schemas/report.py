@@ -15,3 +15,9 @@ class ReportRead(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ReportGenerateResponse(BaseModel):
+    report_id: int
+    deal_id: int
+    markdown: str

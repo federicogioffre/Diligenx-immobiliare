@@ -3,7 +3,7 @@ from typing import Any
 
 
 class BaseAgent(ABC):
-    """Base class for all DealMind agents."""
+    """Base class for all Diligenx agents."""
 
     def __init__(self, model: str = "claude-sonnet-4-6"):
         self.model = model

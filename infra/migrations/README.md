@@ -7,7 +7,7 @@ Uses **Alembic** for database migrations.
 ```bash
 cd apps/api
 alembic init infra/migrations
-# Edit alembic.ini → sqlalchemy.url = sqlite:///./dealmind.db
+# Edit alembic.ini → sqlalchemy.url = sqlite:///./diligenx.db
 ```
 
 ## Commands

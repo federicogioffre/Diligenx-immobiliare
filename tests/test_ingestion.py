@@ -3,6 +3,7 @@ import io
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from docx import Document as DocxDocument
@@ -426,3 +427,144 @@ class TestUploadIngestion:
         data = resp.json()
         assert data["status"] == "processed"
         assert data["language"] == "it"
+
+
+# ---------------------------------------------------------------------------
+# Test: OCR fallback for scanned PDFs
+# ---------------------------------------------------------------------------
+
+class TestOCRFallback:
+    """Tests for OCR fallback on scanned/image-only PDFs."""
+
+    @staticmethod
+    def _make_blank_pdf(tmp_dir: Path, n_pages: int = 1) -> Path:
+        """Create a PDF with blank pages (no embedded text)."""
+        writer = PdfWriter()
+        for _ in range(n_pages):
+            writer.add_blank_page(width=612, height=792)
+        path = tmp_dir / "scanned.pdf"
+        with open(path, "wb") as f:
+            writer.write(f)
+        return path
+
+    def test_ocr_called_for_blank_page(self, tmp_dir):
+        """extract_pdf calls _ocr_page when a page has no embedded text."""
+        path = self._make_blank_pdf(tmp_dir)
+        with patch("packages.parsing.pdf_parser._ocr_page", return_value="Testo OCR.") as mock_ocr:
+            pages = extract_pdf(path)
+        mock_ocr.assert_called_once_with(str(path), 1)
+        assert len(pages) == 1
+        assert pages[0].text == "Testo OCR."
+        assert pages[0].page_number == 1
+
+    def test_ocr_not_called_for_text_page(self, tmp_dir):
+        """extract_pdf does NOT call _ocr_page when the page has embedded text."""
+        pytest.importorskip("reportlab")
+        path = _make_pdf(tmp_dir, ["Embedded text on page one."])
+        with patch("packages.parsing.pdf_parser._ocr_page") as mock_ocr:
+            pages = extract_pdf(path)
+        mock_ocr.assert_not_called()
+        assert len(pages) == 1
+
+    def test_ocr_empty_result_excludes_page(self, tmp_dir):
+        """If OCR returns only whitespace, the page is excluded."""
+        path = self._make_blank_pdf(tmp_dir)
+        with patch("packages.parsing.pdf_parser._ocr_page", return_value="   "):
+            pages = extract_pdf(path)
+        assert pages == []
+
+    def test_ocr_mixed_pdf(self, tmp_dir):
+        """Mixed PDF: native text pages use pypdf, blank pages use OCR."""
+        pytest.importorskip("reportlab")
+        text_path = _make_pdf(tmp_dir, ["Embedded text page one"])
+
+        from pypdf import PdfWriter as _PW, PdfReader as _PR
+        writer = _PW()
+        with open(text_path, "rb") as f:
+            reader = _PR(f)
+            for page in reader.pages:
+                writer.add_page(page)
+        writer.add_blank_page(width=612, height=792)
+        merged = tmp_dir / "mixed.pdf"
+        with open(merged, "wb") as f:
+            writer.write(f)
+
+        called_for = []
+
+        def side_effect(pdf_path, page_number):
+            called_for.append(page_number)
+            return "OCR page two"
+
+        with patch("packages.parsing.pdf_parser._ocr_page", side_effect=side_effect):
+            pages = extract_pdf(merged)
+
+        assert called_for == [2]   # OCR only for the blank page
+        assert len(pages) == 2
+        assert "Embedded text page one" in pages[0].text
+        assert pages[1].text == "OCR page two"
+
+    def test_ocr_unavailable_returns_empty(self, tmp_dir):
+        """_ocr_page returns '' when OCR libraries are not installed."""
+        path = self._make_blank_pdf(tmp_dir)
+        from packages.parsing.pdf_parser import _ocr_page
+        with patch("packages.parsing.pdf_parser._OCR_AVAILABLE", False):
+            result = _ocr_page(str(path), 1)
+        assert result == ""
+
+    def test_ocr_page_exception_returns_empty(self, tmp_dir):
+        """_ocr_page returns '' when pdf2image/tesseract raises an exception."""
+        path = self._make_blank_pdf(tmp_dir)
+        from packages.parsing.pdf_parser import _ocr_page
+        with patch("packages.parsing.pdf_parser._OCR_AVAILABLE", True):
+            with patch(
+                "packages.parsing.pdf_parser._pdf2image_convert",
+                side_effect=Exception("Poppler not found"),
+            ):
+                result = _ocr_page(str(path), 1)
+        assert result == ""
+
+    def test_ocr_page_uses_ita_eng_language(self, tmp_dir):
+        """_ocr_page calls pytesseract with lang='ita+eng'."""
+        path = self._make_blank_pdf(tmp_dir)
+        mock_image = MagicMock()
+        mock_tess = MagicMock()
+        mock_tess.image_to_string.return_value = "testo"
+
+        from packages.parsing.pdf_parser import _ocr_page
+        with patch("packages.parsing.pdf_parser._OCR_AVAILABLE", True):
+            with patch("packages.parsing.pdf_parser._pdf2image_convert", return_value=[mock_image]):
+                with patch("packages.parsing.pdf_parser._pytesseract", mock_tess):
+                    result = _ocr_page(str(path), 1)
+
+        mock_tess.image_to_string.assert_called_once_with(mock_image, lang="ita+eng")
+        assert result == "testo"
+
+    def test_ocr_page_uses_dpi_300(self, tmp_dir):
+        """_ocr_page rasterizes at 300 DPI."""
+        path = self._make_blank_pdf(tmp_dir)
+        mock_convert = MagicMock(return_value=[MagicMock()])
+        mock_tess = MagicMock()
+        mock_tess.image_to_string.return_value = "text"
+
+        from packages.parsing.pdf_parser import _ocr_page
+        with patch("packages.parsing.pdf_parser._OCR_AVAILABLE", True):
+            with patch("packages.parsing.pdf_parser._pdf2image_convert", mock_convert):
+                with patch("packages.parsing.pdf_parser._pytesseract", mock_tess):
+                    _ocr_page(str(path), 1)
+
+        mock_convert.assert_called_once_with(str(path), first_page=1, last_page=1, dpi=300)
+
+    def test_ocr_page_number_passed_correctly(self, tmp_dir):
+        """_ocr_page passes the correct page number to convert_from_path."""
+        path = self._make_blank_pdf(tmp_dir, n_pages=3)
+        mock_convert = MagicMock(return_value=[MagicMock()])
+        mock_tess = MagicMock()
+        mock_tess.image_to_string.return_value = "text"
+
+        from packages.parsing.pdf_parser import _ocr_page
+        with patch("packages.parsing.pdf_parser._OCR_AVAILABLE", True):
+            with patch("packages.parsing.pdf_parser._pdf2image_convert", mock_convert):
+                with patch("packages.parsing.pdf_parser._pytesseract", mock_tess):
+                    _ocr_page(str(path), 3)
+
+        mock_convert.assert_called_once_with(str(path), first_page=3, last_page=3, dpi=300)

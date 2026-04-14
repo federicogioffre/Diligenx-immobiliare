@@ -13,6 +13,8 @@ class ClauseFindingRead(BaseModel):
     content: str
     page_number: int | None
     confidence: float | None
+    relevance_score: str | None   # "high" | "medium" | "low" | None
+    relevance_reason: str | None
     created_at: datetime
 
     model_config = {"from_attributes": True}

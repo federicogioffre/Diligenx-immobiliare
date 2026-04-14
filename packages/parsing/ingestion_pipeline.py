@@ -58,13 +58,17 @@ def process_document(document_id: int, db: Session) -> None:
         if extractor is None:
             raise ValueError(f"No extractor for MIME type: {doc.mime_type}")
 
-        # --- Extract ---
-        pages: list[PageText] = extractor(doc.file_path)
+        from app.services.storage import open_local
+
+        # --- Extract (download from cloud to temp file if needed) ---
+        with open_local(doc.file_path) as local_file:
+            pages: list[PageText] = extractor(local_file)
+            page_count_from_file = _get_page_count(doc.mime_type, local_file)
 
         if not pages:
             doc.status = DocumentStatus.processed
             doc.raw_text = ""
-            doc.page_count = _get_page_count(doc.mime_type, doc.file_path) or 0
+            doc.page_count = page_count_from_file or 0
             doc.language = "en"
             db.commit()
             return
@@ -72,7 +76,7 @@ def process_document(document_id: int, db: Session) -> None:
         # --- Full text & metadata ---
         full_text = "\n\n".join(p.text for p in pages)
         doc.raw_text = full_text
-        doc.page_count = _get_page_count(doc.mime_type, doc.file_path) or len(pages)
+        doc.page_count = page_count_from_file or len(pages)
         doc.language = detect_language(full_text)
 
         # --- Chunk ---

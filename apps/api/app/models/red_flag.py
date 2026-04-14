@@ -24,7 +24,9 @@ class RedFlag(TimestampMixin, Base):
     severity: Mapped[Severity] = mapped_column(Enum(Severity))
     category: Mapped[str] = mapped_column(String(100))
     confidence: Mapped[float | None] = mapped_column(Float)
-    source_document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"))
+    source_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id", ondelete="SET NULL")
+    )
 
     deal = relationship("Deal", back_populates="red_flags")
-    source_document = relationship("Document")
+    source_document = relationship("Document", overlaps="red_flags")

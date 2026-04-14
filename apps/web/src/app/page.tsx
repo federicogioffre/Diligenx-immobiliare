@@ -1,8 +1,15 @@
+'use client'
+
+import { useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+import { isLoggedIn } from '@/lib/auth'
+
 export default function Home() {
-  return (
-    <main>
-      <h1>DealMind AI</h1>
-      <p>AI-powered deal intelligence platform</p>
-    </main>
-  );
+  const router = useRouter()
+
+  useEffect(() => {
+    router.replace(isLoggedIn() ? '/dashboard' : '/login')
+  }, [router])
+
+  return null
 }

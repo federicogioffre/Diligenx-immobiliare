@@ -1,10 +1,25 @@
 FROM python:3.12-slim
 
+# System dependencies for PDF parsing + OCR
+RUN apt-get update && apt-get install -y \
+    tesseract-ocr \
+    tesseract-ocr-ita \
+    poppler-utils \
+    libmagic1 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-COPY requirements.txt .
+# Install Python dependencies
+COPY apps/api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy application code
+COPY apps/api/ ./apps/api/
+COPY packages/ ./packages/
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+WORKDIR /app/apps/api
+
+# Run migrations then start server
+# PORT is injected by Railway automatically
+CMD alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
