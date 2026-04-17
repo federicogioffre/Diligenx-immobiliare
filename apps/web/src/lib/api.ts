@@ -297,6 +297,15 @@ export const api = {
     generateReport(id: number): Promise<ReportResponse> {
       return request(`/deals/${id}/report`, { method: 'POST' })
     },
+    async downloadReport(id: number, format: 'pdf' | 'docx'): Promise<Blob> {
+      const res = await fetch(
+        `${BASE}/deals/${id}/report/export?format=${format}`,
+        { headers: { ...authHeaders() } },
+      )
+      if (handle401IfNeeded(res)) throw new Error('Unauthorized')
+      if (!res.ok) throw new Error(await res.text())
+      return res.blob()
+    },
     getRiskScore(id: number): Promise<RiskScoreResponse> {
       return request(`/deals/${id}/risk-score`)
     },

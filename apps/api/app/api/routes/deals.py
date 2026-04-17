@@ -4,7 +4,7 @@ import logging
 from datetime import timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from app.core.limiter import limiter
 from sqlalchemy.orm import Session
 
@@ -399,6 +399,71 @@ def get_report(
         report_id=report.id,
         deal_id=deal_id,
         markdown=report.content or "",
+    )
+
+
+@router.get("/{deal_id}/report/export")
+def export_report(
+    deal_id: int,
+    format: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Download the due-diligence report as a branded PDF or DOCX.
+
+    Query param `format` must be 'pdf' or 'docx'. Returns 404 if the deal
+    does not exist (or doesn't belong to the caller) or if no report has
+    been generated yet. Returns 400 for an invalid format.
+    """
+    from app.models.report import Report, ReportType
+
+    fmt = (format or "").lower()
+    if fmt not in ("pdf", "docx"):
+        raise HTTPException(status_code=400, detail="format must be 'pdf' or 'docx'")
+
+    deal = (
+        db.query(Deal)
+        .join(Deal.workspace)
+        .filter(Deal.id == deal_id, Workspace.owner_id == current_user.id)
+        .first()
+    )
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    report = (
+        db.query(Report)
+        .filter(
+            Report.deal_id == deal_id,
+            Report.report_type == ReportType.due_diligence,
+        )
+        .order_by(Report.id.desc())
+        .first()
+    )
+    if not report:
+        raise HTTPException(status_code=404, detail="No report generated yet")
+
+    from app.services.report_export import render_docx, render_pdf
+
+    try:
+        if fmt == "pdf":
+            data = render_pdf(deal, report)
+            media_type = "application/pdf"
+            ext = "pdf"
+        else:
+            data = render_docx(deal, report)
+            media_type = (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+            ext = "docx"
+    except Exception:
+        logger.exception("Report export failed for deal %d (%s)", deal_id, fmt)
+        raise HTTPException(status_code=500, detail="Export failed")
+
+    filename = f"diligenx_report_deal-{deal_id}.{ext}"
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
