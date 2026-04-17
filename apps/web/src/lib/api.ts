@@ -1,4 +1,4 @@
-import { getToken } from './auth'
+import { getToken, clearAuth } from './auth'
 
 const BASE = '/api'
 
@@ -165,6 +165,26 @@ function authHeaders(): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
+/**
+ * Handle an expired/invalid session response from the backend.
+ *
+ * Called by every authenticated fetch. If the backend returns 401 it means
+ * the token is no longer accepted — clear auth state and force a full-page
+ * redirect to /login. A hard redirect (not router.push) is intentional:
+ * it wipes all client-side state that may still reference the dead session.
+ *
+ * NOTE: do NOT use this for `POST /auth/login` — a 401 there means "wrong
+ * credentials", not "session expired", and should be surfaced as an error.
+ */
+function handle401IfNeeded(res: Response): boolean {
+  if (res.status !== 401) return false
+  if (typeof window !== 'undefined') {
+    clearAuth()
+    window.location.href = '/login'
+  }
+  return true
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: {
@@ -174,6 +194,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     },
     ...options,
   })
+  if (handle401IfNeeded(res)) {
+    throw new Error('Unauthorized')
+  }
   if (!res.ok) {
     const text = await res.text()
     throw new Error(text || `HTTP ${res.status}`)
@@ -277,6 +300,7 @@ export const api = {
         method: 'DELETE',
         headers: { ...authHeaders() },
       })
+      if (handle401IfNeeded(res)) throw new Error('Unauthorized')
       if (!res.ok) throw new Error(await res.text())
     },
   },
@@ -293,6 +317,7 @@ export const api = {
         headers: { ...authHeaders() },
         body: form,
       })
+      if (handle401IfNeeded(res)) throw new Error('Unauthorized')
       if (!res.ok) throw new Error(await res.text())
       return res.json()
     },
@@ -301,6 +326,7 @@ export const api = {
         method: 'DELETE',
         headers: { ...authHeaders() },
       })
+      if (handle401IfNeeded(res)) throw new Error('Unauthorized')
       if (!res.ok) throw new Error(await res.text())
     },
   },

@@ -1,15 +1,13 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useParams } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 import { api } from '@/lib/api'
-import { isLoggedIn } from '@/lib/auth'
 import DealTabs from '@/components/DealTabs'
 
 export default function ReportPage() {
   const params = useParams()
-  const router = useRouter()
   const dealId = Number(params.id)
 
   const [markdown, setMarkdown] = useState<string | null>(null)
@@ -18,9 +16,10 @@ export default function ReportPage() {
   const [error, setError]       = useState('')
 
   useEffect(() => {
-    if (!isLoggedIn()) { router.replace('/login'); return }
+    // Auth guard is enforced by middleware.ts; 401s redirect automatically.
     fetchReport()
-  }, [dealId, router])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dealId])
 
   async function fetchReport() {
     setLoading(true); setError('')

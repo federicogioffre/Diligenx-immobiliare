@@ -1,9 +1,8 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useParams } from 'next/navigation'
 import { api, QASource } from '@/lib/api'
-import { isLoggedIn } from '@/lib/auth'
 import DealTabs from '@/components/DealTabs'
 
 interface Message {
@@ -14,7 +13,6 @@ interface Message {
 
 export default function AskPage() {
   const params = useParams()
-  const router = useRouter()
   const dealId = Number(params.id)
 
   const [question, setQuestion] = useState('')
@@ -23,9 +21,7 @@ export default function AskPage() {
   const [error, setError]       = useState('')
   const bottomRef               = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    if (!isLoggedIn()) router.replace('/login')
-  }, [router])
+  // Auth guard is enforced by middleware.ts; 401s redirect automatically.
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })

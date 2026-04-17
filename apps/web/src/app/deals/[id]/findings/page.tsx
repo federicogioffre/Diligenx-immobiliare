@@ -1,9 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useParams } from 'next/navigation'
 import { api, ClauseFindingRead, DocumentRead, RedFlagRead } from '@/lib/api'
-import { isLoggedIn } from '@/lib/auth'
 import DealTabs from '@/components/DealTabs'
 
 // ── Relevance ──────────────────────────────────────────────────────────────
@@ -150,7 +149,6 @@ function RedFlagCard({ f, docMap, index }: { f: RedFlagRead; docMap: Map<number,
 
 export default function FindingsPage() {
   const params = useParams()
-  const router = useRouter()
   const dealId = Number(params.id)
 
   const [clauses, setClauses] = useState<ClauseFindingRead[]>([])
@@ -163,7 +161,7 @@ export default function FindingsPage() {
   const [flagFilter, setFlagFilter]     = useState<'important' | 'all'>('important')
 
   useEffect(() => {
-    if (!isLoggedIn()) { router.replace('/login'); return }
+    // Auth guard is enforced by middleware.ts; 401s redirect automatically.
     Promise.all([api.deals.clauseFindings(dealId), api.deals.redFlags(dealId), api.documents.list(dealId)])
       .then(([c, f, docs]) => {
         setClauses(c); setFlags(f)
@@ -171,7 +169,7 @@ export default function FindingsPage() {
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Errore'))
       .finally(() => setLoading(false))
-  }, [dealId, router])
+  }, [dealId])
 
   if (loading) return (
     <div>

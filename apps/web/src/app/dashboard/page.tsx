@@ -1,10 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { api, DealRead } from '@/lib/api'
-import { getWorkspaceId, isLoggedIn } from '@/lib/auth'
+import { getWorkspaceId } from '@/lib/auth'
 
 const STATUS_CONFIG: Record<string, { label: string; dot: string; badge: string }> = {
   draft:     { label: 'Bozza',     dot: 'bg-slate-400',   badge: 'bg-slate-100 text-slate-600' },
@@ -17,7 +16,6 @@ const inputClass =
   'w-full border border-slate-200 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow bg-white'
 
 export default function DashboardPage() {
-  const router = useRouter()
   const [deals, setDeals] = useState<DealRead[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -38,9 +36,11 @@ export default function DashboardPage() {
   const [editError, setEditError] = useState('')
 
   useEffect(() => {
-    if (!isLoggedIn()) { router.replace('/login'); return }
+    // Auth guard is enforced by middleware.ts; 401 responses from api.ts
+    // trigger an automatic redirect. No client-side check needed here.
     fetchDeals()
-  }, [router])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function fetchDeals() {
     setLoading(true)

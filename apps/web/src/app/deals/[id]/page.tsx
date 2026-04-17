@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import {
   api,
@@ -13,7 +13,6 @@ import {
   RiskScoreResponse,
   openAnalysisStream,
 } from '@/lib/api'
-import { isLoggedIn } from '@/lib/auth'
 import DealTabs from '@/components/DealTabs'
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -238,7 +237,6 @@ const DEAL_STATUS: Record<string, { label: string; cls: string }> = {
 
 export default function DealPage() {
   const params = useParams()
-  const router = useRouter()
   const dealId = Number(params.id)
 
   const [deal, setDeal]           = useState<DealRead | null>(null)
@@ -262,14 +260,15 @@ export default function DealPage() {
   const sseCleanupRef   = useRef<(() => void) | null>(null)
 
   useEffect(() => {
-    if (!isLoggedIn()) { router.replace('/login'); return }
+    // Auth guard is enforced by middleware.ts; 401s redirect automatically.
     fetchAll()
     return () => {
       if (docPollRef.current)      clearInterval(docPollRef.current)
       if (analysisPollRef.current) clearInterval(analysisPollRef.current)
       if (sseCleanupRef.current)   sseCleanupRef.current()
     }
-  }, [dealId, router])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dealId])
 
   async function fetchAll() {
     try {
