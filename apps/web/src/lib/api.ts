@@ -235,11 +235,31 @@ export const api = {
     list(): Promise<WorkspaceRead[]> {
       return request('/workspaces')
     },
-    create(name: string): Promise<WorkspaceRead> {
+    get(id: number): Promise<WorkspaceRead> {
+      return request(`/workspaces/${id}`)
+    },
+    create(data: { name: string; description?: string }): Promise<WorkspaceRead> {
       return request('/workspaces', {
         method: 'POST',
-        body: JSON.stringify({ name }),
+        body: JSON.stringify(data),
       })
+    },
+    update(
+      id: number,
+      data: { name?: string; description?: string }
+    ): Promise<WorkspaceRead> {
+      return request(`/workspaces/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      })
+    },
+    async delete(id: number): Promise<void> {
+      const res = await fetch(`${BASE}/workspaces/${id}`, {
+        method: 'DELETE',
+        headers: { ...authHeaders() },
+      })
+      if (handle401IfNeeded(res)) throw new Error('Unauthorized')
+      if (!res.ok) throw new Error(await res.text())
     },
   },
 

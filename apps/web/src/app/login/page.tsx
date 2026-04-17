@@ -28,7 +28,7 @@ export default function LoginPage() {
     if (workspaces.length > 0) {
       setWorkspaceId(workspaces[0].id)
     } else {
-      const ws = await api.workspaces.create('My Workspace')
+      const ws = await api.workspaces.create({ name: 'My Workspace' })
       setWorkspaceId(ws.id)
     }
     router.push('/dashboard')
