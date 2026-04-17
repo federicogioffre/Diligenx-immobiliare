@@ -11,8 +11,23 @@ def test_upload_document(client, auth_headers, test_deal):
     assert resp.status_code == 201
     data = resp.json()
     assert data["filename"] == "test.txt"
-    assert data["status"] == "processed"
+    # Ingestion runs as a FastAPI BackgroundTask — the immediate response
+    # body was serialized while the doc was still 'pending'. TestClient
+    # runs background tasks inline before returning, so a subsequent GET
+    # observes the final state.
+    assert data["status"] in ("pending", "processed")
     assert data["file_size"] == len(file_content)
+
+    # Verify ingestion eventually completed (background task ran).
+    list_resp = client.get(
+        f"/documents/deals/{test_deal.id}/documents",
+        headers=auth_headers,
+    )
+    processed = next(
+        (d for d in list_resp.json() if d["filename"] == "test.txt"), None
+    )
+    assert processed is not None
+    assert processed["status"] == "processed"
 
 
 def test_upload_unsupported_type(client, auth_headers, test_deal):

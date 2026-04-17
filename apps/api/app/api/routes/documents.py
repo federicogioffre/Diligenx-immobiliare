@@ -2,13 +2,13 @@ import logging
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File
 from app.core.limiter import limiter
 from typing import List
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.document import Document, DocumentStatus
 from app.models.deal import Deal
 from app.models.user import User
@@ -45,15 +45,38 @@ def _assert_deal_access(deal_id: int, user_id: int, db: Session) -> Deal:
     return deal
 
 
-def _ingest(doc: Document, db: Session) -> None:
-    """Run the ingestion pipeline; swallow exceptions (document already marked failed)."""
+def _run_ingestion(document_id: int) -> None:
+    """Run the full ingestion pipeline in a FRESH DB session.
+
+    Intended to be scheduled via FastAPI BackgroundTasks so the HTTP
+    response (201 Created) is returned to the client immediately, and
+    any failure in parsing / OCR / embedding is isolated from the
+    request lifecycle — the client never sees a 500 caused by ingestion.
+
+    A separate SessionLocal is used because the request-scoped `db`
+    dependency is closed as soon as the response is sent.
+    """
     from packages.parsing.ingestion_pipeline import process_document
+
+    db = SessionLocal()
     try:
-        process_document(doc.id, db)
-        db.refresh(doc)
+        process_document(document_id, db)
     except Exception:
-        logger.exception("Ingestion failed for document %d", doc.id)
-        db.refresh(doc)
+        logger.exception("Background ingestion failed for document %d", document_id)
+        # process_document already marks the doc as failed and commits before
+        # re-raising, but be defensive in case the rollback/commit itself threw.
+        try:
+            db.rollback()
+            doc = db.query(Document).filter(Document.id == document_id).first()
+            if doc and doc.status != DocumentStatus.failed:
+                doc.status = DocumentStatus.failed
+                db.commit()
+        except Exception:
+            logger.exception(
+                "Could not persist failed state for document %d", document_id
+            )
+    finally:
+        db.close()
 
 
 @router.post("/upload", response_model=DocumentUploadResponse, status_code=201)
@@ -62,6 +85,7 @@ def upload_document(
     request: Request,
     deal_id: int,
     file: UploadFile,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -93,13 +117,18 @@ def upload_document(
     db.commit()
     db.refresh(doc)
 
-    _ingest(doc, db)
+    # Schedule ingestion AFTER response is sent. Any failure inside the
+    # pipeline (OCR on scanned PDFs, embedding errors, etc.) is isolated
+    # from the HTTP response — the document will simply end in status=failed
+    # and the UI will see it via the status polling.
+    background_tasks.add_task(_run_ingestion, doc.id)
     return doc
 
 
 @router.post("/upload-batch", response_model=list[DocumentUploadResponse], status_code=201)
 def upload_documents_batch(
     deal_id: int,
+    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -135,7 +164,7 @@ def upload_documents_batch(
         db.commit()
         db.refresh(doc)
 
-        _ingest(doc, db)
+        background_tasks.add_task(_run_ingestion, doc.id)
         results.append(doc)
 
     return results

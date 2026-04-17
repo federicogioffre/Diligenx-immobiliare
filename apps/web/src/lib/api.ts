@@ -341,6 +341,66 @@ export const api = {
       if (!res.ok) throw new Error(await res.text())
       return res.json()
     },
+    /**
+     * Upload a single file with byte-level progress callbacks.
+     *
+     * Uses XMLHttpRequest because `fetch` does not expose upload progress
+     * events (there is no stream-progress on the request body).
+     * The on-wire behaviour is identical to `upload()` — same endpoint,
+     * same FormData payload, same 401 → redirect contract.
+     */
+    uploadWithProgress(
+      dealId: number,
+      file: File,
+      onProgress: (bytesSent: number, bytesTotal: number) => void,
+      signal?: AbortSignal,
+    ): Promise<DocumentUploadResponse> {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', `${BASE}/documents/upload?deal_id=${dealId}`)
+
+        const token = getToken()
+        if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) onProgress(e.loaded, e.total)
+        }
+        xhr.onload = () => {
+          if (xhr.status === 401) {
+            // Same contract as handle401IfNeeded but adapted to XHR.
+            if (typeof window !== 'undefined') {
+              clearAuth()
+              window.location.href = '/login'
+            }
+            reject(new Error('Unauthorized'))
+            return
+          }
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              resolve(JSON.parse(xhr.responseText) as DocumentUploadResponse)
+            } catch {
+              reject(new Error('Invalid JSON response'))
+            }
+          } else {
+            reject(new Error(xhr.responseText || `HTTP ${xhr.status}`))
+          }
+        }
+        xhr.onerror = () => reject(new Error('Errore di rete'))
+        xhr.onabort = () => reject(new Error('Upload annullato'))
+
+        if (signal) {
+          if (signal.aborted) {
+            xhr.abort()
+            return
+          }
+          signal.addEventListener('abort', () => xhr.abort())
+        }
+
+        const form = new FormData()
+        form.append('file', file)
+        xhr.send(form)
+      })
+    },
     async delete(documentId: number): Promise<void> {
       const res = await fetch(`${BASE}/documents/${documentId}`, {
         method: 'DELETE',

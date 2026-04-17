@@ -14,6 +14,7 @@ import {
   openAnalysisStream,
 } from '@/lib/api'
 import DealTabs from '@/components/DealTabs'
+import UploadZone from '@/components/UploadZone'
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -246,15 +247,10 @@ export default function DealPage() {
   const [riskScore, setRiskScore] = useState<RiskScoreResponse | null>(null)
   const [streamStages, setStreamStages] = useState<AnalysisStageEvent[]>([])
 
-  const [uploading, setUploading]   = useState(false)
-  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null)
   const [analyzing, setAnalyzing]   = useState(false)
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [error, setError]           = useState('')
-  const [uploadError, setUploadError] = useState('')
 
-  const fileRef         = useRef<HTMLInputElement>(null)
-  const folderRef       = useRef<HTMLInputElement>(null)
   const docPollRef      = useRef<ReturnType<typeof setInterval> | null>(null)
   const analysisPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const sseCleanupRef   = useRef<(() => void) | null>(null)
@@ -342,44 +338,15 @@ export default function DealPage() {
     }, 8000)
   }
 
-  const ALLOWED_EXTENSIONS = /\.(pdf|txt|docx)$/i
-
-  async function uploadFileList(fileList: FileList | File[]) {
-    const all = Array.from(fileList)
-    const supported = all.filter((f) => ALLOWED_EXTENSIONS.test(f.name))
-    const unsupported = all.length - supported.length
-
-    // Deduplicate against already-uploaded documents (case-insensitive filename match)
-    const existingNames = new Set(docs.map((d) => d.filename.toLowerCase()))
-    const duplicates = supported.filter((f) => existingNames.has(f.name.toLowerCase()))
-    const files = supported.filter((f) => !existingNames.has(f.name.toLowerCase()))
-
-    if (supported.length === 0) { setUploadError('Nessun file supportato (.pdf, .txt, .docx)'); return }
-    if (files.length === 0) {
-      setUploadError(`${duplicates.length} file già presenti: ${duplicates.map((f) => f.name).join(', ')}`)
-      if (fileRef.current)   fileRef.current.value = ''
-      if (folderRef.current) folderRef.current.value = ''
-      return
-    }
-
-    setUploadError(''); setUploading(true)
-    setUploadProgress({ current: 0, total: files.length })
-    const errors: string[] = []
-    for (let i = 0; i < files.length; i++) {
-      setUploadProgress({ current: i + 1, total: files.length })
-      try { await api.documents.upload(dealId, files[i]) }
-      catch (err: unknown) { errors.push(`${files[i].name}: ${err instanceof Error ? err.message : 'Upload fallito'}`) }
-    }
-    if (fileRef.current)   fileRef.current.value = ''
-    if (folderRef.current) folderRef.current.value = ''
-    setUploadProgress(null); setUploading(false)
-    const msgs: string[] = []
-    if (errors.length > 0) msgs.push(errors.join(' | '))
-    if (duplicates.length > 0) msgs.push(`${duplicates.length} duplicati ignorati: ${duplicates.map((f) => f.name).join(', ')}`)
-    if (unsupported > 0) msgs.push(`${unsupported} file ignorati (tipo non supportato)`)
-    if (msgs.length > 0) setUploadError(msgs.join(' — '))
+  /**
+   * Refresh the documents list after the UploadZone component reports
+   * a successful upload. Called per file, not per batch.
+   * scheduleDocPoll kicks off status polling (pending → processed).
+   */
+  async function handleUploaded() {
     const fresh = await api.documents.list(dealId)
-    setDocs(fresh); scheduleDocPoll(fresh)
+    setDocs(fresh)
+    scheduleDocPoll(fresh)
   }
 
   async function handleDelete(docId: number, filename: string) {
@@ -390,7 +357,7 @@ export default function DealPage() {
       const fresh = await api.documents.list(dealId)
       setDocs(fresh); scheduleDocPoll(fresh)
     } catch (err: unknown) {
-      setUploadError(err instanceof Error ? err.message : 'Eliminazione fallita')
+      setError(err instanceof Error ? err.message : 'Eliminazione fallita')
     } finally { setDeletingId(null) }
   }
 
@@ -477,57 +444,11 @@ export default function DealPage() {
           <span className="text-xs text-slate-400">{docs.length} totali · {processedCount} elaborati</span>
         </div>
 
-        {/* Upload area */}
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 mb-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".pdf,.docx,.txt"
-              multiple
-              className="text-sm text-slate-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-slate-100 file:text-slate-700 file:text-xs file:font-semibold hover:file:bg-slate-200 file:cursor-pointer transition-colors"
-            />
-            <button
-              onClick={() => uploadFileList(fileRef.current?.files ?? [])}
-              disabled={uploading}
-              className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-              </svg>
-              {uploadProgress ? `${uploadProgress.current}/${uploadProgress.total}…` : 'Upload'}
-            </button>
-
-            <input
-              ref={folderRef}
-              type="file"
-              multiple
-              // @ts-ignore
-              webkitdirectory=""
-              className="hidden"
-              onChange={(e) => uploadFileList(e.target.files ?? [])}
-            />
-            <button
-              onClick={() => folderRef.current?.click()}
-              disabled={uploading}
-              className="flex items-center gap-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 px-4 py-1.5 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
-            >
-              <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-              </svg>
-              Carica cartella
-            </button>
-          </div>
-        </div>
-
-        {uploadError && (
-          <div className="flex items-start gap-2 text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-3">
-            <svg className="w-3.5 h-3.5 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <span>{uploadError}</span>
-          </div>
-        )}
+        <UploadZone
+          dealId={dealId}
+          existingNames={docs.map((d) => d.filename)}
+          onUploaded={handleUploaded}
+        />
 
         {docs.length === 0 ? (
           <div className="text-center py-10 bg-white rounded-2xl border border-slate-200 border-dashed">
