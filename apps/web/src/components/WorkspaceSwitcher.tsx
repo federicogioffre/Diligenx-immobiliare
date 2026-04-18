@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import { api, WorkspaceRead } from '@/lib/api'
 import { getWorkspaceId, setWorkspaceId } from '@/lib/auth'
 
@@ -92,6 +93,7 @@ export default function WorkspaceSwitcher() {
       setWorkspaces((prev) => [...prev, ws])
       setDraftName('')
       setMode({ kind: 'list' })
+      toast.success(`Workspace "${ws.name}" creato`)
       switchTo(ws.id) // triggers reload
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Errore')
@@ -110,6 +112,7 @@ export default function WorkspaceSwitcher() {
       setWorkspaces((prev) => prev.map((w) => (w.id === id ? updated : w)))
       setDraftName('')
       setMode({ kind: 'list' })
+      toast.success('Workspace rinominato')
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Errore')
     } finally {
@@ -126,6 +129,7 @@ export default function WorkspaceSwitcher() {
       await api.workspaces.delete(ws.id)
       const remaining = workspaces.filter((w) => w.id !== ws.id)
       setWorkspaces(remaining)
+      toast.success(`Workspace "${ws.name}" eliminato`)
       // If the deleted one was active, switch to the first remaining and reload
       if (ws.id === activeId && remaining.length > 0) {
         switchTo(remaining[0].id) // triggers reload

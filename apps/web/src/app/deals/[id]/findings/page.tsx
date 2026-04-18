@@ -4,6 +4,12 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { api, ClauseFindingRead, DocumentRead, RedFlagRead } from '@/lib/api'
 import DealTabs from '@/components/DealTabs'
+import ErrorAlert from '@/components/ui/ErrorAlert'
+import SeverityBadge, {
+  severityLeftBorder,
+  type Severity,
+} from '@/components/ui/SeverityBadge'
+import Spinner from '@/components/ui/Spinner'
 
 // ── Relevance ──────────────────────────────────────────────────────────────
 
@@ -11,15 +17,6 @@ const RELEVANCE: Record<string, { label: string; cls: string }> = {
   high:   { label: 'Alta',   cls: 'bg-emerald-50 text-emerald-700 border border-emerald-200' },
   medium: { label: 'Media',  cls: 'bg-amber-50 text-amber-700 border border-amber-200' },
   low:    { label: 'Bassa',  cls: 'bg-slate-100 text-slate-500 border border-slate-200' },
-}
-
-// ── Severity ───────────────────────────────────────────────────────────────
-
-const SEVERITY: Record<string, { label: string; badge: string; left: string }> = {
-  low:      { label: 'BASSO',    badge: 'bg-slate-100 text-slate-600',    left: 'border-l-slate-300' },
-  medium:   { label: 'MEDIO',    badge: 'bg-amber-50 text-amber-700',     left: 'border-l-amber-400' },
-  high:     { label: 'ALTO',     badge: 'bg-orange-50 text-orange-700',   left: 'border-l-orange-500' },
-  critical: { label: 'CRITICO',  badge: 'bg-red-50 text-red-700',         left: 'border-l-red-500' },
 }
 
 // ── Expandable text ────────────────────────────────────────────────────────
@@ -110,19 +107,17 @@ function ClauseCard({ c, docMap, index }: { c: ClauseFindingRead; docMap: Map<nu
 // ── Red flag card ──────────────────────────────────────────────────────────
 
 function RedFlagCard({ f, docMap, index }: { f: RedFlagRead; docMap: Map<number, string>; index: number }) {
-  const sev = SEVERITY[f.severity] ?? SEVERITY.medium
+  const severity = (f.severity ?? 'medium') as Severity
   const filename = f.source_document_id != null ? docMap.get(f.source_document_id) : undefined
 
   return (
-    <div className={`bg-white rounded-2xl border border-slate-200 border-l-4 ${sev.left} shadow-sm p-5`}>
+    <div className={`bg-white rounded-2xl border border-slate-200 border-l-4 ${severityLeftBorder(severity)} shadow-sm p-5`}>
       {/* Header */}
       <div className="flex flex-wrap items-start gap-2 mb-3">
         <span className="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded-full bg-slate-100 text-slate-500 text-xs font-bold">
           {index}
         </span>
-        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-bold ${sev.badge}`}>
-          {sev.label}
-        </span>
+        <SeverityBadge severity={severity} />
         <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-slate-100 text-slate-600">
           {f.category.replace(/_/g, ' ')}
         </span>
@@ -175,7 +170,7 @@ export default function FindingsPage() {
     <div>
       <DealTabs dealId={dealId} />
       <div className="flex items-center gap-2 text-slate-500 text-sm">
-        <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+        <Spinner />
         Caricamento…
       </div>
     </div>
@@ -183,7 +178,7 @@ export default function FindingsPage() {
   if (error) return (
     <div>
       <DealTabs dealId={dealId} />
-      <p className="text-red-600 text-sm">{error}</p>
+      <ErrorAlert error={error} />
     </div>
   )
 

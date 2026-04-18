@@ -2,15 +2,13 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { toast } from 'sonner'
 import { api, DealRead } from '@/lib/api'
 import { getWorkspaceId } from '@/lib/auth'
-
-const STATUS_CONFIG: Record<string, { label: string; dot: string; badge: string }> = {
-  draft:     { label: 'Bozza',     dot: 'bg-slate-400',   badge: 'bg-slate-100 text-slate-600' },
-  analyzing: { label: 'Analisi',   dot: 'bg-amber-400',   badge: 'bg-amber-50 text-amber-700' },
-  reviewed:  { label: 'Revisionato', dot: 'bg-emerald-500', badge: 'bg-emerald-50 text-emerald-700' },
-  closed:    { label: 'Chiuso',    dot: 'bg-blue-400',    badge: 'bg-blue-50 text-blue-700' },
-}
+import EmptyState from '@/components/ui/EmptyState'
+import ErrorAlert from '@/components/ui/ErrorAlert'
+import Spinner from '@/components/ui/Spinner'
+import StatusBadge from '@/components/ui/StatusBadge'
 
 const inputClass =
   'w-full border border-slate-200 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow bg-white'
@@ -67,6 +65,7 @@ export default function DashboardPage() {
       setDeals((prev) => [deal, ...prev])
       setShowForm(false)
       setTitle(''); setDescription(''); setValue('')
+      toast.success(`Deal "${deal.title}" creato`)
     } catch (err: unknown) {
       setFormError(err instanceof Error ? err.message : 'Errore nella creazione')
     } finally {
@@ -81,6 +80,7 @@ export default function DashboardPage() {
     try {
       await api.deals.delete(deal.id)
       setDeals((prev) => prev.filter((d) => d.id !== deal.id))
+      toast.success(`Deal "${deal.title}" eliminato`)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Eliminazione fallita')
     } finally {
@@ -109,6 +109,7 @@ export default function DashboardPage() {
       })
       setDeals((prev) => prev.map((d) => (d.id === updated.id ? updated : d)))
       setEditDeal(null)
+      toast.success('Modifiche salvate')
     } catch (err: unknown) {
       setEditError(err instanceof Error ? err.message : 'Salvataggio fallito')
     } finally {
@@ -199,38 +200,30 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {error && (
-        <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-3 mb-4">
-          <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          {error}
-        </div>
-      )}
+      <ErrorAlert error={error} className="mb-4" />
 
       {loading && (
         <div className="flex items-center gap-2 text-slate-500 text-sm">
-          <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+          <Spinner />
           Caricamento…
         </div>
       )}
 
       {!loading && deals.length === 0 && !error && (
-        <div className="text-center py-20 bg-white rounded-2xl border border-slate-200 border-dashed">
-          <div className="inline-flex items-center justify-center w-12 h-12 bg-slate-100 rounded-xl mb-4">
+        <EmptyState
+          icon={
             <svg className="w-6 h-6 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
             </svg>
-          </div>
-          <p className="text-slate-600 font-medium mb-1">Nessun deal ancora</p>
-          <p className="text-slate-400 text-sm">Crea il tuo primo deal per iniziare l&apos;analisi</p>
-        </div>
+          }
+          title="Nessun deal ancora"
+          subtitle="Crea il tuo primo deal per iniziare l'analisi"
+        />
       )}
 
       {/* Deal grid */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {deals.map((deal) => {
-          const cfg = STATUS_CONFIG[deal.status] ?? STATUS_CONFIG.draft
           return (
             <div
               key={deal.id}
@@ -239,10 +232,7 @@ export default function DashboardPage() {
               <Link href={`/deals/${deal.id}`} className="block p-5">
                 {/* Status + date row */}
                 <div className="flex items-center justify-between mb-3">
-                  <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full ${cfg.badge}`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
-                    {cfg.label}
-                  </span>
+                  <StatusBadge status={deal.status} />
                   <span className="text-xs text-slate-400">{deal.created_at.slice(0, 10)}</span>
                 </div>
 

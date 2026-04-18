@@ -15,6 +15,9 @@ import {
 } from '@/lib/api'
 import DealTabs from '@/components/DealTabs'
 import UploadZone from '@/components/UploadZone'
+import ErrorAlert from '@/components/ui/ErrorAlert'
+import Spinner from '@/components/ui/Spinner'
+import StatusBadge from '@/components/ui/StatusBadge'
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -229,13 +232,6 @@ function RiskScoreWidget({ rs }: { rs: RiskScoreResponse }) {
 
 // ── Page ──────────────────────────────────────────────────────────────────
 
-const DEAL_STATUS: Record<string, { label: string; cls: string }> = {
-  draft:     { label: 'Bozza',       cls: 'bg-slate-100 text-slate-600' },
-  analyzing: { label: 'In analisi',  cls: 'bg-amber-50 text-amber-700' },
-  reviewed:  { label: 'Revisionato', cls: 'bg-emerald-50 text-emerald-700' },
-  closed:    { label: 'Chiuso',      cls: 'bg-blue-50 text-blue-700' },
-}
-
 export default function DealPage() {
   const params = useParams()
   const dealId = Number(params.id)
@@ -401,10 +397,10 @@ export default function DealPage() {
 
   if (!deal) {
     return error
-      ? <p className="text-red-600">{error}</p>
+      ? <ErrorAlert error={error} />
       : (
         <div className="flex items-center gap-2 text-slate-500 text-sm">
-          <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+          <Spinner />
           Caricamento…
         </div>
       )
@@ -413,7 +409,6 @@ export default function DealPage() {
   const stageRows = buildStageRows()
   const showProgress = analyzing || agentRuns.length > 0
   const processedCount = docs.filter((d) => d.status === 'processed').length
-  const dealStatus = DEAL_STATUS[deal.status] ?? DEAL_STATUS.draft
 
   return (
     <div>
@@ -429,9 +424,9 @@ export default function DealPage() {
       {/* Deal header */}
       <div className="flex items-start justify-between mb-2">
         <h1 className="text-xl font-bold text-slate-900 leading-tight">{deal.title}</h1>
-        <span className={`shrink-0 ml-3 text-xs font-semibold px-2.5 py-1 rounded-full ${dealStatus.cls}`}>
-          {dealStatus.label}
-        </span>
+        <div className="shrink-0 ml-3">
+          <StatusBadge status={deal.status} />
+        </div>
       </div>
       {deal.description && <p className="text-sm text-slate-500 mb-5">{deal.description}</p>}
 
@@ -521,7 +516,7 @@ export default function DealPage() {
           >
             {analyzing ? (
               <>
-                <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                <Spinner size="sm" tone="white" />
                 In corso…
               </>
             ) : (
@@ -535,14 +530,7 @@ export default function DealPage() {
           </button>
         </div>
 
-        {error && (
-          <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-4 py-3 mb-4">
-            <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            {error}
-          </div>
-        )}
+        <ErrorAlert error={error} className="mb-4" />
 
         {!showProgress && !analyzing && processedCount === 0 && (
           <div className="text-center py-10 bg-white rounded-2xl border border-slate-200 border-dashed">
