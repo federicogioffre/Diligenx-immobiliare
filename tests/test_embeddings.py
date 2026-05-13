@@ -241,16 +241,21 @@ class TestPipelineEmbeddingIntegration:
             files={"file": ("embed_test.txt", io.BytesIO(content), "text/plain")},
         )
         assert resp.status_code == 201
-        data = resp.json()
-        assert data["status"] == "processed"
+        doc_id = resp.json()["id"]
 
-        # Verify DB has embeddings
+        listing = client.get(
+            f"/documents/deals/{test_deal.id}/documents", headers=auth_headers
+        ).json()
+        final = next(d for d in listing if d["id"] == doc_id)
+        assert final["status"] == "processed"
+
+        # Verify DB has embeddings produced by the background ingestion task.
         from app.models.document_chunk import DocumentChunk as DC
         from tests.conftest import TestingSession
 
         session = TestingSession()
         try:
-            chunks = session.query(DC).filter(DC.document_id == data["id"]).all()
+            chunks = session.query(DC).filter(DC.document_id == doc_id).all()
             assert len(chunks) >= 1
             for chunk in chunks:
                 assert chunk.embedding is not None

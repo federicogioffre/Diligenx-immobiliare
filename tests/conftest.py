@@ -18,6 +18,7 @@ from app.models import User, Workspace, Deal  # noqa: E402
 from app.models.document_chunk import EMBEDDING_DIM  # noqa: E402
 from app.core.security import hash_password, create_access_token  # noqa: E402
 from packages.retrieval.embedding_service import FakeEmbeddingProvider, set_embedding_provider  # noqa: E402
+from app.core.limiter import limiter  # noqa: E402
 
 TEST_DATABASE_URL = "sqlite:///./test_diligenx.db"
 engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
@@ -38,6 +39,18 @@ def _use_fake_embeddings():
     set_embedding_provider(FakeEmbeddingProvider(dimension=EMBEDDING_DIM))
     yield
     set_embedding_provider(None)
+
+
+@pytest.fixture(autouse=True)
+def _disable_rate_limiter():
+    """slowapi keeps in-memory counters that persist across tests, causing
+    spurious 429s once a per-minute budget is exhausted. Disable globally in
+    tests; dedicated tests for rate limiting can re-enable it locally."""
+    limiter.enabled = False
+    limiter.reset()
+    yield
+    limiter.reset()
+    limiter.enabled = True
 
 
 @pytest.fixture

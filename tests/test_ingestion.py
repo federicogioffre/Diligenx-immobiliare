@@ -401,9 +401,16 @@ class TestUploadIngestion:
             files={"file": ("test.txt", io.BytesIO(content), "text/plain")},
         )
         assert resp.status_code == 201
-        data = resp.json()
-        assert data["status"] == "processed"
-        assert data["language"] == "en"
+        doc_id = resp.json()["id"]
+
+        # Upload is 201 + background ingestion; verify final state via the
+        # list endpoint once the BackgroundTask has run.
+        listing = client.get(
+            f"/documents/deals/{test_deal.id}/documents", headers=auth_headers
+        ).json()
+        final = next(d for d in listing if d["id"] == doc_id)
+        assert final["status"] == "processed"
+        assert final["language"] == "en"
 
     def test_upload_docx_triggers_processing(self, client, auth_headers, test_deal, tmp_dir):
         docx_doc = DocxDocument()
@@ -424,9 +431,14 @@ class TestUploadIngestion:
             },
         )
         assert resp.status_code == 201
-        data = resp.json()
-        assert data["status"] == "processed"
-        assert data["language"] == "it"
+        doc_id = resp.json()["id"]
+
+        listing = client.get(
+            f"/documents/deals/{test_deal.id}/documents", headers=auth_headers
+        ).json()
+        final = next(d for d in listing if d["id"] == doc_id)
+        assert final["status"] == "processed"
+        assert final["language"] == "it"
 
 
 # ---------------------------------------------------------------------------
