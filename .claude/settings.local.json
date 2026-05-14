@@ -245,7 +245,10 @@
       "Bash(npm install:*)",
       "Bash(git rm:*)",
       "Bash(git remote:*)",
-      "Bash(del \"C:\\\\Dealmind\\\\vercel.json\")"
+      "Bash(del \"C:\\\\Dealmind\\\\vercel.json\")",
+      "mcp__bdad6b08-b8d8-4a4c-bb0b-3527039467f8__list_teams",
+      "mcp__bdad6b08-b8d8-4a4c-bb0b-3527039467f8__list_projects",
+      "mcp__bdad6b08-b8d8-4a4c-bb0b-3527039467f8__list_deployments"
     ]
   }
 }
