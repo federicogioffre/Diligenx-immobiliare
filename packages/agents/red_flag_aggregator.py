@@ -126,9 +126,12 @@ class RedFlagAggregationAgent:
         ).delete(synchronize_session=False)
 
         # Clear ALL red flags for the deal (this agent owns them).
+        # `synchronize_session="fetch"` also expunges the deleted rows from the
+        # session identity map; otherwise the inserts below can collide with
+        # stale RedFlag instances when SQLite reuses rowids.
         db.query(RedFlag).filter(
             RedFlag.deal_id == deal_id,
-        ).delete(synchronize_session=False)
+        ).delete(synchronize_session="fetch")
 
         # Clear own observations / information_request AgentFindings.
         db.query(AgentFinding).filter(

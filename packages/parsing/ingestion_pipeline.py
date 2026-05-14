@@ -82,8 +82,14 @@ def process_document(document_id: int, db: Session) -> None:
         # --- Chunk ---
         chunks = chunk_pages(pages)
 
-        # Remove any existing chunks (idempotent re-run)
-        db.query(DocumentChunk).filter(DocumentChunk.document_id == doc.id).delete()
+        # Remove any existing chunks (idempotent re-run). `synchronize_session=
+        # "fetch"` ensures the deleted rows are also expunged from the session's
+        # identity map; otherwise a subsequent INSERT that reuses a primary key
+        # (common on SQLite, which recycles rowids when a table is emptied)
+        # would collide with the stale instance.
+        db.query(DocumentChunk).filter(
+            DocumentChunk.document_id == doc.id
+        ).delete(synchronize_session="fetch")
 
         for c in chunks:
             db.add(DocumentChunk(
