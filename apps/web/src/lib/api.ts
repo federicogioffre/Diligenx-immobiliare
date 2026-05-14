@@ -25,6 +25,22 @@ export interface WorkspaceRead {
   created_at: string
 }
 
+export interface CategoryCount {
+  category: string
+  count: number
+}
+
+export interface WorkspaceInsights {
+  workspace_id: number
+  deals_total: number
+  deals_by_status: Record<'draft' | 'analyzing' | 'reviewed' | 'closed', number>
+  red_flags_total: number
+  red_flags_by_severity: Record<'low' | 'medium' | 'high' | 'critical', number>
+  top_red_flag_categories: CategoryCount[]
+  deals_analyzed: number
+  deals_with_missing_documents: number
+}
+
 export interface DealRead {
   id: number
   workspace_id: number
@@ -260,6 +276,9 @@ export const api = {
       })
       if (handle401IfNeeded(res)) throw new Error('Unauthorized')
       if (!res.ok) throw new Error(await res.text())
+    },
+    insights(id: number): Promise<WorkspaceInsights> {
+      return request(`/workspaces/${id}/insights`)
     },
   },
 

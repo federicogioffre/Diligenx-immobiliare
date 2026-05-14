@@ -37,9 +37,23 @@ export default function NavBar() {
         <div className="flex items-center gap-1 shrink-0">
           <Link
             href="/dashboard"
-            className="text-sm text-slate-600 hover:text-slate-900 font-medium px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-colors"
+            className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${
+              pathname === '/dashboard'
+                ? 'text-slate-900 bg-slate-100'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+            }`}
           >
             Dashboard
+          </Link>
+          <Link
+            href="/dashboard/insights"
+            className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${
+              pathname === '/dashboard/insights'
+                ? 'text-slate-900 bg-slate-100'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+            }`}
+          >
+            Insights
           </Link>
           <button
             onClick={handleLogout}
