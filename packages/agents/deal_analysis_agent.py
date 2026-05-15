@@ -114,7 +114,19 @@ class LLMProvider(ABC):
 
 
 class AnthropicLLMProvider(LLMProvider):
-    """Claude via the Anthropic SDK."""
+    """Claude via the Anthropic SDK.
+
+    Uses Anthropic prompt caching: every prompt is sent as a single
+    ``text`` content block tagged with ``cache_control={"type":"ephemeral"}``.
+
+    The pipeline is idempotent — re-running ``/analyze`` for the same deal
+    sends the same document text through the same prompt templates. With
+    caching, the second pass within Anthropic's 5-minute TTL pays the cheap
+    cache-read price (~10% of input cost) instead of re-tokenising the full
+    prompt prefix. For prompts shorter than the model's minimum cache size
+    (1024 tokens on Sonnet/Opus) the ``cache_control`` marker is silently
+    ignored by the API, so flagging every prompt is safe.
+    """
 
     def __init__(self, api_key: str, model: str = "claude-sonnet-4-6"):
         import anthropic
@@ -126,7 +138,18 @@ class AnthropicLLMProvider(LLMProvider):
             model=self._model,
             max_tokens=max_tokens,
             temperature=0,  # deterministic — minimises hallucination
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                }
+            ],
         )
         return msg.content[0].text
 
