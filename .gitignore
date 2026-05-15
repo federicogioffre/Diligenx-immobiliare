@@ -29,5 +29,11 @@ uploads/
 # Pytest
 .pytest_cache/
 
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/
+blob-report/
+
 # PM2 config (contiene riferimenti a .env — non committare)
 ecosystem.config.js
