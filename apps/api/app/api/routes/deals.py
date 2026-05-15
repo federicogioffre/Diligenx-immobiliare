@@ -150,7 +150,7 @@ def _run_pipeline_background(deal_id: int) -> None:
 
 @router.post("/{deal_id}/analyze", response_model=DealAnalysisResponse, status_code=202)
 @limiter.limit("5/minute")
-def analyze_deal(
+async def analyze_deal(
     request: Request,
     deal_id: int,
     background_tasks: BackgroundTasks,
@@ -183,7 +183,11 @@ def analyze_deal(
     db.commit()
     db.refresh(deal)
 
-    background_tasks.add_task(_run_pipeline_background, deal_id)
+    from app.services.jobs import enqueue_or_run
+    await enqueue_or_run(
+        request, background_tasks,
+        "run_pipeline_for_deal", _run_pipeline_background, deal_id,
+    )
 
     return DealAnalysisResponse(
         deal_id=deal_id,

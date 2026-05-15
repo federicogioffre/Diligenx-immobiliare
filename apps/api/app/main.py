@@ -50,10 +50,47 @@ class NormaliseSlashMiddleware:
         await self._app(scope, receive, send)
 
 
+import logging
+from contextlib import asynccontextmanager
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(app_: FastAPI):
+    """Open and close the Arq Redis pool when REDIS_URL is configured.
+
+    Without REDIS_URL the app behaves exactly as before: routes fall back
+    to FastAPI BackgroundTasks (see app.services.jobs.enqueue_or_run).
+    """
+    app_.state.arq_pool = None
+    if settings.REDIS_URL:
+        try:
+            from arq import create_pool
+            from arq.connections import RedisSettings
+            app_.state.arq_pool = await create_pool(
+                RedisSettings.from_dsn(settings.REDIS_URL)
+            )
+            logger.info("Arq pool ready — jobs will be enqueued for the worker.")
+        except Exception:
+            logger.exception(
+                "Failed to initialise Arq pool; the API will keep running "
+                "but will fall back to in-process BackgroundTasks.",
+            )
+            app_.state.arq_pool = None
+    yield
+    if app_.state.arq_pool is not None:
+        try:
+            await app_.state.arq_pool.close()
+        except Exception:
+            logger.exception("Error while closing Arq pool")
+
+
 _fastapi = FastAPI(
     title="Diligenx",
     description="AI-powered due diligence platform",
     version="0.1.0",
+    lifespan=_lifespan,
 )
 
 # Rate limiting

@@ -9,9 +9,11 @@
 - **LLM:** Anthropic Claude (`claude-sonnet-4-6` by default); `FakeLLMProvider` for tests
 - **Storage:** S3-compatible (Cloudflare R2 in prod); local disk fallback when `S3_BUCKET` empty
 - **Rate limiting:** `slowapi` (in-memory); disabled in tests via autouse fixture
+- **Background jobs:** `BackgroundTasks` by default; **Arq + Redis** opt-in via `REDIS_URL` for durable jobs
 - **Env:** `.env` via `pydantic-settings`
-- **Frontend:** Next.js 15 (App Router, TypeScript) — login + dashboard + deals UI, server-side auth via cookie
-- **Tests:** pytest + FastAPI TestClient (SQLite), **573 passing**
+- **Frontend:** Next.js 15 (App Router, TypeScript) — login + dashboard + insights + deals UI, server-side auth via cookie
+- **Frontend tests:** Playwright smoke suite (3 tests) in `apps/web/tests/e2e/`
+- **Tests:** pytest + FastAPI TestClient (SQLite), **600 passing**
 
 ## Project Root
 ```
@@ -52,12 +54,14 @@ Diligenx/
 │   │   ├── services/
 │   │   │   ├── auth.py                   # get_current_user() — HTTPBearer dependency
 │   │   │   ├── storage.py                # S3/R2 client + save_file/read_file (local fallback)
+│   │   │   ├── jobs.py                   # enqueue_or_run() — Arq pool if REDIS_URL set, else BackgroundTasks
 │   │   │   └── report_export.py          # Markdown → PDF (reportlab) / DOCX (python-docx)
+│   │   ├── worker.py                     # Arq WorkerSettings; consumes jobs enqueued by the API
 │   │   └── api/routes/
 │   │       ├── health.py                 # GET /health
 │   │       ├── auth.py                   # POST /auth/register, /auth/login
-│   │       ├── workspaces.py             # GET|POST|PATCH|DELETE /workspaces
-│   │       ├── deals.py                  # CRUD + /analyze /report /ask /agent-runs /risk-score etc.
+│   │       ├── workspaces.py             # CRUD + /workspaces/{id}/insights aggregate
+│   │       ├── deals.py                  # CRUD + /analyze /report /ask /agent-runs /risk-score /open-questions /missing-documents
 │   │       └── documents.py              # /upload, /upload-batch, list, delete
 │   ├── alembic/versions/                 # 001..007 + language column migration
 │   ├── alembic.ini, requirements.txt, pyproject.toml, Dockerfile, .env.example
@@ -67,10 +71,13 @@ Diligenx/
 │   │   ├── layout.tsx, page.tsx, globals.css
 │   │   ├── login/                        # email/password form → cookie
 │   │   ├── dashboard/                    # workspace switcher, deal list
-│   │   └── deals/[id]/                   # deal detail, upload, analyze, report
+│   │   ├── dashboard/insights/           # 4 aggregate widgets (pipeline, severity, top categories, completeness)
+│   │   └── deals/[id]/                   # deal detail with severity + follow-up widgets, upload, analyze, report
 │   ├── src/components/                   # shared UI (toasts, modals, upload zone)
 │   ├── src/lib/api.ts                    # typed API client
 │   ├── src/middleware.ts                 # server-side auth guard via cookie
+│   ├── tests/e2e/                        # Playwright smoke suite (run with `pnpm test:e2e`)
+│   ├── playwright.config.ts
 │   ├── package.json, next.config.ts, Dockerfile
 │
 ├── packages/
@@ -136,7 +143,10 @@ User 1──* Workspace 1──* Deal 1──* Document 1──* DocumentChunk (
 | GET | `/deals/{deal_id}/clause-findings` | List clauses |
 | GET | `/deals/{deal_id}/red-flags` | List red flags |
 | GET | `/deals/{deal_id}/risk-score` | Computed risk score |
-| POST | `/documents/upload?deal_id=N` | **201** → file saved, ingestion runs in BackgroundTask |
+| GET | `/deals/{deal_id}/open-questions` | Follow-up questions raised by the pipeline (priority-ordered) |
+| GET | `/deals/{deal_id}/missing-documents` | Document categories expected at intake but absent |
+| GET | `/workspaces/{id}/insights` | Aggregate metrics (status mix, severity, top categories, completeness) |
+| POST | `/documents/upload?deal_id=N` | **201** → file saved, ingestion runs in BackgroundTask (or Arq if `REDIS_URL` set) |
 | POST | `/documents/upload-batch?deal_id=N` | Multi-file upload |
 | GET | `/documents/deals/{deal_id}/documents` | List deal's documents |
 | DELETE | `/documents/{document_id}` | Delete document |
@@ -195,6 +205,8 @@ python -m pytest ../../tests -q   # 573 passed
 - `/analyze` and `/upload` return immediately; actual work runs in FastAPI `BackgroundTasks` using a fresh `SessionLocal` (not the request's DB session)
 - Rate limiting via `slowapi` (5/min on `/analyze`, 30/min on `/documents/upload`, etc.) — disabled in tests via autouse fixture in `tests/conftest.py`
 - MIME types allowed: `application/pdf`, `text/plain`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`
+- **Durable jobs**: when `REDIS_URL` is set, `/analyze` and `/upload` enqueue jobs to an Arq pool (managed via FastAPI lifespan); a separate worker process consumes them (`arq app.worker.WorkerSettings`). When unset, jobs run in-process via FastAPI `BackgroundTasks` — same behaviour as before. Enqueue failures fall back transparently.
+- **Anthropic prompt caching**: every LLM prompt is sent with `cache_control={"type":"ephemeral"}` so the idempotent `/analyze` re-runs hit Anthropic's cache (~90% input-cost reduction within the 5-minute TTL).
 
 ## Environment Variables
 | Variable | Default | Description |
@@ -213,3 +225,4 @@ python -m pytest ../../tests -q   # 573 passed
 | `EMBEDDING_DIMENSION` | `1536` | Vector dimension |
 | `ANTHROPIC_API_KEY` | _(empty)_ | For real LLM calls; omit for FakeLLMProvider |
 | `ANALYSIS_MODEL` | `claude-sonnet-4-6` | Claude model for the analysis pipeline |
+| `REDIS_URL` | _(empty)_ | If set, `/analyze` and `/upload` enqueue jobs to Arq instead of FastAPI BackgroundTasks. Run a worker alongside the API: `arq app.worker.WorkerSettings`. Format: `redis://default:<pw>@host:port` or `rediss://...` (TLS, recommended on Upstash). |

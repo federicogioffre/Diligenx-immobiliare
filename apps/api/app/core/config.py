@@ -50,5 +50,13 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     ANALYSIS_MODEL: str = "claude-sonnet-4-6"
 
+    # Durable job queue (Arq + Redis). Leave empty to use FastAPI
+    # BackgroundTasks — the original in-process path. When set, /analyze
+    # and /documents/upload enqueue jobs to Arq so they survive worker
+    # restarts and can be retried independently. Format:
+    #   redis://default:<password>@<host>:<port>
+    #   rediss://...                          (TLS, recommended on Upstash)
+    REDIS_URL: str = ""
+
 
 settings = Settings()

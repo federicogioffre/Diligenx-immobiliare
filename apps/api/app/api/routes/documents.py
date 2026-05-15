@@ -81,7 +81,7 @@ def _run_ingestion(document_id: int) -> None:
 
 @router.post("/upload", response_model=DocumentUploadResponse, status_code=201)
 @limiter.limit("30/minute")
-def upload_document(
+async def upload_document(
     request: Request,
     deal_id: int,
     file: UploadFile,
@@ -121,7 +121,11 @@ def upload_document(
     # pipeline (OCR on scanned PDFs, embedding errors, etc.) is isolated
     # from the HTTP response — the document will simply end in status=failed
     # and the UI will see it via the status polling.
-    background_tasks.add_task(_run_ingestion, doc.id)
+    from app.services.jobs import enqueue_or_run
+    await enqueue_or_run(
+        request, background_tasks,
+        "run_ingestion_for_document", _run_ingestion, doc.id,
+    )
     return doc
 
 
