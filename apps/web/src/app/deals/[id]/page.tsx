@@ -10,6 +10,7 @@ import {
   AnalysisStreamEvent,
   DealRead,
   DocumentRead,
+  RedFlagRead,
   RiskScoreResponse,
   openAnalysisStream,
 } from '@/lib/api'
@@ -160,6 +161,60 @@ const SEV_BAR: Record<string, string> = {
   low: 'bg-slate-300', medium: 'bg-amber-400', high: 'bg-orange-500', critical: 'bg-red-500',
 }
 
+const SEV_PILL: Record<RedFlagRead['severity'], string> = {
+  critical: 'bg-red-50 text-red-700',
+  high:     'bg-orange-50 text-orange-700',
+  medium:   'bg-amber-50 text-amber-700',
+  low:      'bg-slate-100 text-slate-600',
+}
+
+const SEV_LABEL: Record<RedFlagRead['severity'], string> = {
+  critical: 'Critico', high: 'Alto', medium: 'Medio', low: 'Basso',
+}
+
+const SEV_ORDER: RedFlagRead['severity'][] = ['critical', 'high', 'medium', 'low']
+
+// Compact severity breakdown of the deal's red flags. Mirrors the workspace
+// insights widget visually but is fed from the already-loaded flag list, so
+// no extra request is needed.
+function RedFlagSeverityWidget({ flags }: { flags: RedFlagRead[] }) {
+  const counts: Record<RedFlagRead['severity'], number> = { critical: 0, high: 0, medium: 0, low: 0 }
+  for (const f of flags) counts[f.severity] += 1
+  const total = flags.length
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+      <div className="flex items-baseline justify-between mb-4">
+        <h3 className="text-sm font-semibold text-slate-800">Red flag per gravità</h3>
+        <span className="text-xs text-slate-400 tabular-nums">{total} totali</span>
+      </div>
+      <div className="space-y-2.5">
+        {SEV_ORDER.map((sev) => {
+          const count = counts[sev]
+          const pct = total === 0 ? 0 : Math.round((count / total) * 100)
+          return (
+            <div key={sev}>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-medium text-slate-700">{SEV_LABEL[sev]}</span>
+                <span className={`text-xs font-semibold px-2 py-0.5 rounded-md tabular-nums ${SEV_PILL[sev]}`}>
+                  {count}
+                </span>
+              </div>
+              <div className="w-full h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                <div
+                  className={`h-full ${SEV_BAR[sev]} transition-all`}
+                  style={{ width: `${Math.max(pct, count > 0 ? 4 : 0)}%` }}
+                  aria-label={`${SEV_LABEL[sev]}: ${count} (${pct}%)`}
+                />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function RiskScoreWidget({ rs }: { rs: RiskScoreResponse }) {
   const lvl = RISK_LEVELS[rs.risk_level] ?? RISK_LEVELS.medium
   const totalDeductions = rs.deductions.red_flags.impact + rs.deductions.observations.impact +
@@ -241,6 +296,7 @@ export default function DealPage() {
   const [agentRuns, setAgentRuns] = useState<AgentRunRead[]>([])
   const [summary, setSummary]     = useState<AnalysisSummary | null>(null)
   const [riskScore, setRiskScore] = useState<RiskScoreResponse | null>(null)
+  const [redFlags, setRedFlags]   = useState<RedFlagRead[]>([])
   const [streamStages, setStreamStages] = useState<AnalysisStageEvent[]>([])
 
   const [analyzing, setAnalyzing]   = useState(false)
@@ -274,6 +330,7 @@ export default function DealPage() {
       if (d.status === 'analyzing') { setAnalyzing(true); startAnalysisStream() }
       if (d.status === 'reviewed' || d.status === 'closed') {
         try { setRiskScore(await api.deals.getRiskScore(dealId)) } catch { /* ok */ }
+        try { setRedFlags(await api.deals.redFlags(dealId)) } catch { /* ok */ }
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Errore nel caricamento')
@@ -304,7 +361,7 @@ export default function DealPage() {
         api.deals.redFlags(dealId),
         api.deals.getRiskScore(dealId).catch(() => null),
       ])
-      setDeal(d); setAgentRuns(runs)
+      setDeal(d); setAgentRuns(runs); setRedFlags(flags)
       if (score) setRiskScore(score)
       setSummary({ clauseCount: clauses.length, redFlagCount: flags.length, documentCount: docs.filter((d) => d.status === 'processed').length })
     } catch { /* best-effort */ }
@@ -559,6 +616,8 @@ export default function DealPage() {
             ))}
           </div>
         )}
+
+        {summary && redFlags.length > 0 && <RedFlagSeverityWidget flags={redFlags} />}
 
         {/* Quick links after analysis */}
         {(deal.status === 'reviewed' || deal.status === 'closed') && (
