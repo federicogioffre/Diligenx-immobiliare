@@ -15,6 +15,8 @@ from app.models.user import User
 from app.models.workspace import Workspace
 from app.schemas.agent_run import AgentRunRead
 from app.schemas.clause_finding import ClauseFindingRead
+from app.schemas.missing_document import MissingDocumentRead
+from app.schemas.open_question import OpenQuestionRead
 from app.schemas.red_flag import RedFlagRead
 from app.schemas.deal import (
     DealCreate,
@@ -358,6 +360,87 @@ def list_red_flags(
         db.query(RedFlag)
         .filter(RedFlag.deal_id == deal_id)
         .order_by(RedFlag.id.asc())
+        .all()
+    )
+
+
+@router.get("/{deal_id}/open-questions", response_model=list[OpenQuestionRead])
+def list_open_questions(
+    deal_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List unresolved follow-up questions raised by the analysis pipeline.
+
+    Ordered by priority (high → low) and then by id, so the most actionable
+    items appear at the top of the list in the UI.
+    """
+    from app.models.open_question import OpenQuestion, Priority
+
+    deal = (
+        db.query(Deal)
+        .join(Deal.workspace)
+        .filter(Deal.id == deal_id, Workspace.owner_id == current_user.id)
+        .first()
+    )
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    # SQLAlchemy can't sort a Python enum directly across SQLite/Postgres in a
+    # portable way, so we build the priority ranking with a CASE expression.
+    from sqlalchemy import case
+
+    priority_rank = case(
+        (OpenQuestion.priority == Priority.high, 0),
+        (OpenQuestion.priority == Priority.medium, 1),
+        (OpenQuestion.priority == Priority.low, 2),
+        else_=3,
+    )
+
+    return (
+        db.query(OpenQuestion)
+        .filter(OpenQuestion.deal_id == deal_id)
+        .order_by(priority_rank.asc(), OpenQuestion.id.asc())
+        .all()
+    )
+
+
+@router.get("/{deal_id}/missing-documents", response_model=list[MissingDocumentRead])
+def list_missing_documents(
+    deal_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List documents the intake agent expected to find but didn't.
+
+    Same priority ordering as open-questions so the two lists feel consistent
+    when rendered side by side.
+    """
+    from app.models.missing_document import MissingDocument
+    from app.models.open_question import Priority
+
+    deal = (
+        db.query(Deal)
+        .join(Deal.workspace)
+        .filter(Deal.id == deal_id, Workspace.owner_id == current_user.id)
+        .first()
+    )
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    from sqlalchemy import case
+
+    priority_rank = case(
+        (MissingDocument.priority == Priority.high, 0),
+        (MissingDocument.priority == Priority.medium, 1),
+        (MissingDocument.priority == Priority.low, 2),
+        else_=3,
+    )
+
+    return (
+        db.query(MissingDocument)
+        .filter(MissingDocument.deal_id == deal_id)
+        .order_by(priority_rank.asc(), MissingDocument.id.asc())
         .all()
     )
 

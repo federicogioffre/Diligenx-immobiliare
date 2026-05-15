@@ -10,6 +10,9 @@ import {
   AnalysisStreamEvent,
   DealRead,
   DocumentRead,
+  MissingDocumentRead,
+  OpenQuestionRead,
+  Priority,
   RedFlagRead,
   RiskScoreResponse,
   openAnalysisStream,
@@ -215,6 +218,139 @@ function RedFlagSeverityWidget({ flags }: { flags: RedFlagRead[] }) {
   )
 }
 
+// ── Follow-up card: open questions + missing documents ───────────────────
+
+const PRIORITY_PILL: Record<Priority, string> = {
+  high:   'bg-red-50 text-red-700',
+  medium: 'bg-amber-50 text-amber-700',
+  low:    'bg-slate-100 text-slate-600',
+}
+
+const PRIORITY_LABEL: Record<Priority, string> = {
+  high: 'Alta', medium: 'Media', low: 'Bassa',
+}
+
+const PRIORITY_BORDER: Record<Priority, string> = {
+  high:   'border-l-red-500',
+  medium: 'border-l-amber-400',
+  low:    'border-l-slate-300',
+}
+
+// Truncate so the card stays compact; the report endpoint has the full text.
+const FOLLOWUP_PREVIEW_LIMIT = 5
+
+function FollowUpCard({
+  questions,
+  missing,
+}: {
+  questions: OpenQuestionRead[]
+  missing: MissingDocumentRead[]
+}) {
+  const totalQ = questions.length
+  const totalM = missing.length
+  const visibleQ = questions.slice(0, FOLLOWUP_PREVIEW_LIMIT)
+  const visibleM = missing.slice(0, FOLLOWUP_PREVIEW_LIMIT)
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-5">
+      <div className="flex items-baseline justify-between">
+        <h3 className="text-sm font-semibold text-slate-800">Da seguire</h3>
+        <span className="text-xs text-slate-400 tabular-nums">
+          {totalQ + totalM} elemento{totalQ + totalM === 1 ? '' : 'i'}
+        </span>
+      </div>
+
+      {totalQ > 0 && (
+        <FollowUpSection
+          title="Domande aperte"
+          subtitle={`${totalQ} sollevate dalla pipeline`}
+          items={visibleQ}
+          renderItem={(q) => (
+            <FollowUpRow
+              key={q.id}
+              priority={q.priority}
+              title={q.question}
+            />
+          )}
+          extra={totalQ - visibleQ.length}
+        />
+      )}
+
+      {totalM > 0 && (
+        <FollowUpSection
+          title="Documenti mancanti"
+          subtitle={`${totalM} categori${totalM === 1 ? 'a non fornita' : 'e non fornite'}`}
+          items={visibleM}
+          renderItem={(m) => (
+            <FollowUpRow
+              key={m.id}
+              priority={m.priority}
+              title={m.expected_item}
+              subtitle={m.reason}
+            />
+          )}
+          extra={totalM - visibleM.length}
+        />
+      )}
+    </div>
+  )
+}
+
+function FollowUpSection<T>({
+  title,
+  subtitle,
+  items,
+  renderItem,
+  extra,
+}: {
+  title: string
+  subtitle: string
+  items: T[]
+  renderItem: (item: T) => React.ReactNode
+  extra: number
+}) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-2.5">
+        <span className="text-xs font-semibold text-slate-700 uppercase tracking-wide">
+          {title}
+        </span>
+        <span className="text-xs text-slate-400">{subtitle}</span>
+      </div>
+      <div className="space-y-2">
+        {items.map(renderItem)}
+        {extra > 0 && (
+          <p className="text-xs text-slate-400 pl-3">
+            …e altr{extra === 1 ? 'o 1' : `i ${extra}`} non mostrat{extra === 1 ? 'o' : 'i'}.
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function FollowUpRow({
+  priority,
+  title,
+  subtitle,
+}: {
+  priority: Priority
+  title: string
+  subtitle?: string
+}) {
+  return (
+    <div className={`border-l-2 ${PRIORITY_BORDER[priority]} pl-3 py-1`}>
+      <div className="flex items-start justify-between gap-2 mb-0.5">
+        <p className="text-sm text-slate-800 leading-snug">{title}</p>
+        <span className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase tracking-wide ${PRIORITY_PILL[priority]}`}>
+          {PRIORITY_LABEL[priority]}
+        </span>
+      </div>
+      {subtitle && <p className="text-xs text-slate-500 leading-snug">{subtitle}</p>}
+    </div>
+  )
+}
+
 function RiskScoreWidget({ rs }: { rs: RiskScoreResponse }) {
   const lvl = RISK_LEVELS[rs.risk_level] ?? RISK_LEVELS.medium
   const totalDeductions = rs.deductions.red_flags.impact + rs.deductions.observations.impact +
@@ -297,6 +433,8 @@ export default function DealPage() {
   const [summary, setSummary]     = useState<AnalysisSummary | null>(null)
   const [riskScore, setRiskScore] = useState<RiskScoreResponse | null>(null)
   const [redFlags, setRedFlags]   = useState<RedFlagRead[]>([])
+  const [openQuestions, setOpenQuestions]       = useState<OpenQuestionRead[]>([])
+  const [missingDocs, setMissingDocs]           = useState<MissingDocumentRead[]>([])
   const [streamStages, setStreamStages] = useState<AnalysisStageEvent[]>([])
 
   const [analyzing, setAnalyzing]   = useState(false)
@@ -331,6 +469,8 @@ export default function DealPage() {
       if (d.status === 'reviewed' || d.status === 'closed') {
         try { setRiskScore(await api.deals.getRiskScore(dealId)) } catch { /* ok */ }
         try { setRedFlags(await api.deals.redFlags(dealId)) } catch { /* ok */ }
+        try { setOpenQuestions(await api.deals.openQuestions(dealId)) } catch { /* ok */ }
+        try { setMissingDocs(await api.deals.missingDocuments(dealId)) } catch { /* ok */ }
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Errore nel caricamento')
@@ -354,14 +494,17 @@ export default function DealPage() {
     if (analysisPollRef.current) { clearInterval(analysisPollRef.current); analysisPollRef.current = null }
     setAnalyzing(false)
     try {
-      const [d, runs, clauses, flags, score] = await Promise.all([
+      const [d, runs, clauses, flags, score, questions, missing] = await Promise.all([
         api.deals.get(dealId),
         api.deals.agentRuns(dealId),
         api.deals.clauseFindings(dealId),
         api.deals.redFlags(dealId),
         api.deals.getRiskScore(dealId).catch(() => null),
+        api.deals.openQuestions(dealId).catch(() => [] as OpenQuestionRead[]),
+        api.deals.missingDocuments(dealId).catch(() => [] as MissingDocumentRead[]),
       ])
       setDeal(d); setAgentRuns(runs); setRedFlags(flags)
+      setOpenQuestions(questions); setMissingDocs(missing)
       if (score) setRiskScore(score)
       setSummary({ clauseCount: clauses.length, redFlagCount: flags.length, documentCount: docs.filter((d) => d.status === 'processed').length })
     } catch { /* best-effort */ }
@@ -618,6 +761,10 @@ export default function DealPage() {
         )}
 
         {summary && redFlags.length > 0 && <RedFlagSeverityWidget flags={redFlags} />}
+
+        {summary && (openQuestions.length > 0 || missingDocs.length > 0) && (
+          <FollowUpCard questions={openQuestions} missing={missingDocs} />
+        )}
 
         {/* Quick links after analysis */}
         {(deal.status === 'reviewed' || deal.status === 'closed') && (

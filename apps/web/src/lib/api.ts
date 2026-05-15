@@ -103,6 +103,29 @@ export interface RedFlagRead {
   created_at: string
 }
 
+export type Priority = 'low' | 'medium' | 'high'
+
+export interface OpenQuestionRead {
+  id: number
+  deal_id: number
+  document_id: number | null
+  agent_name: string
+  question: string
+  priority: Priority
+  status: 'open' | 'resolved'
+  created_at: string
+}
+
+export interface MissingDocumentRead {
+  id: number
+  deal_id: number
+  document_category: string
+  expected_item: string
+  reason: string
+  priority: Priority
+  created_at: string
+}
+
 export interface DocumentRead {
   id: number
   deal_id: number
@@ -309,6 +332,12 @@ export const api = {
     },
     redFlags(id: number): Promise<RedFlagRead[]> {
       return request(`/deals/${id}/red-flags`)
+    },
+    openQuestions(id: number): Promise<OpenQuestionRead[]> {
+      return request(`/deals/${id}/open-questions`)
+    },
+    missingDocuments(id: number): Promise<MissingDocumentRead[]> {
+      return request(`/deals/${id}/missing-documents`)
     },
     getReport(id: number): Promise<ReportResponse> {
       return request(`/deals/${id}/report`)
