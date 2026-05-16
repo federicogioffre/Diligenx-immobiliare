@@ -248,7 +248,10 @@
       "Bash(del \"C:\\\\Dealmind\\\\vercel.json\")",
       "mcp__bdad6b08-b8d8-4a4c-bb0b-3527039467f8__list_teams",
       "mcp__bdad6b08-b8d8-4a4c-bb0b-3527039467f8__list_projects",
-      "mcp__bdad6b08-b8d8-4a4c-bb0b-3527039467f8__list_deployments"
+      "mcp__bdad6b08-b8d8-4a4c-bb0b-3527039467f8__list_deployments",
+      "mcp__bdad6b08-b8d8-4a4c-bb0b-3527039467f8__get_runtime_logs",
+      "mcp__bdad6b08-b8d8-4a4c-bb0b-3527039467f8__get_project",
+      "mcp__bdad6b08-b8d8-4a4c-bb0b-3527039467f8__web_fetch_vercel_url"
     ]
   }
 }
