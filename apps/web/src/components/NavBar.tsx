@@ -9,7 +9,9 @@ export default function NavBar() {
   const pathname = usePathname()
   const router = useRouter()
 
-  if (pathname === '/login') return null
+  // The landing (/) and login pages render their own marketing-style
+  // header — the in-app NavBar is hidden there.
+  if (pathname === '/' || pathname === '/login') return null
 
   function handleLogout() {
     clearAuth()

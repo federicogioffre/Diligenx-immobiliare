@@ -8,7 +8,7 @@ import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { isTokenExpired } from '@/lib/auth'
 
-const PUBLIC_PATHS = ['/login']
+const PUBLIC_PATHS = ['/', '/login']
 const IGNORED_PREFIXES = ['/_next', '/api', '/favicon']
 
 function isPublic(path: string): boolean {
