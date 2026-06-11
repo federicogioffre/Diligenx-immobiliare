@@ -27,7 +27,10 @@ import sqlalchemy as sa
 
 
 revision: str = "009"
-down_revision: Union[str, None] = "008"
+# NB: chains off 007 (not 008). Revision "008" lives on an unmerged
+# branch (postgres-rls); when that branch is merged it will need to be
+# rebased to come after 011.
+down_revision: Union[str, None] = "007"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
