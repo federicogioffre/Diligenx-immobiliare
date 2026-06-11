@@ -432,11 +432,13 @@ class ContractAgent:
         from app.models.red_flag import Severity
         from packages.prompts.deal_prompts import CCNL_COMPLIANCE_PROMPT
 
+        # "critical" from raw LLM output is normalized to high — the
+        # Severity enum uses the 3-level scale of practitioner DD reports.
         _SEVERITY_MAP = {
             "low": Severity.low,
             "medium": Severity.medium,
             "high": Severity.high,
-            "critical": Severity.critical,
+            "critical": Severity.high,
         }
 
         prompt = CCNL_COMPLIANCE_PROMPT.format(

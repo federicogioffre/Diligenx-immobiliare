@@ -35,7 +35,7 @@ export interface WorkspaceInsights {
   deals_total: number
   deals_by_status: Record<'draft' | 'analyzing' | 'reviewed' | 'closed', number>
   red_flags_total: number
-  red_flags_by_severity: Record<'low' | 'medium' | 'high' | 'critical', number>
+  red_flags_by_severity: Record<'low' | 'medium' | 'high', number>
   top_red_flag_categories: CategoryCount[]
   deals_analyzed: number
   deals_with_missing_documents: number
@@ -48,6 +48,7 @@ export interface DealRead {
   description: string | null
   value: number | null
   status: 'draft' | 'analyzing' | 'reviewed' | 'closed'
+  report_language: 'it' | 'en' | null
   created_at: string
   updated_at: string | null
 }
@@ -91,12 +92,28 @@ export interface ClauseFindingRead {
   created_at: string
 }
 
+export type DueDiligenceArea =
+  | 'corporate'
+  | 'indebtedness'
+  | 'real_estate'
+  | 'employees'
+  | 'suppliers_customers'
+  | 'insurance'
+  | 'litigation'
+  | 'ip_it'
+  | 'data_protection'
+  | 'other'
+
 export interface RedFlagRead {
   id: number
   deal_id: number
   title: string
-  description: string
-  severity: 'low' | 'medium' | 'high' | 'critical'
+  // Issue / Risk / Recommendation triple — mirrors professional DD reports.
+  issue: string
+  risk: string | null
+  recommendation: string | null
+  severity: 'low' | 'medium' | 'high'
+  area: DueDiligenceArea | null
   category: string
   confidence: number | null
   source_document_id: number | null
@@ -123,6 +140,27 @@ export interface MissingDocumentRead {
   expected_item: string
   reason: string
   priority: Priority
+  created_at: string
+}
+
+export interface CompanyProfileRead {
+  id: number
+  deal_id: number
+  company_name: string
+  legal_form: string | null
+  incorporation_date: string | null
+  registered_office: string | null
+  corporate_capital: string | null
+  shareholders: string | null
+  pledge: string | null
+  managing_body: string | null
+  auditors: string | null
+  auditing_company: string | null
+  business: string | null
+  fiscal_year: string | null
+  duration: string | null
+  confidence: number | null
+  source_document_id: number | null
   created_at: string
 }
 
@@ -167,7 +205,7 @@ export interface CategoryImpact {
   category: string
   count: number
   impact: number
-  max_severity: 'low' | 'medium' | 'high' | 'critical'
+  max_severity: 'low' | 'medium' | 'high'
 }
 
 export interface RiskScoreResponse {
@@ -339,6 +377,9 @@ export const api = {
     missingDocuments(id: number): Promise<MissingDocumentRead[]> {
       return request(`/deals/${id}/missing-documents`)
     },
+    companyProfiles(id: number): Promise<CompanyProfileRead[]> {
+      return request(`/deals/${id}/company-profiles`)
+    },
     getReport(id: number): Promise<ReportResponse> {
       return request(`/deals/${id}/report`)
     },
@@ -365,7 +406,12 @@ export const api = {
     },
     update(
       id: number,
-      data: { title?: string; description?: string; value?: number | null }
+      data: {
+        title?: string
+        description?: string
+        value?: number | null
+        report_language?: 'it' | 'en' | 'auto'
+      }
     ): Promise<DealRead> {
       return request(`/deals/${id}`, {
         method: 'PATCH',

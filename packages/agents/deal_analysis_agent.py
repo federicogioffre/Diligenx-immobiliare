@@ -28,7 +28,32 @@ _VALID_CLAUSE_TYPES = {
     "governing_law", "change_of_control", "other",
 }
 
+# "critical" is still accepted from LLM output for robustness, but it is
+# normalized to "high" before persistence: the Severity enum (and the
+# practitioner reports it mirrors) uses a 3-level scale.
 _VALID_SEVERITIES = {"low", "medium", "high", "critical"}
+
+_VALID_DD_AREAS = {
+    "corporate", "indebtedness", "real_estate", "employees",
+    "suppliers_customers", "insurance", "litigation", "ip_it",
+    "data_protection", "other",
+}
+
+
+def _normalize_severity(value: str) -> str:
+    """Map raw LLM severity to the 3-level Severity enum."""
+    if value not in _VALID_SEVERITIES:
+        return "medium"
+    return "high" if value == "critical" else value
+
+
+def _parse_dd_area(value: object):
+    """Return a DueDiligenceArea for a raw LLM area string, or None."""
+    from app.models.red_flag import DueDiligenceArea
+
+    if isinstance(value, str) and value in _VALID_DD_AREAS:
+        return DueDiligenceArea(value)
+    return None
 
 # ── Grounding check ────────────────────────────────────────────────────────
 
@@ -172,6 +197,16 @@ class FakeLLMProvider(LLMProvider):
         # descriptions may mention risk/flag language).
         if "DUE DILIGENCE REPORT" in p:
             return self._fake_report()
+        # EXECUTIVE SUMMARY must come before RED FLAGS — the summary prompt
+        # embeds the red-flag findings under a "--- RED FLAGS ---" header.
+        if "EXECUTIVE SUMMARY" in p:
+            return (
+                "The review covered the documents made available for the deal. "
+                "Analysis identified one high-severity red flag concerning a "
+                "unilateral termination right, which requires specific Sellers' "
+                "representations and warranties in the SPA. The remaining "
+                "findings are observations with no impact on completion."
+            )
         if "ANSWER THE QUESTION" in p:
             return json.dumps({
                 "answer": (
@@ -203,6 +238,26 @@ class FakeLLMProvider(LLMProvider):
                     "page_number": 2,
                     "confidence": 0.80,
                 },
+            ])
+        if "CORPORATE INTRODUCTORY INFORMATION" in p:
+            return json.dumps([
+                {
+                    "company_name": "TargetCo S.p.A.",
+                    "legal_form": "Joint-stock company (società per azioni)",
+                    "incorporation_date": "Established on 1 January 2010; registered with the Companies' Registry of [REDACTED].",
+                    "registered_office": "Italy, [ADDRESS REDACTED]",
+                    "corporate_capital": "Euro 1.000.000,00 fully paid",
+                    "shareholders": "Holding S.r.l. — 100% of the corporate capital",
+                    "pledge": None,
+                    "managing_body": "Board of Directors composed of Mr A. (Chairman) and Mr B. (Managing Director), appointed in 2024.",
+                    "auditors": "Board of Statutory Auditors: Mr C. (President), Mr D. and Ms E. (Statutory Auditors).",
+                    "auditing_company": "Big-4 Auditor S.p.A., mandate until 2026.",
+                    "business": "Production and marketing of widgets, as per the corporate purpose in art. 3 of the by-laws.",
+                    "fiscal_year": "31 December of each year",
+                    "duration": "Until 31 December 2050",
+                    "confidence": 0.85,
+                    "source_document_id": None,
+                }
             ])
         if "CCNL COMPLIANCE" in p:
             # Deterministic stub: return one compliance finding so tests can
@@ -264,8 +319,11 @@ class FakeLLMProvider(LLMProvider):
                 {
                     "finding_type": "red_flag",
                     "title": "Unilateral Termination Right",
-                    "description": "Only one party has the right to terminate without cause, creating imbalance.",
+                    "issue": "Only one party has the right to terminate without cause, creating imbalance.",
+                    "risk": "The counterparty may exit the agreement at any time, leaving the target without recourse.",
+                    "recommendation": "Insert specific Sellers' representations and warranties in the SPA.",
                     "severity": "high",
+                    "area": "suppliers_customers",
                     "category": "termination",
                     "confidence": 0.88,
                     "source_document_id": None,
@@ -712,14 +770,16 @@ class DealAnalysisAgent:
 
         red_flags = []
         for item in items if isinstance(items, list) else []:
-            severity_str = item.get("severity", "medium")
-            if severity_str not in _VALID_SEVERITIES:
-                severity_str = "medium"
+            severity_str = _normalize_severity(item.get("severity", "medium"))
             flag = RedFlag(
                 deal_id=deal_id,
                 title=str(item.get("title", ""))[:500],
-                description=item.get("description", ""),
+                # "description" is the legacy LLM output key for the issue.
+                issue=item.get("issue") or item.get("description", ""),
+                risk=item.get("risk"),
+                recommendation=item.get("recommendation"),
                 severity=Severity(severity_str),
+                area=_parse_dd_area(item.get("area")),
                 category=str(item.get("category", "general"))[:100],
                 confidence=item.get("confidence"),
                 source_document_id=item.get("source_document_id"),

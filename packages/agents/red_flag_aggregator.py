@@ -26,7 +26,7 @@ Document grouping
     ``RedFlag`` rows.
 
 Open questions
-    Every ``high`` or ``critical`` red flag automatically generates an
+    Every ``high`` red flag automatically generates an
     ``OpenQuestion`` prompting the deal team to supply a mitigation plan.
 
 Orchestrator compatibility
@@ -44,7 +44,8 @@ from sqlalchemy.orm import Session
 from packages.agents.deal_analysis_agent import (
     LLMProvider,
     _safe_json,
-    _VALID_SEVERITIES,
+    _normalize_severity,
+    _parse_dd_area,
     get_llm_provider,
 )
 
@@ -55,6 +56,8 @@ logger = logging.getLogger(__name__)
 AGENT_NAME = "red_flag_aggregation"
 
 # ── Severity ordering (used for dedup winner selection) ───────────────────────
+# "critical" is kept in the ranking because raw LLM output may still use it
+# (it is normalized to "high" at persistence time).
 
 _SEVERITY_ORDER: dict[str, int] = {
     "low": 0,
@@ -95,7 +98,7 @@ class RedFlagAggregationAgent:
                 "red_flags_count": int,
                 "open_questions_count": int,
                 "flags_by_severity": {
-                    "low": int, "medium": int, "high": int, "critical": int
+                    "low": int, "medium": int, "high": int
                 },
                 "flags_by_category": {"<category>": int, ...},
                 "dedup_removed": int,   # near-duplicates discarded
@@ -174,7 +177,14 @@ class RedFlagAggregationAgent:
             context_text = self._build_context_text(
                 clause_findings, agent_findings, doc_map
             )
-            raw_flags = self._call_llm_for_flags(context_text, deal_id)
+            from packages.agents.output_language import (
+                language_instruction,
+                resolve_output_language,
+            )
+            output_lang = resolve_output_language(deal, db)
+            raw_flags = self._call_llm_for_flags(
+                context_text, deal_id, language_instruction(output_lang)
+            )
 
             logger.info(
                 "[%s] deal=%d — LLM returned %d raw flag(s)",
@@ -360,13 +370,16 @@ class RedFlagAggregationAgent:
 
     # ── LLM call ────────────────────────────────────────────────────────
 
-    def _call_llm_for_flags(self, context_text: str, deal_id: int) -> list[dict]:
+    def _call_llm_for_flags(
+        self, context_text: str, deal_id: int, lang_instruction: str = ""
+    ) -> list[dict]:
         from packages.prompts.deal_prompts import RED_FLAG_AGGREGATION_PROMPT
         from packages.agents.legal_rules import build_legal_rules_context
 
         prompt = RED_FLAG_AGGREGATION_PROMPT.format(
             findings_by_document=context_text,
             legal_rules_context=build_legal_rules_context(),
+            language_instruction=lang_instruction,
         )
         raw = self._llm.complete(prompt, max_tokens=4096)
 
@@ -447,9 +460,7 @@ class RedFlagAggregationAgent:
             if finding_type not in _VALID_FINDING_TYPES:
                 finding_type = "red_flag"
 
-            severity_str = item.get("severity", "medium")
-            if severity_str not in _VALID_SEVERITIES:
-                severity_str = "medium"
+            severity_str = _normalize_severity(item.get("severity", "medium"))
 
             if finding_type in ("observation", "information_request"):
                 # Store as an AgentFinding so the report can present it
@@ -460,7 +471,7 @@ class RedFlagAggregationAgent:
                     agent_name=self.AGENT_NAME,
                     category=finding_type,
                     title=str(item.get("title", ""))[:500],
-                    description=item.get("description", ""),
+                    description=item.get("issue") or item.get("description", ""),
                     severity=Severity(severity_str),
                     confidence=item.get("confidence"),
                 )
@@ -469,8 +480,12 @@ class RedFlagAggregationAgent:
                 flag = RedFlag(
                     deal_id=deal_id,
                     title=str(item.get("title", ""))[:500],
-                    description=item.get("description", ""),
+                    # "description" is the legacy LLM output key for the issue.
+                    issue=item.get("issue") or item.get("description", ""),
+                    risk=item.get("risk"),
+                    recommendation=item.get("recommendation"),
                     severity=Severity(severity_str),
+                    area=_parse_dd_area(item.get("area")),
                     category=str(item.get("category", "general"))[:100],
                     confidence=item.get("confidence"),
                     source_document_id=item.get("source_document_id"),
@@ -483,19 +498,15 @@ class RedFlagAggregationAgent:
 
         open_questions: list[OpenQuestion] = []
         for flag in red_flags:
-            if flag.severity in (Severity.high, Severity.critical):
+            if flag.severity == Severity.high:
                 q = OpenQuestion(
                     deal_id=deal_id,
                     agent_name=self.AGENT_NAME,
                     question=(
                         f"Red flag '{flag.title}' (severity={flag.severity.value}): "
-                        f"{flag.description} — What is the mitigation plan?"
+                        f"{flag.issue} — What is the mitigation plan?"
                     ),
-                    priority=(
-                        Priority.high
-                        if flag.severity == Severity.critical
-                        else Priority.medium
-                    ),
+                    priority=Priority.high,
                 )
                 db.add(q)
                 open_questions.append(q)

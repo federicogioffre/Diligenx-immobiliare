@@ -1,20 +1,299 @@
 """Due-diligence report generation for deals.
 
-Reads ClauseFinding, RedFlag, and Document records that already exist in the
-database (produced by ``DealAnalysisAgent``) and asks the LLM to compose a
-structured Markdown report.
+Renders a red-flag due diligence report with the section structure used by
+professional Italian M&A legal advisors:
+
+    1. Introduction (purpose / object / limitations — deterministic boilerplate)
+    2. Corporate Introductory Information (placeholder until extraction ships)
+    3. Executive Summary (LLM-generated, grounded on the findings)
+    4. Key Findings — one table per DD area, each row carrying the
+       Issue | Risk | Recommendation | Severity quadruple
+    5. Observations / Information Requests (from the aggregator's AgentFindings)
+    6. Appendix I: Documents Reviewed
+
+Everything except the Executive Summary is rendered deterministically from
+database rows — structure and data sections cannot hallucinate. Only the
+summary prose goes through the LLM.
 
 The report is stored in the ``Report`` table with
 ``report_type = due_diligence``.  Calling the function again for the same deal
 replaces the previous due-diligence report (idempotent).
 """
 import logging
+from datetime import date
 
 from sqlalchemy.orm import Session
 
 from packages.agents.deal_analysis_agent import LLMProvider, get_llm_provider
 
 logger = logging.getLogger(__name__)
+
+
+# ── Localized template strings ──────────────────────────────────────────────
+# Faithful to the bilingual practice observed in professional reports: the
+# title, "Executive Summary" and "Key Findings" headings stay in English even
+# in Italian reports; introduction, appendix and table headers are localized.
+
+_AREA_ORDER_KEYS = [
+    "corporate", "indebtedness", "real_estate", "employees",
+    "suppliers_customers", "insurance", "litigation", "ip_it",
+    "data_protection", "other",
+]
+
+_AREA_TITLES: dict[str, dict[str, str]] = {
+    "en": {
+        "corporate": "Corporate Matters",
+        "indebtedness": "Indebtedness",
+        "real_estate": "Real Estate",
+        "employees": "Employees",
+        "suppliers_customers": "Suppliers / Customers",
+        "insurance": "Insurance",
+        "litigation": "Litigation",
+        "ip_it": "IP / IT",
+        "data_protection": "Data Protection",
+        "other": "Other Matters",
+    },
+    "it": {
+        "corporate": "Aspetti Societari",
+        "indebtedness": "Indebitamento",
+        "real_estate": "Immobili",
+        "employees": "Dipendenti",
+        "suppliers_customers": "Fornitori / Clienti",
+        "insurance": "Assicurazioni",
+        "litigation": "Contenzioso",
+        "ip_it": "IP / IT",
+        "data_protection": "Protezione dei Dati",
+        "other": "Altri Aspetti",
+    },
+}
+
+_L10N: dict[str, dict[str, str]] = {
+    "en": {
+        "confidential": "STRICTLY PRIVATE AND CONFIDENTIAL",
+        "intro_heading": "## Introduction",
+        "corp_info_heading": "## Corporate Introductory Information",
+        "observations_heading": "## Observations",
+        "info_requests_heading": "## Information Requests",
+        "appendix_heading": "## Appendix I: Documents Reviewed",
+        "none_identified": "_None identified based on available documents._",
+        "no_documents": "_No processed documents._",
+        "corp_info_placeholder": (
+            "_To be completed by the deal team (registered office, corporate "
+            "capital, shareholders, managing body, auditors)._"
+        ),
+        "findings_header": "| # | Issue | Risk | Recommendation | Severity |",
+        "doc_table_header": "| Document | Language | Pages |",
+        "doc_table_sep": "|----------|----------|-------|",
+        "field": "Field",
+        "value": "Value",
+    },
+    "it": {
+        "confidential": "STRETTAMENTE CONFIDENZIALE",
+        "intro_heading": "## Introduzione",
+        "corp_info_heading": "## Informazioni Societarie",
+        "observations_heading": "## Osservazioni",
+        "info_requests_heading": "## Richieste di Informazioni",
+        "appendix_heading": "## Allegato I: Lista dei Documenti Esaminati",
+        "none_identified": "_Nessun rilievo sulla base dei documenti disponibili._",
+        "no_documents": "_Nessun documento processato._",
+        "corp_info_placeholder": (
+            "_Da completare a cura del deal team (sede legale, capitale "
+            "sociale, soci, organo amministrativo, sindaci)._"
+        ),
+        "findings_header": "| # | Argomento | Rischio | Raccomandazione | Gravità |",
+        "doc_table_header": "| Documento | Lingua | Pagine |",
+        "doc_table_sep": "|-----------|--------|--------|",
+        "field": "Campo",
+        "value": "Valore",
+    },
+}
+
+_INTRO_TEMPLATES: dict[str, str] = {
+    "en": """{intro_heading}
+
+### Purpose of this Report
+This Report summarises the results of the red-flag legal due diligence review conducted on **{deal_title}**. It focuses on material legal issues ("red flags") arising from the documents made available for review, to the extent they may significantly impact the contemplated transaction. It is not a substitute for a full set of contractual warranties.
+
+### Object of this Report
+The review covered the following areas, based on the documents available:
+
+{areas_text}
+
+Financial, tax, accounting, technical, environmental and regulatory matters are outside the scope of this review.
+
+### Limitations
+This Report is based on the following assumptions:
+
+- all copies reviewed are true and complete copies of the originals;
+- all documents reviewed were validly executed by parties with the necessary capacity;
+- no relevant documents or information have been withheld;
+- no independent verification of the information supplied has been carried out;
+- the review is limited to matters of Italian law;
+- the Report reflects the position as of the date stated above and there is no obligation to update it.
+""",
+    "it": """{intro_heading}
+
+### Scopo del Report
+Il presente Report riassume gli esiti della legal due diligence di tipo red flag condotta su **{deal_title}**. Il Report si concentra sulle criticità legali rilevanti ("red flags") emerse dai documenti messi a disposizione, nella misura in cui possano incidere significativamente sull'operazione prospettata. Non sostituisce un set completo di dichiarazioni e garanzie contrattuali.
+
+### Oggetto del Report
+La revisione ha riguardato le seguenti aree, sulla base dei documenti disponibili:
+
+{areas_text}
+
+Restano esclusi dall'ambito della revisione gli aspetti finanziari, fiscali, contabili, tecnici, ambientali e regolamentari.
+
+### Limitazioni
+Il presente Report si basa sulle seguenti assunzioni:
+
+- tutte le copie esaminate sono copie conformi e complete degli originali;
+- tutti i documenti esaminati sono stati validamente sottoscritti da parti munite dei necessari poteri;
+- nessun documento o informazione rilevante è stato omesso;
+- non è stata svolta alcuna verifica indipendente delle informazioni fornite;
+- la revisione è limitata a questioni di diritto italiano;
+- il Report riflette la situazione alla data sopra indicata, senza alcun obbligo di aggiornamento.
+""",
+}
+
+_NO_AREAS_LINE = {
+    "en": "- No findings-bearing areas identified in the reviewed documents.",
+    "it": "- Nessuna area con rilievi identificata nei documenti esaminati.",
+}
+
+_ITALIAN_MONTHS = [
+    "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+    "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre",
+]
+
+
+def _format_report_date(d: date, lang: str) -> str:
+    if lang == "it":
+        return f"{d.day} {_ITALIAN_MONTHS[d.month - 1]} {d.year}"
+    return d.strftime("%d %B %Y")
+
+
+def _md_cell(text: str | None) -> str:
+    """Make text safe for a Markdown table cell (no pipes / newlines)."""
+    if not text:
+        return "—"
+    return text.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _render_introduction(deal_title: str, areas_reviewed: list[str], lang: str) -> str:
+    areas_text = (
+        "\n".join(f"- {label}" for label in areas_reviewed)
+        if areas_reviewed
+        else _NO_AREAS_LINE[lang]
+    )
+    return _INTRO_TEMPLATES[lang].format(
+        intro_heading=_L10N[lang]["intro_heading"],
+        deal_title=deal_title,
+        areas_text=areas_text,
+    )
+
+
+def _render_key_findings(red_flags: list, lang: str) -> str:
+    """One table per DD area; flags without area fall under Other Matters."""
+    if not red_flags:
+        return (
+            "## Key Findings\n\n"
+            f"{_L10N[lang]['none_identified']}\n"
+        )
+
+    by_area: dict[str, list] = {}
+    for f in red_flags:
+        key = f.area.value if f.area else "other"
+        by_area.setdefault(key, []).append(f)
+
+    sev_rank = {"high": 0, "medium": 1, "low": 2}
+    parts: list[str] = ["## Key Findings\n"]
+    for area_key in _AREA_ORDER_KEYS:
+        flags = by_area.get(area_key)
+        if not flags:
+            continue
+        flags.sort(key=lambda f: sev_rank.get(f.severity.value, 3))
+        parts.append(f"### {_AREA_TITLES[lang][area_key]}\n")
+        parts.append(_L10N[lang]["findings_header"])
+        parts.append("|---|-------|------|----------------|----------|")
+        for i, f in enumerate(flags, start=1):
+            sev = f"[{f.severity.value.upper()}]"
+            issue = _md_cell(f"**{f.title}** — {f.issue}" if f.title else f.issue)
+            parts.append(
+                f"| {i} | {issue} | {_md_cell(f.risk)} "
+                f"| {_md_cell(f.recommendation)} | {sev} |"
+            )
+        parts.append("")
+    return "\n".join(parts)
+
+
+_INTRO_FIELDS: dict[str, list[tuple[str, str]]] = {
+    "en": [
+        ("legal_form", "Legal Form"),
+        ("incorporation_date", "Incorporation"),
+        ("registered_office", "Registered Office"),
+        ("corporate_capital", "Corporate Capital"),
+        ("shareholders", "Shareholders"),
+        ("pledge", "Pledge"),
+        ("managing_body", "Managing Body"),
+        ("auditors", "Auditors"),
+        ("auditing_company", "Auditing Company"),
+        ("business", "Business"),
+        ("fiscal_year", "Fiscal Year"),
+        ("duration", "Duration"),
+    ],
+    "it": [
+        ("legal_form", "Forma Giuridica"),
+        ("incorporation_date", "Costituzione"),
+        ("registered_office", "Sede Legale"),
+        ("corporate_capital", "Capitale Sociale"),
+        ("shareholders", "Soci"),
+        ("pledge", "Pegno"),
+        ("managing_body", "Organo Amministrativo"),
+        ("auditors", "Collegio Sindacale"),
+        ("auditing_company", "Società di Revisione"),
+        ("business", "Oggetto Sociale"),
+        ("fiscal_year", "Esercizio Sociale"),
+        ("duration", "Durata"),
+    ],
+}
+
+
+def _render_corporate_intro(profiles: list, lang: str) -> str:
+    if not profiles:
+        return (
+            f"{_L10N[lang]['corp_info_heading']}\n\n"
+            f"{_L10N[lang]['corp_info_placeholder']}\n"
+        )
+
+    parts: list[str] = [f"{_L10N[lang]['corp_info_heading']}\n"]
+    for p in profiles:
+        parts.append(f"### {p.company_name}\n")
+        parts.append(f"| {_L10N[lang]['field']} | {_L10N[lang]['value']} |")
+        parts.append("|-------|-------|")
+        for attr, label in _INTRO_FIELDS[lang]:
+            value = getattr(p, attr, None)
+            if value:
+                parts.append(f"| {label} | {_md_cell(value)} |")
+        parts.append("")
+    return "\n".join(parts)
+
+
+def _render_documents_appendix(documents: list, lang: str) -> str:
+    if not documents:
+        return (
+            f"{_L10N[lang]['appendix_heading']}\n\n"
+            f"{_L10N[lang]['no_documents']}\n"
+        )
+    rows = "\n".join(
+        f"| {_md_cell(d.filename)} | {d.language or '—'} | {d.page_count or '—'} |"
+        for d in documents
+    )
+    return (
+        f"{_L10N[lang]['appendix_heading']}\n\n"
+        f"{_L10N[lang]['doc_table_header']}\n"
+        f"{_L10N[lang]['doc_table_sep']}\n"
+        f"{rows}\n"
+    )
 
 
 def generate_due_diligence_report(
@@ -32,10 +311,10 @@ def generate_due_diligence_report(
     """
     from app.models.deal import Deal
     from app.models.document import Document, DocumentStatus
-    from app.models.clause_finding import ClauseFinding
     from app.models.red_flag import RedFlag
     from app.models.report import Report, ReportType, ReportStatus
-    from packages.prompts.deal_prompts import REPORT_GENERATION_PROMPT
+    from app.models.company_profile import CompanyProfile
+    from packages.prompts.deal_prompts import EXECUTIVE_SUMMARY_PROMPT
 
     llm = provider or get_llm_provider()
 
@@ -71,11 +350,11 @@ def generate_due_diligence_report(
     db.refresh(report)
     report_id = report.id  # safe reference even after rollback
 
-    # ── Build context for the prompt ──────────────────────────────────── #
     try:
         from app.models.agent_finding import AgentFinding
         from packages.agents.red_flag_aggregator import AGENT_NAME as AGGREGATOR_AGENT
 
+        # ── Gather data ───────────────────────────────────────────────── #
         documents = (
             db.query(Document)
             .filter(
@@ -85,23 +364,15 @@ def generate_due_diligence_report(
             .all()
         )
 
-        doc_ids = [d.id for d in documents]
-        findings: list[ClauseFinding] = []
-        if doc_ids:
-            findings = (
-                db.query(ClauseFinding)
-                .filter(ClauseFinding.document_id.in_(doc_ids))
-                .all()
-            )
+        red_flags = db.query(RedFlag).filter(RedFlag.deal_id == deal_id).all()
 
-        red_flags = (
-            db.query(RedFlag)
-            .filter(RedFlag.deal_id == deal_id)
+        company_profiles = (
+            db.query(CompanyProfile)
+            .filter(CompanyProfile.deal_id == deal_id)
+            .order_by(CompanyProfile.id.asc())
             .all()
         )
 
-        # Observations and information requests produced by the red-flag
-        # aggregation agent and stored as AgentFinding rows.
         observations = (
             db.query(AgentFinding)
             .filter(
@@ -121,64 +392,83 @@ def generate_due_diligence_report(
             .all()
         )
 
-        deal_info = (
-            f"Title: {deal.title}\n"
-            f"Description: {deal.description or 'N/A'}\n"
-            f"Value: {deal.value or 'N/A'}"
-        )
-
-        docs_text = (
+        # ── Executive summary via LLM (the only generated prose) ────────── #
+        flags_context = (
             "\n".join(
-                f"- {d.filename} (lang={d.language or 'unknown'}, pages={d.page_count or '?'})"
-                for d in documents
-            )
-            or "No processed documents."
-        )
-
-        findings_text = (
-            "\n".join(
-                f"- [{f.clause_type.value}] {f.title}: {f.content[:200]} "
-                f"(confidence={f.confidence})"
-                for f in findings
-            )
-            or "No clause findings."
-        )
-
-        red_flags_text = (
-            "\n".join(
-                f"- [{f.severity.value.upper()}] {f.title}: {f.description} "
-                f"(category={f.category})"
+                f"- [{f.severity.value.upper()}] {f.title}: {f.issue}"
+                + (f" | Risk: {f.risk}" if f.risk else "")
                 for f in red_flags
             )
             or "No red flags detected."
         )
+        observations_context = (
+            "\n".join(f"- {f.title}: {f.description}" for f in observations)
+            or "None."
+        )
+        from packages.agents.output_language import (
+            language_instruction,
+            resolve_output_language,
+        )
+        lang = resolve_output_language(deal, db)
 
-        observations_text = (
+        summary_prompt = EXECUTIVE_SUMMARY_PROMPT.format(
+            deal_title=deal.title,
+            deal_description=deal.description or "N/A",
+            documents_count=len(documents),
+            red_flags=flags_context,
+            observations=observations_context,
+            language_instruction=language_instruction(lang),
+        )
+        executive_summary = llm.complete(summary_prompt, max_tokens=1024).strip()
+
+        # ── Deterministic assembly ───────────────────────────────────── #
+        areas_reviewed = [
+            _AREA_TITLES[lang][key]
+            for key in _AREA_ORDER_KEYS
+            if any((f.area.value if f.area else "other") == key for f in red_flags)
+        ]
+
+        observations_md = (
             "\n".join(
-                f"- [{f.severity.value.upper()}] {f.title}: {f.description}"
+                f"- **[{f.severity.value.upper()}]** {f.title} — {f.description}"
                 for f in observations
             )
-            or "None."
+            or _L10N[lang]["none_identified"]
         )
-
-        info_requests_text = (
+        info_requests_md = (
             "\n".join(
-                f"- {f.title}: {f.description}"
-                for f in info_requests
+                f"{i}. **{f.title}** — {f.description}"
+                for i, f in enumerate(info_requests, start=1)
             )
-            or "None."
+            or _L10N[lang]["none_identified"]
         )
 
-        # ── Call LLM ─────────────────────────────────────────────────── #
-        prompt = REPORT_GENERATION_PROMPT.format(
-            deal_info=deal_info,
-            documents=docs_text,
-            clause_findings=findings_text,
-            red_flags=red_flags_text,
-            observations=observations_text,
-            information_requests=info_requests_text,
-        )
-        markdown = llm.complete(prompt, max_tokens=4096)
+        markdown = "\n".join([
+            "# Red Flag Due Diligence Report",
+            "",
+            f"**{deal.title}**",
+            "",
+            f"_{_L10N[lang]['confidential']}_",
+            "",
+            f"_{_format_report_date(date.today(), lang)}_",
+            "",
+            _render_introduction(deal.title, areas_reviewed, lang),
+            _render_corporate_intro(company_profiles, lang),
+            "## Executive Summary",
+            "",
+            executive_summary,
+            "",
+            _render_key_findings(red_flags, lang),
+            _L10N[lang]["observations_heading"],
+            "",
+            observations_md,
+            "",
+            _L10N[lang]["info_requests_heading"],
+            "",
+            info_requests_md,
+            "",
+            _render_documents_appendix(documents, lang),
+        ])
 
         # ── Persist result ────────────────────────────────────────────── #
         report.content = markdown

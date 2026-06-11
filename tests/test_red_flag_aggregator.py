@@ -6,7 +6,7 @@ Covers:
   highest-severity-wins, different category NOT deduped
 - Context building: clause findings and agent findings appear in the
   context text forwarded to the LLM (verified via _ContextCaptureLLM)
-- OpenQuestion generation: high/critical → question; medium/low → no question;
+- OpenQuestion generation: high → question; medium/low → no question;
   priority mapping; agent_name stamped correctly
 - Return value: all required keys present, counts match DB, dedup_removed
 - Idempotency: no accumulation on re-run; previous RedFlags and OpenQuestions cleared
@@ -174,11 +174,11 @@ class TestRedFlagCreation:
         flag = _red_flags(db, test_deal)[0]
         assert "Unilateral Termination Right" in flag.title
 
-    def test_red_flag_description_stored(self, db, test_deal):
+    def test_red_flag_issue_stored(self, db, test_deal):
         _make_doc(db, test_deal)
         RedFlagAggregationAgent().run(test_deal.id, db)
         flag = _red_flags(db, test_deal)[0]
-        assert flag.description  # non-empty
+        assert flag.issue  # non-empty
 
     def test_red_flag_severity_high(self, db, test_deal):
         """FakeLLM returns severity='high'."""
@@ -314,7 +314,9 @@ class TestDeduplication:
         assert result["red_flags_count"] == 1
         assert result["dedup_removed"] == 2
         flag = _red_flags(db, test_deal)[0]
-        assert flag.severity == Severity.critical
+        # "critical" wins the dedup but is normalized to high at persistence
+        # (3-level Severity scale).
+        assert flag.severity == Severity.high
 
     def test_different_category_not_deduped(self, db, test_deal):
         """Same title but different category → distinct risks."""
@@ -483,11 +485,11 @@ class TestOpenQuestionGeneration:
         q = _open_questions(db, test_deal)[0]
         assert q.priority == Priority.high
 
-    def test_medium_priority_for_high_flags(self, db, test_deal):
-        """high severity → Priority.medium on the OpenQuestion."""
+    def test_high_priority_for_high_flags(self, db, test_deal):
+        """high severity → Priority.high on the OpenQuestion."""
         RedFlagAggregationAgent().run(test_deal.id, db)
         q = _open_questions(db, test_deal)[0]
-        assert q.priority == Priority.medium
+        assert q.priority == Priority.high
 
     def test_open_question_agent_name(self, db, test_deal):
         RedFlagAggregationAgent().run(test_deal.id, db)
@@ -563,7 +565,7 @@ class TestReturnValue:
     def test_flags_by_severity_has_all_severities(self, db, test_deal):
         result = RedFlagAggregationAgent().run(test_deal.id, db)
         fbs = result["flags_by_severity"]
-        for sev in ("low", "medium", "high", "critical"):
+        for sev in ("low", "medium", "high"):
             assert sev in fbs, f"Severity '{sev}' missing from flags_by_severity"
 
     def test_flags_by_severity_sum_equals_total(self, db, test_deal):
@@ -817,7 +819,7 @@ class TestEdgeCases:
         pre_existing = RedFlag(
             deal_id=test_deal.id,
             title="Pre-existing Flag",
-            description="From a previous run.",
+            issue="From a previous run.",
             severity=Severity.low,
             category="other",
         )

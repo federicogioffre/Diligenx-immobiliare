@@ -104,7 +104,7 @@ def test_red_flag_creation(db, test_deal):
     flag = RedFlag(
         deal_id=test_deal.id,
         title="Unusual termination clause",
-        description="The contract allows termination without notice.",
+        issue="The contract allows termination without notice.",
         severity=Severity.high,
         category="legal",
         confidence=0.88,

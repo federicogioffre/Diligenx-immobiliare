@@ -77,7 +77,7 @@ def analyzed_deal(db: Session, test_deal: Deal) -> Deal:
     db.add(RedFlag(
         deal_id=test_deal.id,
         title="Unilateral Termination Right",
-        description="Only one party may terminate without cause.",
+        issue="Only one party may terminate without cause.",
         severity=Severity.high,
         category="termination",
         confidence=0.88,
@@ -125,11 +125,13 @@ class TestGenerateDueDiligenceReport:
     def test_markdown_contains_required_sections(self, db: Session, analyzed_deal: Deal):
         result = generate_due_diligence_report(analyzed_deal.id, db)
         md = result["markdown"]
+        assert "## Introduction" in md
+        assert "## Corporate Introductory Information" in md
         assert "## Executive Summary" in md
-        assert "## Red Flags" in md
+        assert "## Key Findings" in md
         assert "## Observations" in md
         assert "## Information Requests" in md
-        assert "## Documents Reviewed" in md
+        assert "## Appendix I: Documents Reviewed" in md
 
     def test_markdown_is_stored_as_content(self, db: Session, analyzed_deal: Deal):
         result = generate_due_diligence_report(analyzed_deal.id, db)
@@ -200,8 +202,9 @@ class TestReportRoute:
         )
         md = response.json()["markdown"]
         for section in (
+            "Introduction",
             "Executive Summary",
-            "Red Flags",
+            "Key Findings",
             "Observations",
             "Information Requests",
             "Documents Reviewed",

@@ -121,7 +121,7 @@ class TestDealAnalysisAgent:
         flag = db.query(RedFlag).filter(RedFlag.deal_id == test_deal.id).first()
         assert flag is not None
         assert flag.title
-        assert flag.description
+        assert flag.issue
         assert flag.severity is not None
         assert flag.category
 
@@ -380,7 +380,7 @@ class TestAnalyzeRoute:
         assert data["report_id"] is not None
         assert isinstance(data["report_id"], int)
 
-    def test_analyze_stages_contains_all_six(
+    def test_analyze_stages_contains_all_seven(
         self, client, auth_headers, test_deal: Deal, processed_doc: Document, db: Session
     ):
         """Six agent-run records are written (one per pipeline stage)."""
@@ -392,7 +392,8 @@ class TestAnalyzeRoute:
         stage_names = {r["agent_name"] for r in runs_resp.json()}
         expected = {
             "intake", "document_router", "contract_analysis",
-            "corporate_governance", "red_flag_aggregation", "report_generation",
+            "corporate_governance", "corporate_intro_extraction",
+            "red_flag_aggregation", "report_generation",
         }
         assert stage_names == expected
 

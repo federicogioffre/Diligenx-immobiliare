@@ -81,9 +81,12 @@ CRITICAL RULES:
 
 For each red flag provide:
 - title: brief risk name (max 100 characters)
-- description: why this specific clause is a concern and what impact it could have (max 300 characters) — reference the actual clause content
-- severity: one of [low, medium, high, critical]
-- category: risk category (e.g., "liability", "termination", "payment", "ip", "compliance", etc.)
+- issue: what the clause says that is a concern, referencing the actual clause content (max 300 characters)
+- risk: the impact it could have on the transaction or the target (max 250 characters)
+- recommendation: the remedial action (condition precedent, Sellers' R&W in the SPA, special indemnity, specialist verification, post-closing fix) (max 250 characters)
+- severity: one of [low, medium, high]
+- area: one of [corporate, indebtedness, real_estate, employees, suppliers_customers, insurance, litigation, ip_it, data_protection, other]
+- category: free-text fine-grained label (e.g., "liability", "termination", "payment", "ip", "compliance")
 - confidence: confidence score between 0.0 and 1.0
 - source_document_id: always null
 
@@ -91,54 +94,80 @@ Clause Findings:
 {findings}
 
 Return ONLY a JSON array (no markdown fences, no explanation):
-[{{"title": "...", "description": "...", "severity": "...", "category": "...", "confidence": 0.0, "source_document_id": null}}, ...]
+[{{"title": "...", "issue": "...", "risk": "...", "recommendation": "...", "severity": "...", "area": "...", "category": "...", "confidence": 0.0, "source_document_id": null}}, ...]
 
 If no red flags are found, return an empty array: []
 """
 
-REPORT_GENERATION_PROMPT = """You are a senior M&A legal advisor specialising in Italian corporate law. GENERATE a DUE DILIGENCE REPORT in Markdown for the deal below.
+EXECUTIVE_SUMMARY_PROMPT = """You are a senior M&A legal advisor specialising in Italian corporate law, writing the EXECUTIVE SUMMARY of a due diligence review.
 
-The report MUST contain exactly these five sections (level-2 headings):
-## Executive Summary
-## Red Flags
-## Observations
-## Information Requests
-## Documents Reviewed
+Write the Executive Summary for the deal below: 3-5 sentences maximum, in professional report prose.
 
-SECTION DEFINITIONS:
-• Executive Summary — 3–5 sentences maximum. State what was analysed, the overall risk profile, and the single most critical issue (if any). No filler language.
-• Red Flags — Issues that materially affect: (a) transaction validity / completion, (b) the buyer's ability to acquire shares, or (c) material financial liabilities. Each entry: **[SEVERITY] Title** — one or two sentences stating what the provision says and what action is required before or after closing.
-• Observations — Noteworthy contractual provisions or facts that do not block the transaction but should be tracked post-closing. Concise bullet points.
-• Information Requests — Missing documents, unresolved ambiguities, or items requiring clarification. Numbered list.
-• Documents Reviewed — Markdown table: | Document | Language | Pages |
+It must state:
+1. What was reviewed (number of documents, deal context).
+2. The overall risk profile of the transaction.
+3. The single most significant issue, if any, and the action it requires.
+
+{language_instruction}
 
 CRITICAL RULES:
-1. Ground every statement in the data below. Do NOT add assumptions or general market knowledge.
-2. If a section has nothing to report, write: "_None identified based on available documents._"
-3. Do NOT flag TFR accruals, holiday balances, CCNL applicability, standard arbitration clauses, share capital vs. deal value differences, or standard Italian Civil Code defaults.
-4. For employment documents: if there is no evidence of non-compliance, the Red Flags section must state nothing material was identified.
-5. No consulting filler ("it is advisable to", "standard market practice suggests", "we recommend monitoring"). Write for a lawyer who knows Italian M&A.
-6. Severity labels: **[CRITICAL]**, **[HIGH]**, **[MEDIUM]**, **[LOW]**.
+1. Ground every statement in the findings below. Do NOT add assumptions or general market knowledge.
+2. If there are no red flags, state that no material issues were identified in the reviewed documents.
+3. No consulting filler ("it is advisable to", "standard market practice suggests", "we recommend monitoring"). Write for a lawyer who knows Italian M&A.
+4. Return ONLY the summary prose. No headings, no lists, no code fences.
 
 --- DEAL ---
-{deal_info}
-
---- DOCUMENTS ---
-{documents}
-
---- CLAUSE FINDINGS ---
-{clause_findings}
+Title: {deal_title}
+Description: {deal_description}
+Documents reviewed: {documents_count}
 
 --- RED FLAGS ---
 {red_flags}
 
 --- OBSERVATIONS ---
 {observations}
+"""
 
---- INFORMATION REQUESTS ---
-{information_requests}
+CORPORATE_INTRO_EXTRACTION_PROMPT = """You are an M&A paralegal extracting the CORPORATE INTRODUCTORY INFORMATION of a target company from Italian corporate documents (visura camerale, atto costitutivo, statuto, patto parasociale).
 
-Return ONLY the Markdown report. Do NOT wrap it in code fences.
+EXTRACT the fields listed below for EACH distinct company described in the document.
+
+CRITICAL RULES:
+1. Extract ONLY facts EXPLICITLY present in the document text. Do NOT infer, guess, or supplement from general knowledge.
+2. If a field is not present in the document, set it to null. Do NOT fabricate.
+3. The document may describe one company (typical visura) or several (group statute, holding structure). Return one JSON object per distinct company found.
+4. Quote names, addresses, capital figures and dates verbatim where possible — preserve Italian formatting (e.g. "Euro 1.000.000,00").
+5. For shareholders: produce a concise human-readable list, one per line: "Name — N shares (class) — % of capital". When a percentage is missing, omit it.
+6. For the managing body: list each director with role: "Mr X (Chairman), Mr Y (Managing Director), ...". Include the date of appointment and the term if stated.
+7. For the auditors: list each statutory auditor with role (President / Statutory / Alternate). Include the date of appointment and the term if stated.
+
+FIELDS to populate (set to null if absent):
+- company_name: legal name with corporate suffix (S.p.A. / S.r.l. / etc.) [REQUIRED, MUST NOT BE NULL]
+- legal_form: e.g. "Joint-stock company (società per azioni)" or "Limited liability company (società a responsabilità limitata)"
+- incorporation_date: incorporation date and Companies' Registry registration (REA, codice fiscale, P.IVA if stated)
+- registered_office: full registered office address
+- corporate_capital: issued and paid-in capital with the verbatim figure
+- shareholders: one-per-line list as described above; for a sole shareholder write a single line
+- pledge: any pledge or encumbrance over the shares (in whose favour, for what % of capital, securing what)
+- managing_body: composition of the board / sole director with roles, appointment date and term
+- auditors: composition of the Board of Statutory Auditors (or sole auditor) with roles, appointment date and term
+- auditing_company: external auditing firm (if any) and term of mandate
+- business: corporate purpose / object as stated in the by-laws
+- fiscal_year: fiscal year end (e.g. "31 December of each year")
+- duration: duration of the company (e.g. "Until 31 December 2050")
+
+Provide also:
+- confidence: 0.0–1.0 — your overall confidence in this extraction
+- source_document_id: always null (the caller injects it)
+
+Document filename: {filename}
+Document text:
+{text}
+
+Return ONLY a JSON array (no markdown fences, no explanation):
+[{{"company_name": "...", "legal_form": null, "incorporation_date": null, "registered_office": null, "corporate_capital": null, "shareholders": null, "pledge": null, "managing_body": null, "auditors": null, "auditing_company": null, "business": null, "fiscal_year": null, "duration": null, "confidence": 0.0, "source_document_id": null}}, ...]
+
+If the document is not a corporate document and contains no extractable company data, return: []
 """
 
 CORPORATE_GOVERNANCE_PROMPT = """You are a corporate governance expert specialising in legal due diligence.
@@ -176,13 +205,35 @@ Return ONLY a JSON array (no markdown fences, no explanation):
 If no governance insights are found, return an empty array: []
 """
 
-RED_FLAG_AGGREGATION_PROMPT = """You are a senior M&A legal advisor specialising in Italian corporate law and transaction risk assessment.
+RED_FLAG_AGGREGATION_PROMPT = """You are a senior M&A legal advisor specialising in Italian corporate law, drafting entries for a red-flag legal review.
 
 TRIAGE RED FLAGS, OBSERVATIONS AND INFORMATION REQUESTS from the specialist analysis below.
 Assign each finding to one of three categories:
   red_flag        — materially affects: (a) transaction validity / completion, (b) the buyer's ability to acquire shares, or (c) creates material financial liabilities.
   observation     — noteworthy provision or fact that does not block the transaction but warrants attention post-closing.
   information_request — information gap, missing document, or item requiring clarification before or after signing.
+
+Every red_flag entry follows the structure of a professional red-flag report:
+  ISSUE          — what was found, stated factually, citing the specific article/clause/figure.
+  RISK           — what could happen if unaddressed (impact on the transaction or the target).
+  RECOMMENDATION — the concrete remedial action, chosen from standard transaction remedies:
+     • "As a condition precedent to Closing, obtain the consent of [counterparty] to the Transaction."
+     • "On or prior to Closing, obtain [the missing document / release of the security / waiver of the right]."
+     • "Insert specific Sellers' representations and warranties in the SPA."
+     • "Insert a special indemnity provision in the SPA."
+     • "Insert an earnout / price-adjustment mechanism in the SPA."
+     • "Prior to the Transaction, verify [the exposure] with a [tax/customs/insurance] specialist."
+     • "Upon completion of the Transaction, [adopt the Modello 231 / carry out a privacy assessment / renegotiate the clause]."
+
+SEVERITY CALIBRATION (3-level scale — there is no "critical"):
+  high   — affects transfer validity or completion: unreleased pledges on the target's shares; missing share certificates; pre-emption/tag-along/drag-along rights not waived; material unexplained debt exposures; litigation with material quantified exposure; total absence of GDPR/privacy documentation.
+  medium — needs action but has a standard remedy: change-of-control consent requirements in loans, leases or key customer contracts ("although unlikely…"); missing corporate minutes; Modello 231 absence with aggravating factors; missing employment agreements; non-compliant contract templates; unverified settlement payments.
+  low    — worth recording, limited economic impact: null-and-void clauses with modest exposure (e.g. ISTAT indexation above the legal cap); missing policy copies; unregistered trademarks; unverified domain ownership; generic insurance adequacy.
+
+AREA — assign each finding to exactly one report section:
+  corporate | indebtedness | real_estate | employees | suppliers_customers | insurance | litigation | ip_it | data_protection | other
+
+{language_instruction}
 
 CRITICAL RULES:
 1. Only report findings that are EXPLICITLY evidenced in the specialist data below.
@@ -199,21 +250,31 @@ CRITICAL RULES:
 For each item, provide:
 - finding_type: one of ["red_flag", "observation", "information_request"]
 - title: concise label (max 100 characters)
-- description: specific factual impact, referencing the source finding (max 250 characters)
-- severity: one of [low, medium, high, critical]
-  • red_flag: high or critical only (low/medium risks are observations)
+- issue: factual finding citing the specific clause/article/figure (max 300 characters)
+- risk: impact if unaddressed (max 250 characters) — required for red_flag, null otherwise
+- recommendation: remedial action from the standard remedies above (max 250 characters) — required for red_flag, null otherwise
+- severity: one of [low, medium, high]
+  • red_flag: high or medium (low risks are observations)
   • observation: low or medium
   • information_request: low
-- category: e.g. "transfer_restriction", "governance", "change_of_control", "liability", "termination", "employment", "compliance", "missing_document"
+- area: one of [corporate, indebtedness, real_estate, employees, suppliers_customers, insurance, litigation, ip_it, data_protection, other]
+- category: free-text fine-grained label, e.g. "transfer_restriction", "change_of_control", "pledge", "missing_document"
 - confidence: 0.0–1.0
 - source_document_id: integer document ID or null
+
+EXAMPLES of correctly structured red_flag entries (synthetic — illustrate format and calibration only):
+[
+  {{"finding_type": "red_flag", "title": "Pledge over the Target's shares", "issue": "A pledge over shares representing 81% of the corporate capital of the Target exists in favour of a lender, securing bond payment obligations (Bond Subscription Agreement, art. 10).", "risk": "If the secured debt is not repaid before closing, the Purchaser acquires shares that remain encumbered by the pledge.", "recommendation": "As a condition precedent to Closing, the lender should release the pledge.", "severity": "high", "area": "corporate", "category": "pledge", "confidence": 0.92, "source_document_id": 3}},
+  {{"finding_type": "red_flag", "title": "Change-of-control clause in loan agreement", "issue": "Article 5 of the loan agreement provides that the lender may terminate in case of any event negatively affecting the financial or corporate situation of the company.", "risk": "Although unlikely, after the Transaction the lender may claim the change of control qualifies and accelerate repayment.", "recommendation": "As a condition precedent to Closing, obtain the lender's consent to the Transaction.", "severity": "medium", "area": "indebtedness", "category": "change_of_control", "confidence": 0.85, "source_document_id": 7}},
+  {{"finding_type": "red_flag", "title": "Rent indexation above legal cap", "issue": "The lease agreement provides annual rent indexation at 100% of the ISTAT variation, while the maximum allowed under Italian law is 75%.", "risk": "The company may pay, or may have paid, amounts not due under applicable law.", "recommendation": "Insert specific Sellers' representations and warranties in the SPA; renegotiate the clause.", "severity": "low", "area": "real_estate", "category": "void_clause", "confidence": 0.80, "source_document_id": 12}}
+]
 
 Priority order: check all PRIORITY RISKS first, then apply SAFE HARBOUR before raising anything else.
 
 {findings_by_document}
 
 Return ONLY a JSON array (no markdown fences, no explanation):
-[{{"finding_type": "red_flag", "title": "...", "description": "...", "severity": "high", "category": "...", "confidence": 0.0, "source_document_id": null}}, ...]
+[{{"finding_type": "red_flag", "title": "...", "issue": "...", "risk": "...", "recommendation": "...", "severity": "high", "area": "...", "category": "...", "confidence": 0.0, "source_document_id": null}}, ...]
 
 If no findings, return an empty array: []
 """

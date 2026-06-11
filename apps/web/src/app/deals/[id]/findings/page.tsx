@@ -124,7 +124,22 @@ function RedFlagCard({ f, docMap, index }: { f: RedFlagRead; docMap: Map<number,
       </div>
 
       <h3 className="text-sm font-semibold text-slate-900 mb-2 leading-snug">{f.title}</h3>
-      <ExpandableText text={f.description} />
+      <ExpandableText text={f.issue} />
+
+      {/* Risk / Recommendation — the actionable part of a professional
+          red-flag entry. Rendered only when the pipeline produced them. */}
+      {f.risk && (
+        <div className="mt-2 rounded-lg bg-orange-50/60 border border-orange-100 px-3 py-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-orange-700">Rischio</span>
+          <p className="text-sm text-slate-700 mt-0.5">{f.risk}</p>
+        </div>
+      )}
+      {f.recommendation && (
+        <div className="mt-2 rounded-lg bg-emerald-50/60 border border-emerald-100 px-3 py-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Raccomandazione</span>
+          <p className="text-sm text-slate-700 mt-0.5">{f.recommendation}</p>
+        </div>
+      )}
 
       {/* Footer */}
       <div className="flex flex-wrap items-center gap-3 mt-3 pt-3 border-t border-slate-100 text-xs text-slate-400">
@@ -187,7 +202,7 @@ export default function FindingsPage() {
     : clauses
 
   const visibleFlags = flagFilter === 'important'
-    ? flags.filter(f => f.severity === 'high' || f.severity === 'critical')
+    ? flags.filter(f => f.severity === 'high')
     : flags
 
   return (
@@ -242,7 +257,7 @@ export default function FindingsPage() {
           </div>
           <div className="flex gap-1.5 ml-auto">
             <FilterPill active={flagFilter === 'important'} onClick={() => setFlagFilter('important')}>
-              High / Critical
+              Solo Alti
             </FilterPill>
             <FilterPill active={flagFilter === 'all'} onClick={() => setFlagFilter('all')}>
               Tutti ({flags.length})
@@ -258,7 +273,7 @@ export default function FindingsPage() {
             <p className="text-sm text-slate-400">
               {flags.length === 0
                 ? 'Nessun red flag identificato.'
-                : 'Nessun red flag high/critical. Mostra "Tutti" per vedere i minori.'}
+                : 'Nessun red flag con severity alta. Mostra "Tutti" per vedere i minori.'}
             </p>
           </div>
         ) : (

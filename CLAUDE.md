@@ -40,7 +40,7 @@ Diligenx/
 │   │   │   ├── document.py               # Document + DocumentStatus(pending|processing|processed|failed) + language + raw_text
 │   │   │   ├── document_chunk.py         # DocumentChunk + VectorType (pgvector on PG, JSON on SQLite) + EMBEDDING_DIM=1536
 │   │   │   ├── clause_finding.py         # ClauseFinding + ClauseType enum
-│   │   │   ├── red_flag.py               # RedFlag + Severity(low|medium|high|critical)
+│   │   │   ├── red_flag.py               # RedFlag (issue/risk/recommendation triple) + Severity(low|medium|high) + DueDiligenceArea (9 standard DD report sections)
 │   │   │   ├── report.py                 # Report + ReportType + ReportStatus enums
 │   │   │   ├── agent_run.py              # AgentRun (one row per pipeline stage execution)
 │   │   │   ├── agent_finding.py          # AgentFinding (intermediate per-doc findings, e.g. routing)
@@ -132,7 +132,7 @@ User 1──* Workspace 1──* Deal 1──* Document 1──* DocumentChunk (
 | POST | `/auth/login` | Login (form) → Token |
 | GET/POST/PATCH/DELETE | `/workspaces/...` | Workspace CRUD (last workspace and non-empty workspaces protected from deletion) |
 | GET/POST | `/deals/?workspace_id=N` | List / create deals in workspace |
-| GET/PATCH/DELETE | `/deals/{deal_id}` | Deal CRUD |
+| GET/PATCH/DELETE | `/deals/{deal_id}` | Deal CRUD (PATCH also sets `report_language`: it\|en\|auto) |
 | POST | `/deals/{deal_id}/analyze` | **202** → queues multi-agent pipeline in BackgroundTask |
 | GET | `/deals/{deal_id}/agent-runs` | List AgentRun rows in pipeline order |
 | GET | `/deals/{deal_id}/analysis-stream` | SSE stream of pipeline progress |
@@ -158,8 +158,9 @@ Triggered async by `POST /deals/{id}/analyze`. Each stage gets its own `AgentRun
 2. **Document routing** — classify each processed document → `AgentFinding`.
 3. **Contract analysis** (`ContractAgent`) — extract clauses → `ClauseFinding` (with grounding check + min confidence).
 4. **Corporate governance** (`CorporateAgent`) — bylaws / shareholder agreement insights.
-5. **Red-flag aggregation** — produce `RedFlag` rows + `OpenQuestion` items.
-6. **Report generation** (`report_agent.generate_due_diligence_report`) — Markdown stored in `Report` table.
+4b. **Corporate intro extraction** (`CorporateIntroAgent`) — extracts the Corporate Introductory Information for each target company (visure / atti / statuti) → `CompanyProfile` rows. Auto-detects corporate-looking docs via filename + first-1500-chars keyword match.
+5. **Red-flag aggregation** — produce `RedFlag` rows (Issue/Risk/Recommendation triple, severity low|medium|high, DD area) + `OpenQuestion` items for high-severity flags.
+6. **Report generation** (`report_agent.generate_due_diligence_report`) — bilingual (IT/EN — explicit `deal.report_language` or majority language of processed documents, fallback EN; LLM prose follows, boilerplate localized faithfully to studio practice: title/Executive Summary/Key Findings stay English) deterministic template (Introduction / Corporate Introductory Information from `CompanyProfile` / Executive Summary via LLM / Key Findings tabellari per DD area / Observations / Information Requests / Appendix Documents); stored as Markdown in `Report` table.
 
 ## Ingestion Pipeline (on upload)
 ```

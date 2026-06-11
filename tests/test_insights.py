@@ -24,7 +24,7 @@ def _make_red_flag(db, deal, *, severity=Severity.medium, category="termination"
     rf = RedFlag(
         deal_id=deal.id,
         title="A flag",
-        description="…",
+        issue="…",
         severity=severity,
         category=category,
     )
@@ -99,7 +99,7 @@ def test_insights_empty_workspace_returns_zeroed_buckets(
     assert all(v == 0 for v in data["deals_by_status"].values())
 
     assert set(data["red_flags_by_severity"].keys()) == {
-        "low", "medium", "high", "critical",
+        "low", "medium", "high",
     }
     assert all(v == 0 for v in data["red_flags_by_severity"].values())
 
@@ -130,7 +130,7 @@ def test_insights_aggregates_red_flags_by_severity(
     client, auth_headers, db, test_workspace
 ):
     deal = _make_deal(db, test_workspace, status=DealStatus.reviewed)
-    _make_red_flag(db, deal, severity=Severity.critical)
+    _make_red_flag(db, deal, severity=Severity.high)
     _make_red_flag(db, deal, severity=Severity.high)
     _make_red_flag(db, deal, severity=Severity.high)
     _make_red_flag(db, deal, severity=Severity.medium)
@@ -140,8 +140,7 @@ def test_insights_aggregates_red_flags_by_severity(
     ).json()
 
     assert data["red_flags_total"] == 4
-    assert data["red_flags_by_severity"]["critical"] == 1
-    assert data["red_flags_by_severity"]["high"] == 2
+    assert data["red_flags_by_severity"]["high"] == 3
     assert data["red_flags_by_severity"]["medium"] == 1
     assert data["red_flags_by_severity"]["low"] == 0
 
@@ -207,8 +206,8 @@ def test_insights_excludes_other_workspaces_data(
     in_ws = _make_deal(db, test_workspace, status=DealStatus.reviewed)
     out_ws = _make_deal(db, other_ws, status=DealStatus.reviewed)
     _make_red_flag(db, in_ws, severity=Severity.high)
-    _make_red_flag(db, out_ws, severity=Severity.critical)
-    _make_red_flag(db, out_ws, severity=Severity.critical)
+    _make_red_flag(db, out_ws, severity=Severity.medium)
+    _make_red_flag(db, out_ws, severity=Severity.medium)
 
     data = client.get(
         f"/workspaces/{test_workspace.id}/insights", headers=auth_headers
@@ -217,4 +216,4 @@ def test_insights_excludes_other_workspaces_data(
     assert data["deals_total"] == 1
     assert data["red_flags_total"] == 1
     assert data["red_flags_by_severity"]["high"] == 1
-    assert data["red_flags_by_severity"]["critical"] == 0
+    assert data["red_flags_by_severity"]["medium"] == 0

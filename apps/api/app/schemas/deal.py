@@ -15,6 +15,7 @@ class DealUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
     value: float | None = None
+    report_language: str | None = None  # "it" | "en" | None (= auto-detect)
 
 
 class DealRead(BaseModel):
@@ -24,6 +25,7 @@ class DealRead(BaseModel):
     description: str | None
     value: float | None
     status: DealStatus
+    report_language: str | None
     created_at: datetime
     updated_at: datetime | None
 

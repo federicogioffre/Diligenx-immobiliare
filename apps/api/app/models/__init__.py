@@ -4,12 +4,13 @@ from app.models.deal import Deal, DealStatus
 from app.models.document import Document, DocumentStatus
 from app.models.document_chunk import DocumentChunk
 from app.models.clause_finding import ClauseFinding, ClauseType
-from app.models.red_flag import RedFlag, Severity
+from app.models.red_flag import RedFlag, Severity, DueDiligenceArea
 from app.models.report import Report, ReportType, ReportStatus
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.agent_finding import AgentFinding
 from app.models.open_question import OpenQuestion, Priority, QuestionStatus
 from app.models.missing_document import MissingDocument
+from app.models.company_profile import CompanyProfile
 
 __all__ = [
     "User",
@@ -23,6 +24,7 @@ __all__ = [
     "ClauseType",
     "RedFlag",
     "Severity",
+    "DueDiligenceArea",
     "Report",
     "ReportType",
     "ReportStatus",
@@ -33,4 +35,5 @@ __all__ = [
     "Priority",
     "QuestionStatus",
     "MissingDocument",
+    "CompanyProfile",
 ]

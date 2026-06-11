@@ -52,6 +52,7 @@ AGENT_INTAKE = "intake"
 AGENT_ROUTER = "document_router"
 AGENT_SPECIALIST = "contract_analysis"   # == ContractAgent.AGENT_NAME
 AGENT_CORPORATE = "corporate_governance"  # == CorporateAgent.AGENT_NAME
+AGENT_CORPORATE_INTRO = "corporate_intro_extraction"  # == CorporateIntroAgent.AGENT_NAME
 AGENT_RED_FLAG = "red_flag_aggregation"
 AGENT_REPORT = "report_generation"
 
@@ -392,6 +393,35 @@ def _stage_corporate_analysis(
         return {"error": str(exc)}
 
 
+# ── Stage 4b: Corporate introductory information extraction ──────────────
+
+def _stage_corporate_intro_extraction(
+    deal_id: int, db: Session, llm: LLMProvider
+) -> dict:
+    """Delegate Corporate Introductory Information extraction to
+    :class:`CorporateIntroAgent`.
+
+    Populates ``CompanyProfile`` rows for the target companies described in
+    the deal's corporate documents (visure, atti, statuti). Self-contained
+    AgentRun + idempotency.
+    """
+    from packages.agents.corporate_intro_agent import CorporateIntroAgent
+
+    logger.info(
+        "[%s] deal=%d — starting corporate intro extraction",
+        AGENT_CORPORATE_INTRO, deal_id,
+    )
+
+    try:
+        return CorporateIntroAgent(provider=llm).run(deal_id, db)
+    except Exception as exc:
+        logger.exception(
+            "[%s] deal=%d — CorporateIntroAgent failed",
+            AGENT_CORPORATE_INTRO, deal_id,
+        )
+        return {"error": str(exc)}
+
+
 # ── Stage 5: Red-flag aggregation ─────────────────────────────────────────
 
 def _stage_red_flag_aggregation(
@@ -509,6 +539,9 @@ def run_deal_analysis_pipeline(
 
     # ── Stage 4: Corporate governance analysis ─────────────────────────
     stages["corporate_analysis"] = _stage_corporate_analysis(deal_id, db, llm)
+
+    # Stage 4b — Corporate Introductory Information extraction
+    stages["corporate_intro_extraction"] = _stage_corporate_intro_extraction(deal_id, db, llm)
 
     # ── Stage 5: Red-flag aggregation ──────────────────────────────────
     stages["red_flag_aggregation"] = _stage_red_flag_aggregation(deal_id, db, llm)

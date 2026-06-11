@@ -1,4 +1,4 @@
-export type Severity = 'low' | 'medium' | 'high' | 'critical'
+export type Severity = 'low' | 'medium' | 'high'
 
 const MAP: Record<
   Severity,
@@ -26,12 +26,6 @@ const MAP: Record<
     solid: 'bg-orange-50 text-orange-700',
     outlined: 'bg-white text-orange-700 border-orange-200',
     border: 'border-l-orange-500',
-  },
-  critical: {
-    label: 'CRITICO',
-    solid: 'bg-red-50 text-red-700',
-    outlined: 'bg-white text-red-700 border-red-200',
-    border: 'border-l-red-500',
   },
 }
 

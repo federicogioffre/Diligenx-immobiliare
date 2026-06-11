@@ -25,6 +25,9 @@ class Deal(TimestampMixin, Base):
     status: Mapped[DealStatus] = mapped_column(
         Enum(DealStatus), default=DealStatus.draft
     )
+    # Output language for LLM prose and report boilerplate: "it" | "en".
+    # None = auto-detect from the majority language of processed documents.
+    report_language: Mapped[str | None] = mapped_column(String(10))
 
     workspace = relationship("Workspace", back_populates="deals")
     documents = relationship("Document", back_populates="deal", cascade="all, delete-orphan")
@@ -34,3 +37,4 @@ class Deal(TimestampMixin, Base):
     agent_findings = relationship("AgentFinding", back_populates="deal", cascade="all, delete-orphan")
     open_questions = relationship("OpenQuestion", back_populates="deal", cascade="all, delete-orphan")
     missing_documents = relationship("MissingDocument", back_populates="deal", cascade="all, delete-orphan")
+    company_profiles = relationship("CompanyProfile", back_populates="deal", cascade="all, delete-orphan")

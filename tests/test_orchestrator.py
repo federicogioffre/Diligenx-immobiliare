@@ -30,6 +30,7 @@ from packages.agents.orchestrator import (
     AGENT_ROUTER,
     AGENT_SPECIALIST,
     AGENT_CORPORATE,
+    AGENT_CORPORATE_INTRO,
     AGENT_RED_FLAG,
     AGENT_REPORT,
 )
@@ -41,13 +42,15 @@ _ALL_STAGES = {
     "document_routing",
     "specialist_analysis",
     "corporate_analysis",
+    "corporate_intro_extraction",
     "red_flag_aggregation",
     "report_generation",
 }
 
 _ALL_AGENT_NAMES = {
     AGENT_INTAKE, AGENT_ROUTER, AGENT_SPECIALIST,
-    AGENT_CORPORATE, AGENT_RED_FLAG, AGENT_REPORT,
+    AGENT_CORPORATE, AGENT_CORPORATE_INTRO,
+    AGENT_RED_FLAG, AGENT_REPORT,
 }
 
 
@@ -137,12 +140,12 @@ class TestPipelineStructure:
 
 class TestAgentRunRecords:
 
-    def test_exactly_six_agent_runs_created(self, db, test_deal, processed_doc):
+    def test_exactly_seven_agent_runs_created(self, db, test_deal, processed_doc):
         run_deal_analysis_pipeline(test_deal.id, db)
         runs = db.query(AgentRun).filter(AgentRun.deal_id == test_deal.id).all()
-        assert len(runs) == 6
+        assert len(runs) == 7
 
-    def test_all_six_agent_names_present(self, db, test_deal, processed_doc):
+    def test_all_seven_agent_names_present(self, db, test_deal, processed_doc):
         run_deal_analysis_pipeline(test_deal.id, db)
         names = {
             r.agent_name
@@ -371,13 +374,13 @@ class TestRedFlagStage:
     def test_open_questions_created_for_high_severity_flags(
         self, db, test_deal, processed_doc
     ):
-        """Every high/critical red flag should generate an open question."""
+        """Every high-severity red flag should generate an open question."""
         run_deal_analysis_pipeline(test_deal.id, db)
         high_flags = (
             db.query(RedFlag)
             .filter(
                 RedFlag.deal_id == test_deal.id,
-                RedFlag.severity.in_([Severity.high, Severity.critical]),
+                RedFlag.severity == Severity.high,
             )
             .count()
         )

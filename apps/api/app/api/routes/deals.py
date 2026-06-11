@@ -16,6 +16,7 @@ from app.models.workspace import Workspace
 from app.schemas.agent_run import AgentRunRead
 from app.schemas.clause_finding import ClauseFindingRead
 from app.schemas.missing_document import MissingDocumentRead
+from app.schemas.company_profile import CompanyProfileRead
 from app.schemas.open_question import OpenQuestionRead
 from app.schemas.red_flag import RedFlagRead
 from app.schemas.deal import (
@@ -109,6 +110,15 @@ def update_deal(
         deal.description = payload.description
     if payload.value is not None:
         deal.value = payload.value
+    if payload.report_language is not None:
+        lang = payload.report_language.lower().strip()
+        if lang not in ("it", "en", "auto"):
+            raise HTTPException(
+                status_code=422,
+                detail="report_language must be 'it', 'en' or 'auto'",
+            )
+        # "auto" clears the override → back to majority-language detection.
+        deal.report_language = None if lang == "auto" else lang
 
     db.commit()
     db.refresh(deal)
@@ -449,6 +459,35 @@ def list_missing_documents(
     )
 
 
+@router.get("/{deal_id}/company-profiles", response_model=list[CompanyProfileRead])
+def list_company_profiles(
+    deal_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Corporate Introductory Information extracted from the deal's corporate
+    documents (visure, atti costitutivi, statuti). One row per distinct
+    target company.
+    """
+    from app.models.company_profile import CompanyProfile
+
+    deal = (
+        db.query(Deal)
+        .join(Deal.workspace)
+        .filter(Deal.id == deal_id, Workspace.owner_id == current_user.id)
+        .first()
+    )
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    return (
+        db.query(CompanyProfile)
+        .filter(CompanyProfile.deal_id == deal_id)
+        .order_by(CompanyProfile.id.asc())
+        .all()
+    )
+
+
 @router.get("/{deal_id}/report", response_model=ReportGenerateResponse)
 def get_report(
     deal_id: int,
@@ -594,6 +633,7 @@ _PIPELINE_STAGES = [
     "document_router",
     "contract_analysis",
     "corporate_governance",
+    "corporate_intro_extraction",
     "red_flag_aggregation",
     "report_generation",
 ]

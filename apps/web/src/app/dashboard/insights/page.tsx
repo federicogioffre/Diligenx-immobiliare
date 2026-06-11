@@ -23,14 +23,13 @@ const SEVERITY_META: Record<
   keyof WorkspaceInsights['red_flags_by_severity'],
   { label: string; bar: string; pill: string }
 > = {
-  critical: { label: 'Critico', bar: 'bg-red-500',     pill: 'bg-red-50 text-red-700' },
   high:     { label: 'Alto',    bar: 'bg-orange-500',  pill: 'bg-orange-50 text-orange-700' },
   medium:   { label: 'Medio',   bar: 'bg-amber-400',   pill: 'bg-amber-50 text-amber-700' },
   low:      { label: 'Basso',   bar: 'bg-slate-300',   pill: 'bg-slate-100 text-slate-600' },
 }
 
 // Render order is severity-descending so the worst flags sit at the top.
-const SEVERITY_ORDER: (keyof typeof SEVERITY_META)[] = ['critical', 'high', 'medium', 'low']
+const SEVERITY_ORDER: (keyof typeof SEVERITY_META)[] = ['high', 'medium', 'low']
 
 // Pipeline order is the natural lifecycle of a deal.
 const STATUS_ORDER: (keyof typeof STATUS_META)[] = ['draft', 'analyzing', 'reviewed', 'closed']

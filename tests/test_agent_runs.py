@@ -113,7 +113,7 @@ class TestAgentRunEndpoint:
         )
         assert response.status_code == 404
 
-    def test_returns_six_runs_after_full_pipeline(
+    def test_returns_seven_runs_after_full_pipeline(
         self, client, auth_headers, test_deal: Deal, processed_doc: Document
     ):
         """Full pipeline produces exactly 6 agent run records."""
@@ -123,7 +123,7 @@ class TestAgentRunEndpoint:
             headers=auth_headers,
         )
         assert response.status_code == 200
-        assert len(response.json()) == 6
+        assert len(response.json()) == 7
 
     # ── Response shape ─────────────────────────────────────────────────── #
 
@@ -267,7 +267,8 @@ class TestAgentRunEndpoint:
         names = {r["agent_name"] for r in response.json()}
         expected = {
             "intake", "document_router", "contract_analysis",
-            "corporate_governance", "red_flag_aggregation", "report_generation",
+            "corporate_governance", "corporate_intro_extraction",
+            "red_flag_aggregation", "report_generation",
         }
         assert names == expected
 
@@ -350,7 +351,7 @@ class TestAgentRunEndpoint:
             f"/deals/{test_deal.id}/agent-runs",
             headers=auth_headers,
         )
-        assert len(response.json()) == 6
+        assert len(response.json()) == 7
 
 
 # ── 2. AgentRun model — duration_seconds property ─────────────────────────
@@ -415,7 +416,7 @@ class TestAgentRunDurationProperty:
             .filter(AgentRun.deal_id == test_deal.id)
             .all()
         )
-        assert len(runs) == 6
+        assert len(runs) == 7
         for run in runs:
             assert run.duration_seconds is not None, (
                 f"duration_seconds is None for '{run.agent_name}'"

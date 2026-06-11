@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import {
@@ -12,6 +12,7 @@ import {
   DocumentRead,
   MissingDocumentRead,
   OpenQuestionRead,
+  CompanyProfileRead,
   Priority,
   RedFlagRead,
   RiskScoreResponse,
@@ -161,27 +162,26 @@ const RISK_LEVELS: Record<string, { label: string; bg: string; text: string; bar
 }
 
 const SEV_BAR: Record<string, string> = {
-  low: 'bg-slate-300', medium: 'bg-amber-400', high: 'bg-orange-500', critical: 'bg-red-500',
+  low: 'bg-slate-300', medium: 'bg-amber-400', high: 'bg-orange-500',
 }
 
 const SEV_PILL: Record<RedFlagRead['severity'], string> = {
-  critical: 'bg-red-50 text-red-700',
   high:     'bg-orange-50 text-orange-700',
   medium:   'bg-amber-50 text-amber-700',
   low:      'bg-slate-100 text-slate-600',
 }
 
 const SEV_LABEL: Record<RedFlagRead['severity'], string> = {
-  critical: 'Critico', high: 'Alto', medium: 'Medio', low: 'Basso',
+  high: 'Alto', medium: 'Medio', low: 'Basso',
 }
 
-const SEV_ORDER: RedFlagRead['severity'][] = ['critical', 'high', 'medium', 'low']
+const SEV_ORDER: RedFlagRead['severity'][] = ['high', 'medium', 'low']
 
 // Compact severity breakdown of the deal's red flags. Mirrors the workspace
 // insights widget visually but is fed from the already-loaded flag list, so
 // no extra request is needed.
 function RedFlagSeverityWidget({ flags }: { flags: RedFlagRead[] }) {
-  const counts: Record<RedFlagRead['severity'], number> = { critical: 0, high: 0, medium: 0, low: 0 }
+  const counts: Record<RedFlagRead['severity'], number> = { high: 0, medium: 0, low: 0 }
   for (const f of flags) counts[f.severity] += 1
   const total = flags.length
 
@@ -238,6 +238,102 @@ const PRIORITY_BORDER: Record<Priority, string> = {
 
 // Truncate so the card stays compact; the report endpoint has the full text.
 const FOLLOWUP_PREVIEW_LIMIT = 5
+
+function ReportLanguageSelect({
+  deal,
+  onChanged,
+}: {
+  deal: DealRead
+  onChanged: (d: DealRead) => void
+}) {
+  const [saving, setSaving] = useState(false)
+
+  async function handleChange(value: string) {
+    setSaving(true)
+    try {
+      const updated = await api.deals.update(deal.id, {
+        report_language: value as 'it' | 'en' | 'auto',
+      })
+      onChanged(updated)
+    } catch {
+      /* leave previous value on failure */
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <label className="flex items-center gap-1.5 text-xs text-slate-500" title="Lingua del report e dell'analisi AI">
+      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" />
+      </svg>
+      <select
+        value={deal.report_language ?? 'auto'}
+        onChange={(e) => handleChange(e.target.value)}
+        disabled={saving}
+        className="bg-transparent border border-slate-200 rounded-lg px-1.5 py-1 text-xs text-slate-600 hover:border-slate-300 focus:outline-none focus:border-blue-400 disabled:opacity-50"
+      >
+        <option value="auto">Auto</option>
+        <option value="it">Italiano</option>
+        <option value="en">English</option>
+      </select>
+    </label>
+  )
+}
+
+function CorporateIntroCard({ profiles }: { profiles: CompanyProfileRead[] }) {
+  // Rows we surface in the deal-page summary table — short, scannable.
+  // The full per-field detail (Pledge, Business, Duration, ...) is in
+  // the generated report. Here we show what an analyst needs at a glance.
+  const ROWS: { key: keyof CompanyProfileRead; label: string }[] = [
+    { key: 'legal_form',         label: 'Forma' },
+    { key: 'registered_office',  label: 'Sede legale' },
+    { key: 'corporate_capital',  label: 'Capitale' },
+    { key: 'shareholders',       label: 'Soci' },
+    { key: 'managing_body',      label: 'Organo amministrativo' },
+    { key: 'auditors',           label: 'Sindaci' },
+  ]
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-5">
+      <div className="flex items-baseline justify-between">
+        <h3 className="text-sm font-semibold text-slate-800">Informazioni societarie</h3>
+        <span className="text-xs text-slate-400 tabular-nums">
+          {profiles.length} societ{profiles.length === 1 ? 'à' : 'à'}
+        </span>
+      </div>
+
+      <div className="space-y-5">
+        {profiles.map((p) => (
+          <div key={p.id} className="rounded-xl border border-slate-100 bg-slate-50/40 p-4">
+            <div className="flex items-baseline justify-between mb-3 gap-2">
+              <h4 className="text-sm font-semibold text-slate-900 truncate">
+                {p.company_name}
+              </h4>
+              {p.confidence != null && (
+                <span className="text-[11px] text-slate-400 tabular-nums shrink-0">
+                  Confidenza {(p.confidence * 100).toFixed(0)}%
+                </span>
+              )}
+            </div>
+            <dl className="grid grid-cols-1 sm:grid-cols-[8rem_1fr] gap-x-4 gap-y-2 text-sm">
+              {ROWS.map(({ key, label }) => {
+                const value = p[key]
+                if (!value || typeof value !== 'string') return null
+                return (
+                  <Fragment key={String(key)}>
+                    <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</dt>
+                    <dd className="text-slate-700 whitespace-pre-wrap">{value}</dd>
+                  </Fragment>
+                )
+              })}
+            </dl>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 function FollowUpCard({
   questions,
@@ -435,6 +531,7 @@ export default function DealPage() {
   const [redFlags, setRedFlags]   = useState<RedFlagRead[]>([])
   const [openQuestions, setOpenQuestions]       = useState<OpenQuestionRead[]>([])
   const [missingDocs, setMissingDocs]           = useState<MissingDocumentRead[]>([])
+  const [companyProfiles, setCompanyProfiles]   = useState<CompanyProfileRead[]>([])
   const [streamStages, setStreamStages] = useState<AnalysisStageEvent[]>([])
 
   const [analyzing, setAnalyzing]   = useState(false)
@@ -471,6 +568,7 @@ export default function DealPage() {
         try { setRedFlags(await api.deals.redFlags(dealId)) } catch { /* ok */ }
         try { setOpenQuestions(await api.deals.openQuestions(dealId)) } catch { /* ok */ }
         try { setMissingDocs(await api.deals.missingDocuments(dealId)) } catch { /* ok */ }
+        try { setCompanyProfiles(await api.deals.companyProfiles(dealId)) } catch { /* ok */ }
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Errore nel caricamento')
@@ -494,7 +592,7 @@ export default function DealPage() {
     if (analysisPollRef.current) { clearInterval(analysisPollRef.current); analysisPollRef.current = null }
     setAnalyzing(false)
     try {
-      const [d, runs, clauses, flags, score, questions, missing] = await Promise.all([
+      const [d, runs, clauses, flags, score, questions, missing, profiles] = await Promise.all([
         api.deals.get(dealId),
         api.deals.agentRuns(dealId),
         api.deals.clauseFindings(dealId),
@@ -502,9 +600,10 @@ export default function DealPage() {
         api.deals.getRiskScore(dealId).catch(() => null),
         api.deals.openQuestions(dealId).catch(() => [] as OpenQuestionRead[]),
         api.deals.missingDocuments(dealId).catch(() => [] as MissingDocumentRead[]),
+        api.deals.companyProfiles(dealId).catch(() => [] as CompanyProfileRead[]),
       ])
       setDeal(d); setAgentRuns(runs); setRedFlags(flags)
-      setOpenQuestions(questions); setMissingDocs(missing)
+      setOpenQuestions(questions); setMissingDocs(missing); setCompanyProfiles(profiles)
       if (score) setRiskScore(score)
       setSummary({ clauseCount: clauses.length, redFlagCount: flags.length, documentCount: docs.filter((d) => d.status === 'processed').length })
     } catch { /* best-effort */ }
@@ -624,7 +723,8 @@ export default function DealPage() {
       {/* Deal header */}
       <div className="flex items-start justify-between mb-2">
         <h1 className="text-xl font-bold text-slate-900 leading-tight">{deal.title}</h1>
-        <div className="shrink-0 ml-3">
+        <div className="shrink-0 ml-3 flex items-center gap-2">
+          <ReportLanguageSelect deal={deal} onChanged={(d) => setDeal(d)} />
           <StatusBadge status={deal.status} />
         </div>
       </div>
@@ -761,6 +861,10 @@ export default function DealPage() {
         )}
 
         {summary && redFlags.length > 0 && <RedFlagSeverityWidget flags={redFlags} />}
+
+        {summary && companyProfiles.length > 0 && (
+          <CorporateIntroCard profiles={companyProfiles} />
+        )}
 
         {summary && (openQuestions.length > 0 || missingDocs.length > 0) && (
           <FollowUpCard questions={openQuestions} missing={missingDocs} />
