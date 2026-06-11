@@ -50,6 +50,7 @@ body { font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt; color: #1e2
 h1 { font-size: 18pt; color: #0f172a; margin-top: 0; }
 h2 { font-size: 14pt; color: #0f172a; border-bottom: 1px solid #e2e8f0; padding-bottom: 4pt; margin-top: 18pt; }
 h3 { font-size: 11pt; color: #334155; margin-top: 10pt; }
+h4 { font-size: 10.5pt; color: #0f172a; margin-top: 10pt; margin-bottom: 4pt; }
 p  { margin: 6pt 0; }
 ul, ol { margin: 6pt 0; padding-left: 20pt; }
 li { margin: 2pt 0; }
@@ -215,6 +216,13 @@ def _append_markdown_body(doc, md_text: str) -> None:
             continue
 
         # Headings (order matters: check longer prefix first)
+        if line.startswith("#### "):
+            # Finding headings carry [SEVERITY] tokens — render inline so
+            # they get their color in DOCX too.
+            h = doc.add_heading("", level=4)
+            _render_inline(h, line[5:].strip())
+            i += 1
+            continue
         if line.startswith("### "):
             doc.add_heading(line[4:].strip(), level=3)
             i += 1

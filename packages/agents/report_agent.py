@@ -81,7 +81,9 @@ _L10N: dict[str, dict[str, str]] = {
             "_To be completed by the deal team (registered office, corporate "
             "capital, shareholders, managing body, auditors)._"
         ),
-        "findings_header": "| # | Issue | Risk | Recommendation | Severity |",
+        "issue_label": "Issue",
+        "risk_label": "Risk",
+        "recommendation_label": "Recommendation",
         "doc_table_header": "| Document | Language | Pages |",
         "doc_table_sep": "|----------|----------|-------|",
         "field": "Field",
@@ -100,7 +102,9 @@ _L10N: dict[str, dict[str, str]] = {
             "_Da completare a cura del deal team (sede legale, capitale "
             "sociale, soci, organo amministrativo, sindaci)._"
         ),
-        "findings_header": "| # | Argomento | Rischio | Raccomandazione | Gravità |",
+        "issue_label": "Rilievo",
+        "risk_label": "Rischio",
+        "recommendation_label": "Raccomandazione",
         "doc_table_header": "| Documento | Lingua | Pagine |",
         "doc_table_sep": "|-----------|--------|--------|",
         "field": "Campo",
@@ -193,7 +197,14 @@ def _render_introduction(deal_title: str, areas_reviewed: list[str], lang: str) 
 
 
 def _render_key_findings(red_flags: list, lang: str) -> str:
-    """One table per DD area; flags without area fall under Other Matters."""
+    """One block per finding, grouped by DD area.
+
+    Issue / Risk / Recommendation render as labelled paragraphs rather than
+    table cells: the texts are full sentences, and prose squeezed into
+    Markdown table columns is unreadable both on screen and in the PDF
+    export. Professional red-flag reports use the same block structure.
+    Flags without an area fall under Other Matters.
+    """
     if not red_flags:
         return (
             "## Key Findings\n\n"
@@ -213,15 +224,19 @@ def _render_key_findings(red_flags: list, lang: str) -> str:
             continue
         flags.sort(key=lambda f: sev_rank.get(f.severity.value, 3))
         parts.append(f"### {_AREA_TITLES[lang][area_key]}\n")
-        parts.append(_L10N[lang]["findings_header"])
-        parts.append("|---|-------|------|----------------|----------|")
         for i, f in enumerate(flags, start=1):
+            # [SEVERITY] tokens are colorized by both PDF and DOCX exporters.
             sev = f"[{f.severity.value.upper()}]"
-            issue = _md_cell(f"**{f.title}** — {f.issue}" if f.title else f.issue)
-            parts.append(
-                f"| {i} | {issue} | {_md_cell(f.risk)} "
-                f"| {_md_cell(f.recommendation)} | {sev} |"
-            )
+            title = f.title or _L10N[lang]["issue_label"]
+            parts.append(f"#### {i}. {title} {sev}\n")
+            parts.append(f"**{_L10N[lang]['issue_label']}** — {f.issue.strip()}\n")
+            if f.risk:
+                parts.append(f"**{_L10N[lang]['risk_label']}** — {f.risk.strip()}\n")
+            if f.recommendation:
+                parts.append(
+                    f"**{_L10N[lang]['recommendation_label']}** — "
+                    f"{f.recommendation.strip()}\n"
+                )
         parts.append("")
     return "\n".join(parts)
 

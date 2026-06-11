@@ -13,6 +13,33 @@ import Spinner from '@/components/ui/Spinner'
 
 type DownloadFormat = 'pdf' | 'docx'
 
+// Markdown finding headings end with a [SEVERITY] token (colorized in the
+// PDF/DOCX exports); on screen we render it as a colored badge instead.
+const SEVERITY_BADGE: Record<string, string> = {
+  HIGH: 'bg-orange-100 text-orange-700',
+  MEDIUM: 'bg-amber-100 text-amber-700',
+  LOW: 'bg-slate-100 text-slate-600',
+}
+
+function FindingHeading({ children }: { children?: React.ReactNode }) {
+  if (typeof children === 'string') {
+    const m = children.match(/^(.*?)\s*\[(HIGH|MEDIUM|LOW)\]\s*$/)
+    if (m) {
+      return (
+        <h4 className="flex items-center gap-2 flex-wrap">
+          <span>{m[1]}</span>
+          <span
+            className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wide not-prose ${SEVERITY_BADGE[m[2]]}`}
+          >
+            {m[2]}
+          </span>
+        </h4>
+      )
+    }
+  }
+  return <h4>{children}</h4>
+}
+
 export default function ReportPage() {
   const params = useParams()
   const dealId = Number(params.id)
@@ -177,7 +204,12 @@ export default function ReportPage() {
             prose-hr:border-slate-100
             prose-code:text-blue-600 prose-code:bg-blue-50 prose-code:rounded prose-code:px-1"
           >
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{ h4: FindingHeading }}
+            >
+              {markdown}
+            </ReactMarkdown>
           </div>
         </div>
       )}
