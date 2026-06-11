@@ -6,13 +6,20 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from app.core.config import settings
 
 connect_args: dict = {}
+engine_kwargs: dict = {"pool_pre_ping": True}
 if settings.DATABASE_URL.startswith("sqlite"):
     connect_args["check_same_thread"] = False
+else:
+    # Background ingestion tasks each hold a connection for the whole
+    # pipeline run (including slow embedding API calls), so the default
+    # pool (5 + 10 overflow) exhausts during batch uploads while the
+    # frontend polls the document list.
+    engine_kwargs.update(pool_size=10, max_overflow=20, pool_timeout=60)
 
 engine = create_engine(
     settings.DATABASE_URL,
     connect_args=connect_args,
-    pool_pre_ping=True,
+    **engine_kwargs,
 )
 
 # Enable WAL mode + generous busy-timeout for SQLite so that long-running

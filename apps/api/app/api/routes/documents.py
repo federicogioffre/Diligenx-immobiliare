@@ -1,4 +1,5 @@
 import logging
+import threading
 import uuid
 from pathlib import Path
 
@@ -25,6 +26,9 @@ ALLOWED_MIME_TYPES = {
     "text/plain",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
+
+# Max document ingestion pipelines running at once (see _run_ingestion).
+_INGESTION_SLOTS = threading.BoundedSemaphore(4)
 
 
 def _storage_key(deal_id: int, original_filename: str) -> str:
@@ -55,28 +59,35 @@ def _run_ingestion(document_id: int) -> None:
 
     A separate SessionLocal is used because the request-scoped `db`
     dependency is closed as soon as the response is sent.
+
+    Concurrency is capped by `_INGESTION_SLOTS`: each pipeline run holds a
+    DB connection from start to finish (including slow embedding API
+    calls), so an unbounded batch upload would exhaust the connection
+    pool. The semaphore is acquired BEFORE opening the session, so queued
+    ingestions wait without holding a connection.
     """
     from packages.parsing.ingestion_pipeline import process_document
 
-    db = SessionLocal()
-    try:
-        process_document(document_id, db)
-    except Exception:
-        logger.exception("Background ingestion failed for document %d", document_id)
-        # process_document already marks the doc as failed and commits before
-        # re-raising, but be defensive in case the rollback/commit itself threw.
+    with _INGESTION_SLOTS:
+        db = SessionLocal()
         try:
-            db.rollback()
-            doc = db.query(Document).filter(Document.id == document_id).first()
-            if doc and doc.status != DocumentStatus.failed:
-                doc.status = DocumentStatus.failed
-                db.commit()
+            process_document(document_id, db)
         except Exception:
-            logger.exception(
-                "Could not persist failed state for document %d", document_id
-            )
-    finally:
-        db.close()
+            logger.exception("Background ingestion failed for document %d", document_id)
+            # process_document already marks the doc as failed and commits before
+            # re-raising, but be defensive in case the rollback/commit itself threw.
+            try:
+                db.rollback()
+                doc = db.query(Document).filter(Document.id == document_id).first()
+                if doc and doc.status != DocumentStatus.failed:
+                    doc.status = DocumentStatus.failed
+                    db.commit()
+            except Exception:
+                logger.exception(
+                    "Could not persist failed state for document %d", document_id
+                )
+        finally:
+            db.close()
 
 
 @router.post("/upload", response_model=DocumentUploadResponse, status_code=201)
