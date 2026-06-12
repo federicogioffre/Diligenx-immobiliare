@@ -195,8 +195,8 @@ export default function ReportPage() {
           <div className="px-8 py-6 prose prose-slate prose-sm max-w-none
             prose-headings:font-semibold prose-headings:text-slate-900
             prose-h1:text-xl prose-h2:text-base prose-h3:text-sm
-            prose-p:text-slate-600 prose-p:leading-relaxed
-            prose-li:text-slate-600
+            prose-p:text-slate-600 prose-p:leading-relaxed prose-p:text-justify prose-p:hyphens-auto
+            prose-li:text-slate-600 prose-li:text-justify prose-li:hyphens-auto
             prose-strong:text-slate-800
             prose-table:border prose-table:border-slate-200
             prose-th:bg-slate-50 prose-th:text-slate-600 prose-th:font-semibold

@@ -115,6 +115,7 @@ CRITICAL RULES:
 2. If there are no red flags, state that no material issues were identified in the reviewed documents.
 3. No consulting filler ("it is advisable to", "standard market practice suggests", "we recommend monitoring"). Write for a lawyer who knows Italian M&A.
 4. Return ONLY the summary prose. No headings, no lists, no code fences.
+5. PUNCTUATION: do NOT use em-dashes ("—") or hyphens-as-dashes (" - ") to separate clauses. Use commas, semicolons, colons, or full stops as appropriate. This is the single most visible "AI tell" in Italian legal prose; avoid it strictly.
 
 --- DEAL ---
 Title: {deal_title}
@@ -244,6 +245,7 @@ CRITICAL RULES:
 6. Do not use consulting filler language ("it is advisable to", "standard market practice", "we recommend monitoring"). Be direct and concise.
 7. QUALITY OVER QUANTITY: prefer a short list of high-confidence findings over an exhaustive list. A deal with 3 real red flags is better than 20 borderline ones. Do NOT manufacture findings to fill the list.
 8. Confidence threshold: only output items with confidence ≥ 0.55. Items below this threshold must be omitted entirely.
+9. PUNCTUATION in issue/risk/recommendation fields: do NOT use em-dashes ("—") or hyphens used as dashes (" - "). Use commas, semicolons, colons, or full stops as appropriate. Em-dashes are the most visible "AI tell" in Italian legal prose; avoid them strictly.
 
 {legal_rules_context}
 

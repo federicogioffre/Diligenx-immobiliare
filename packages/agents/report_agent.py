@@ -229,12 +229,12 @@ def _render_key_findings(red_flags: list, lang: str) -> str:
             sev = f"[{f.severity.value.upper()}]"
             title = f.title or _L10N[lang]["issue_label"]
             parts.append(f"#### {i}. {title} {sev}\n")
-            parts.append(f"**{_L10N[lang]['issue_label']}** — {f.issue.strip()}\n")
+            parts.append(f"**{_L10N[lang]['issue_label']}:** {f.issue.strip()}\n")
             if f.risk:
-                parts.append(f"**{_L10N[lang]['risk_label']}** — {f.risk.strip()}\n")
+                parts.append(f"**{_L10N[lang]['risk_label']}:** {f.risk.strip()}\n")
             if f.recommendation:
                 parts.append(
-                    f"**{_L10N[lang]['recommendation_label']}** — "
+                    f"**{_L10N[lang]['recommendation_label']}:** "
                     f"{f.recommendation.strip()}\n"
                 )
         parts.append("")
@@ -445,17 +445,34 @@ def generate_due_diligence_report(
 
         observations_md = (
             "\n".join(
-                f"- **[{f.severity.value.upper()}]** {f.title} — {f.description}"
+                f"- **[{f.severity.value.upper()}]** {f.title}. {f.description}"
                 for f in observations
             )
             or _L10N[lang]["none_identified"]
         )
+        # Information Requests combine two sources: (1) checklist gaps
+        # detected by the intake agent (rendered as their ready-to-use
+        # localized question) and (2) free-form information requests raised
+        # by the red-flag aggregator. Both are numbered in a single list, in
+        # the natural reading order: checklist first (deterministic), then
+        # LLM-derived requests.
+        from app.models.missing_document import MissingDocument
+        missing_docs = (
+            db.query(MissingDocument)
+            .filter(MissingDocument.deal_id == deal_id)
+            .order_by(MissingDocument.id.asc())
+            .all()
+        )
+        info_lines: list[str] = []
+        n = 1
+        for md in missing_docs:
+            info_lines.append(f"{n}. {(md.reason or md.expected_item).strip()}")
+            n += 1
+        for f in info_requests:
+            info_lines.append(f"{n}. **{f.title}.** {f.description}")
+            n += 1
         info_requests_md = (
-            "\n".join(
-                f"{i}. **{f.title}** — {f.description}"
-                for i, f in enumerate(info_requests, start=1)
-            )
-            or _L10N[lang]["none_identified"]
+            "\n".join(info_lines) or _L10N[lang]["none_identified"]
         )
 
         markdown = "\n".join([

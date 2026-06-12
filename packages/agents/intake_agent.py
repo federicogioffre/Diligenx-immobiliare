@@ -15,30 +15,27 @@ Checks performed
   of their stripped text content.
   Severity: ``medium``  (redundant uploads create confusion).
 
-Category gaps
--------------
-The agent checks whether the data room covers four standard categories.
-Any category that is absent gets a ``MissingDocument`` record with
-``priority = high``.
-
-Expected categories
-~~~~~~~~~~~~~~~~~~~
-* ``corporate_documents``  — incorporation, bylaws, board resolutions, …
-* ``commercial_contracts`` — service/purchase/license agreements, …
-* ``financing_documents``  — loans, notes, term sheets, warrants, …
-* ``litigation_documents`` — complaints, court orders, settlements, …
+Checklist gaps
+--------------
+The agent matches every uploaded document against the standard DD checklist
+(see :mod:`packages.agents.dd_checklist`). Any checklist item that no
+uploaded document covers gets a ``MissingDocument`` row with the item's
+ready-to-render Italian question stored in ``reason`` — the report agent
+renders those rows verbatim in the "Information Requests" section.
 
 Idempotency
 -----------
 Re-running the agent for the same deal deletes its previous
 ``AgentFinding`` rows and all ``MissingDocument`` rows for the deal before
-writing fresh results.  An ``AgentRun`` record tracks every execution.
+writing fresh results. An ``AgentRun`` record tracks every execution.
 """
 import hashlib
 import logging
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
+
+from packages.agents.dd_checklist import CHECKLIST, matched_keys
 
 logger = logging.getLogger(__name__)
 
@@ -48,97 +45,6 @@ AGENT_NAME = "data_room_intake"
 
 #: Documents whose stripped text is shorter than this are flagged as *small*.
 SMALL_DOC_THRESHOLD = 200
-
-# ── Category keyword index ────────────────────────────────────────────────
-# Keys are the exact ``document_category`` values stored in MissingDocument.
-# Each keyword list contains lower-case fragments that are searched inside a
-# normalised needle composed of the document filename (underscores/hyphens
-# replaced with spaces) plus the first 1 000 characters of raw text.
-
-_CATEGORY_KEYWORDS: dict[str, list[str]] = {
-    "corporate_documents": [
-        "certificate of incorporation",
-        "articles of incorporation",
-        "articles of association",
-        "bylaws",
-        "by-laws",
-        "shareholders agreement",
-        "shareholder agreement",
-        "cap table",
-        "capitalization table",
-        "board minutes",
-        "board resolution",
-        "operating agreement",
-        "memorandum of association",
-        "company registration",
-    ],
-    "commercial_contracts": [
-        "service agreement",
-        "services agreement",
-        "purchase agreement",
-        "sales agreement",
-        "customer agreement",
-        "vendor agreement",
-        "supplier agreement",
-        "distribution agreement",
-        "license agreement",
-        "licensing agreement",
-        "master service",
-        "statement of work",
-        "partnership agreement",
-        "commercial contract",
-    ],
-    "financing_documents": [
-        "loan agreement",
-        "credit agreement",
-        "credit facility",
-        "promissory note",
-        "convertible note",
-        "term loan",
-        "revolving credit",
-        "security agreement",
-        "pledge agreement",
-        "warrant agreement",
-        "subscription agreement",
-        "investment agreement",
-        "term sheet",
-    ],
-    "litigation_documents": [
-        "litigation",
-        "complaint",
-        "lawsuit",
-        "court order",
-        "judgment",
-        "arbitration",
-        "settlement agreement",
-        "cease and desist",
-        "demand letter",
-        "subpoena",
-        "deposition",
-        "mediation",
-        "legal proceedings",
-    ],
-}
-
-# Human-readable description for each category (used in MissingDocument).
-_CATEGORY_DESCRIPTIONS: dict[str, str] = {
-    "corporate_documents": (
-        "Incorporation certificate, bylaws, shareholder agreements, "
-        "board resolutions, or cap table"
-    ),
-    "commercial_contracts": (
-        "Service agreements, purchase agreements, license agreements, "
-        "or other commercial contracts"
-    ),
-    "financing_documents": (
-        "Loan agreements, promissory notes, term sheets, warrant agreements, "
-        "or other financing instruments"
-    ),
-    "litigation_documents": (
-        "Court filings, arbitration records, settlement agreements, "
-        "or other litigation-related documents"
-    ),
-}
 
 
 # ── Agent ─────────────────────────────────────────────────────────────────
@@ -342,29 +248,29 @@ class DataRoomIntakeAgent:
                 sum(len(g) for g in duplicate_groups.values()),
             )
 
-            # ── 5. Missing categories ──────────────────────────────── #
-            missing_category_names = self._detect_missing_categories(documents)
+            # ── 5. Missing checklist items ─────────────────────────── #
+            missing_item_keys = self._detect_missing_checklist_items(documents)
             missing_records: list[MissingDocument] = []
 
-            for category in missing_category_names:
+            items_by_key = {item["key"]: item for item in CHECKLIST}
+            for key in missing_item_keys:
+                item = items_by_key[key]
                 md = MissingDocument(
                     deal_id=deal_id,
-                    document_category=category,
-                    expected_item=_CATEGORY_DESCRIPTIONS.get(category, category),
-                    reason=(
-                        f"No documents matching the '{category.replace('_', ' ')}' "
-                        "category were identified in the data room. This document "
-                        "set is typically required for comprehensive due diligence."
-                    ),
-                    priority=Priority.high,
+                    document_category=key,
+                    # Italian name as the human-readable label. The report
+                    # renderer uses the localized question stored in `reason`.
+                    expected_item=item["name_it"],
+                    reason=item["question_it"],
+                    priority=item["priority"],
                 )
                 db.add(md)
                 missing_records.append(md)
 
             logger.info(
-                "[%s] deal=%d — %d missing categories: %s",
+                "[%s] deal=%d — %d missing checklist items: %s",
                 self.AGENT_NAME, deal_id,
-                len(missing_category_names), missing_category_names,
+                len(missing_item_keys), missing_item_keys,
             )
 
             db.flush()
@@ -383,7 +289,7 @@ class DataRoomIntakeAgent:
                     "duplicate_groups": len(duplicate_groups),
                 },
                 "agent_findings_count": len(all_findings),
-                "missing_categories": missing_category_names,
+                "missing_checklist_items": missing_item_keys,
                 "missing_documents_count": len(missing_records),
             }
             logger.info(
@@ -441,32 +347,20 @@ class DataRoomIntakeAgent:
         return {h: docs for h, docs in hash_map.items() if len(docs) > 1}
 
     def _classify_document(self, doc) -> set[str]:
-        """Return the set of due-diligence categories this document covers.
+        """Return the set of checklist item keys this document covers."""
+        return matched_keys(doc.filename, doc.raw_text)
 
-        The search needle combines a normalised filename (underscores and
-        hyphens replaced with spaces) with the first 1 000 characters of
-        extracted text, both lower-cased.
+    def _detect_missing_checklist_items(self, documents: list) -> list[str]:
+        """Return the list of checklist item keys not covered by any document.
+
+        Order follows :data:`packages.agents.dd_checklist.CHECKLIST` so the
+        rendered Information Requests section groups items by DD area in
+        the same sequence used elsewhere in the report.
         """
-        filename_normalised = (
-            (doc.filename or "")
-            .lower()
-            .replace("_", " ")
-            .replace("-", " ")
-        )
-        needle = filename_normalised + " " + (doc.raw_text or "")[:1000].lower()
-
-        matched: set[str] = set()
-        for category, keywords in _CATEGORY_KEYWORDS.items():
-            if any(kw in needle for kw in keywords):
-                matched.add(category)
-        return matched
-
-    def _detect_missing_categories(self, documents: list) -> list[str]:
-        """Return the list of standard categories not covered by any document."""
         present: set[str] = set()
         for doc in documents:
             present.update(self._classify_document(doc))
-        return [cat for cat in _CATEGORY_KEYWORDS if cat not in present]
+        return [item["key"] for item in CHECKLIST if item["key"] not in present]
 
 
 # ── Module-level convenience function ─────────────────────────────────────

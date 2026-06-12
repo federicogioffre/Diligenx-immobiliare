@@ -46,14 +46,14 @@ _PDF_CSS = """
     height: 0.8cm;
   }
 }
-body { font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt; color: #1e293b; line-height: 1.5; }
-h1 { font-size: 18pt; color: #0f172a; margin-top: 0; }
-h2 { font-size: 14pt; color: #0f172a; border-bottom: 1px solid #e2e8f0; padding-bottom: 4pt; margin-top: 18pt; }
-h3 { font-size: 11pt; color: #334155; margin-top: 10pt; }
-h4 { font-size: 10.5pt; color: #0f172a; margin-top: 10pt; margin-bottom: 4pt; }
-p  { margin: 6pt 0; }
+body { font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt; color: #1e293b; line-height: 1.5; text-align: justify; }
+h1 { font-size: 18pt; color: #0f172a; margin-top: 0; text-align: left; }
+h2 { font-size: 14pt; color: #0f172a; border-bottom: 1px solid #e2e8f0; padding-bottom: 4pt; margin-top: 18pt; text-align: left; }
+h3 { font-size: 11pt; color: #334155; margin-top: 10pt; text-align: left; }
+h4 { font-size: 10.5pt; color: #0f172a; margin-top: 10pt; margin-bottom: 4pt; text-align: left; }
+p  { margin: 6pt 0; text-align: justify; }
 ul, ol { margin: 6pt 0; padding-left: 20pt; }
-li { margin: 2pt 0; }
+li { margin: 2pt 0; text-align: justify; }
 strong { color: #0f172a; }
 table { border-collapse: collapse; width: 100%; margin: 8pt 0; }
 th, td { border: 1px solid #cbd5e1; padding: 5pt 8pt; font-size: 9.5pt; }
@@ -240,6 +240,7 @@ def _append_markdown_body(doc, md_text: str) -> None:
         m = re.match(r"^[-*]\s+(.*)", line)
         if m:
             p = doc.add_paragraph(style="List Bullet")
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             _render_inline(p, m.group(1))
             i += 1
             continue
@@ -248,6 +249,7 @@ def _append_markdown_body(doc, md_text: str) -> None:
         m = re.match(r"^\d+\.\s+(.*)", line)
         if m:
             p = doc.add_paragraph(style="List Number")
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             _render_inline(p, m.group(1))
             i += 1
             continue
@@ -263,6 +265,7 @@ def _append_markdown_body(doc, md_text: str) -> None:
 
         # Plain paragraph
         p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         _render_inline(p, line)
         i += 1
 

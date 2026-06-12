@@ -28,7 +28,6 @@ from packages.agents.intake_agent import (
     run_intake,
     AGENT_NAME,
     SMALL_DOC_THRESHOLD,
-    _CATEGORY_KEYWORDS,
 )
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
@@ -293,195 +292,102 @@ class TestDuplicateDocumentDetection:
         assert any("original.txt" in d for d in descriptions)
 
 
-# ── 4. Missing-category detection ──────────────────────────────────────────
+# ── 4. Missing checklist-item detection ────────────────────────────────────
 
-class TestMissingCategoryDetection:
+class TestMissingChecklistDetection:
+    """Verifies that the new DD checklist drives missing-document creation.
 
-    _ALL_CATEGORIES = {
-        "corporate_documents",
-        "commercial_contracts",
-        "financing_documents",
-        "litigation_documents",
-    }
+    The checklist defines ~19 items across all DD areas. With an empty data
+    room every item must be flagged; uploading a document that covers a
+    given item must remove that item from the missing list.
+    """
 
-    def test_all_categories_missing_when_no_documents(self, db, test_deal, agent):
+    def test_all_items_missing_when_no_documents(self, db, test_deal, agent):
+        from packages.agents.dd_checklist import CHECKLIST
         agent.run(test_deal.id, db)
-        categories = {
+        keys = {
             m.document_category
             for m in db.query(MissingDocument)
             .filter(MissingDocument.deal_id == test_deal.id)
             .all()
         }
-        assert categories == self._ALL_CATEGORIES
+        assert keys == {item["key"] for item in CHECKLIST}
 
-    def test_corporate_documents_detected_via_raw_text(self, db, test_deal, agent):
-        _make_doc(
-            db, test_deal,
-            raw_text=(
-                "CERTIFICATE OF INCORPORATION of Acme Corp.\n"
-                "These articles of incorporation are filed pursuant to …"
-            ),
-        )
+    def test_bylaws_detected_via_filename(self, db, test_deal, agent):
+        _make_doc(db, test_deal, filename="statuto_aggiornato.pdf",
+                  raw_text="Statuto della società" * 20)
         agent.run(test_deal.id, db)
-        missing_cats = {
+        missing = {
             m.document_category
             for m in db.query(MissingDocument)
             .filter(MissingDocument.deal_id == test_deal.id)
             .all()
         }
-        assert "corporate_documents" not in missing_cats
+        assert "atto_costitutivo_statuto" not in missing
 
-    def test_corporate_documents_detected_via_filename(self, db, test_deal, agent):
-        _make_doc(
-            db, test_deal,
-            filename="articles_of_incorporation.pdf",
-            raw_text="Some boilerplate corporate text." * 10,
-        )
+    def test_visura_detected_via_raw_text(self, db, test_deal, agent):
+        _make_doc(db, test_deal, filename="company_overview.pdf",
+                  raw_text="VISURA CAMERALE — Registro Imprese di Milano" * 20)
         agent.run(test_deal.id, db)
-        missing_cats = {
+        missing = {
             m.document_category
             for m in db.query(MissingDocument)
             .filter(MissingDocument.deal_id == test_deal.id)
             .all()
         }
-        assert "corporate_documents" not in missing_cats
+        assert "visura_camerale" not in missing
 
-    def test_commercial_contracts_detected_via_raw_text(self, db, test_deal, agent):
-        _make_doc(
-            db, test_deal,
-            raw_text=(
-                "SERVICE AGREEMENT entered into between Client and Provider. "
-                "This agreement governs the provision of consulting services."
-            ) * 5,
-        )
+    def test_loan_agreement_detected_via_raw_text(self, db, test_deal, agent):
+        _make_doc(db, test_deal, filename="financing.pdf",
+                  raw_text="LOAN AGREEMENT dated 1 January between Lender and Borrower." * 5)
         agent.run(test_deal.id, db)
-        missing_cats = {
+        missing = {
             m.document_category
             for m in db.query(MissingDocument)
             .filter(MissingDocument.deal_id == test_deal.id)
             .all()
         }
-        assert "commercial_contracts" not in missing_cats
+        assert "finanziamenti" not in missing
 
-    def test_commercial_contracts_detected_via_filename(self, db, test_deal, agent):
-        _make_doc(
-            db, test_deal,
-            filename="vendor_service_agreement_2024.pdf",
-            raw_text="Consulting services contract terms and conditions." * 5,
-        )
+    def test_litigation_detected_via_italian_keyword(self, db, test_deal, agent):
+        _make_doc(db, test_deal, filename="elenco_contenziosi.pdf",
+                  raw_text="Elenco contenziosi in essere alla data odierna." * 10)
         agent.run(test_deal.id, db)
-        missing_cats = {
+        missing = {
             m.document_category
             for m in db.query(MissingDocument)
             .filter(MissingDocument.deal_id == test_deal.id)
             .all()
         }
-        assert "commercial_contracts" not in missing_cats
+        assert "contenzioso" not in missing
 
-    def test_financing_documents_detected_via_raw_text(self, db, test_deal, agent):
-        _make_doc(
-            db, test_deal,
-            raw_text=(
-                "LOAN AGREEMENT dated January 1, 2024, between Lender and Borrower. "
-                "The lender agrees to provide a term loan of $5,000,000."
-            ) * 5,
-        )
+    def test_missing_doc_has_localized_question_in_reason(self, db, test_deal, agent):
+        """The intake stores the ready-to-render Italian question in `reason`."""
         agent.run(test_deal.id, db)
-        missing_cats = {
-            m.document_category
+        for md in db.query(MissingDocument).filter(
+            MissingDocument.deal_id == test_deal.id
+        ).all():
+            assert md.reason and md.reason.startswith("Si chiede")
+
+    def test_missing_doc_priority_comes_from_checklist(self, db, test_deal, agent):
+        """High-priority items (e.g. visura) keep high; medium stay medium."""
+        from packages.agents.dd_checklist import CHECKLIST
+        agent.run(test_deal.id, db)
+        by_key = {
+            m.document_category: m
             for m in db.query(MissingDocument)
             .filter(MissingDocument.deal_id == test_deal.id)
             .all()
         }
-        assert "financing_documents" not in missing_cats
+        for item in CHECKLIST:
+            assert by_key[item["key"]].priority == item["priority"]
 
-    def test_financing_documents_detected_via_filename(self, db, test_deal, agent):
-        _make_doc(
-            db, test_deal,
-            filename="convertible_note_agreement.pdf",
-            raw_text="Convertible note terms and repayment schedule." * 5,
-        )
-        agent.run(test_deal.id, db)
-        missing_cats = {
-            m.document_category
-            for m in db.query(MissingDocument)
-            .filter(MissingDocument.deal_id == test_deal.id)
-            .all()
-        }
-        assert "financing_documents" not in missing_cats
-
-    def test_litigation_documents_detected_via_raw_text(self, db, test_deal, agent):
-        _make_doc(
-            db, test_deal,
-            raw_text=(
-                "SETTLEMENT AGREEMENT in the matter of Smith v. Acme Corp. "
-                "The parties agree to resolve the pending litigation."
-            ) * 5,
-        )
-        agent.run(test_deal.id, db)
-        missing_cats = {
-            m.document_category
-            for m in db.query(MissingDocument)
-            .filter(MissingDocument.deal_id == test_deal.id)
-            .all()
-        }
-        assert "litigation_documents" not in missing_cats
-
-    def test_litigation_documents_detected_via_filename(self, db, test_deal, agent):
-        _make_doc(
-            db, test_deal,
-            filename="arbitration_award_2023.pdf",
-            raw_text="Final arbitration award issued by the panel." * 5,
-        )
-        agent.run(test_deal.id, db)
-        missing_cats = {
-            m.document_category
-            for m in db.query(MissingDocument)
-            .filter(MissingDocument.deal_id == test_deal.id)
-            .all()
-        }
-        assert "litigation_documents" not in missing_cats
-
-    def test_all_categories_covered_produces_no_missing_docs(self, db, test_deal, agent):
-        _make_doc(db, test_deal, filename="articles_of_incorporation.pdf",
-                  raw_text="Articles of incorporation of Acme Corp." * 5)
-        _make_doc(db, test_deal, filename="service_agreement.pdf",
-                  raw_text="This service agreement governs the engagement." * 5)
-        _make_doc(db, test_deal, filename="loan_agreement.pdf",
-                  raw_text="This loan agreement is between lender and borrower." * 5)
-        _make_doc(db, test_deal, filename="settlement_agreement.pdf",
-                  raw_text="Settlement of litigation between the parties." * 5)
+    def test_result_missing_checklist_items_list(self, db, test_deal, agent):
+        from packages.agents.dd_checklist import CHECKLIST
         result = agent.run(test_deal.id, db)
-        assert result["missing_documents_count"] == 0
-        assert result["missing_categories"] == []
-
-    def test_missing_doc_priority_is_high(self, db, test_deal, agent):
-        agent.run(test_deal.id, db)
-        for md in db.query(MissingDocument).filter(MissingDocument.deal_id == test_deal.id).all():
-            assert md.priority == Priority.high
-
-    def test_missing_doc_has_reason(self, db, test_deal, agent):
-        agent.run(test_deal.id, db)
-        for md in db.query(MissingDocument).filter(MissingDocument.deal_id == test_deal.id).all():
-            assert md.reason and len(md.reason) > 0
-
-    def test_missing_doc_expected_item_describes_category(self, db, test_deal, agent):
-        agent.run(test_deal.id, db)
-        for md in db.query(MissingDocument).filter(MissingDocument.deal_id == test_deal.id).all():
-            assert md.expected_item and len(md.expected_item) > 0
-
-    def test_result_missing_categories_list(self, db, test_deal, agent):
-        result = agent.run(test_deal.id, db)
-        assert set(result["missing_categories"]) == self._ALL_CATEGORIES
-
-    def test_result_missing_documents_count(self, db, test_deal, agent):
-        result = agent.run(test_deal.id, db)
-        db_count = (
-            db.query(MissingDocument)
-            .filter(MissingDocument.deal_id == test_deal.id)
-            .count()
-        )
-        assert result["missing_documents_count"] == db_count
+        assert set(result["missing_checklist_items"]) == {
+            item["key"] for item in CHECKLIST
+        }
 
 
 # ── 5. Return-value structure ──────────────────────────────────────────────
@@ -494,7 +400,7 @@ class TestReturnValue:
         assert "documents_analyzed" in result
         assert "issues" in result
         assert "agent_findings_count" in result
-        assert "missing_categories" in result
+        assert "missing_checklist_items" in result
         assert "missing_documents_count" in result
 
     def test_issues_dict_has_all_keys(self, db, test_deal, agent):
@@ -652,9 +558,10 @@ class TestEdgeCases:
             "duplicate_groups": 0,
         }
 
-    def test_no_documents_all_categories_missing(self, db, test_deal, agent):
+    def test_no_documents_all_checklist_items_missing(self, db, test_deal, agent):
+        from packages.agents.dd_checklist import CHECKLIST
         result = agent.run(test_deal.id, db)
-        assert result["missing_documents_count"] == 4
+        assert result["missing_documents_count"] == len(CHECKLIST)
 
     def test_pending_documents_also_checked(self, db, test_deal, agent):
         """Documents with status=pending (not yet processed) must still be audited."""
