@@ -293,6 +293,93 @@ def _render_corporate_intro(profiles: list, lang: str) -> str:
     return "\n".join(parts)
 
 
+def _render_information_requests(
+    missing_docs: list,
+    info_requests: list,
+    lang: str,
+) -> str:
+    """Render the Information Requests section grouped by checklist section.
+
+    Layout follows the firm's standard checklist (sections A. through Q.):
+    each section that has at least one missing item appears as a `###`
+    sub-section, with the relevant items listed in their natural order
+    (A.1, A.2, ...) and prefixed by the firm's item code. Free-form
+    requests raised by the LLM aggregator that don't correspond to a
+    checklist key fall under a trailing "Altri rilievi" section.
+    """
+    from packages.agents.dd_checklist import (
+        SECTIONS_ORDER,
+        SECTION_NAMES,
+        items_by_key,
+    )
+
+    heading = _L10N[lang]["info_requests_heading"]
+    if not missing_docs and not info_requests:
+        return f"{heading}\n\n{_L10N[lang]['none_identified']}\n"
+
+    by_key = items_by_key()
+    grouped: dict[str, list] = {}
+    free_form_md: list = []  # MissingDocument rows with unknown key (legacy data)
+
+    for md in missing_docs:
+        item = by_key.get(md.document_category)
+        if item is None:
+            # Legacy data (pre-checklist run): render at the end.
+            free_form_md.append(md)
+            continue
+        grouped.setdefault(item["section_code"], []).append((item, md))
+
+    parts: list[str] = [heading, ""]
+    counter = 1
+    for section in SECTIONS_ORDER:
+        items = grouped.get(section)
+        if not items:
+            continue
+        section_label = SECTION_NAMES[section][lang]
+        parts.append(f"### {section}. {section_label}")
+        parts.append("")
+        # Items are already ordered by id (intake writes them in CHECKLIST
+        # order). Sort defensively by the firm's code suffix.
+        items.sort(key=lambda pair: _sort_key_for_code(pair[0]["key"]))
+        for item, md in items:
+            text = (md.reason or item["request_it"]).strip()
+            parts.append(f"{counter}. **{item['key']}** {text}")
+            counter += 1
+        parts.append("")
+
+    extras: list[str] = []
+    if free_form_md:
+        for md in free_form_md:
+            extras.append(
+                f"{counter}. {(md.reason or md.expected_item).strip()}"
+            )
+            counter += 1
+    for f in info_requests:
+        extras.append(f"{counter}. **{f.title}.** {f.description}")
+        counter += 1
+    if extras:
+        extras_label = (
+            "Altri rilievi" if lang == "it" else "Other items"
+        )
+        parts.append(f"### {extras_label}")
+        parts.append("")
+        parts.extend(extras)
+        parts.append("")
+
+    return "\n".join(parts)
+
+
+def _sort_key_for_code(code: str) -> tuple[str, int]:
+    """Sort checklist codes like 'A.1', 'A.10' numerically within section."""
+    if "." not in code:
+        return (code, 0)
+    letter, num = code.split(".", 1)
+    try:
+        return (letter, int(num))
+    except ValueError:
+        return (letter, 0)
+
+
 def _render_documents_appendix(documents: list, lang: str) -> str:
     if not documents:
         return (
@@ -450,29 +537,28 @@ def generate_due_diligence_report(
             )
             or _L10N[lang]["none_identified"]
         )
-        # Information Requests combine two sources: (1) checklist gaps
-        # detected by the intake agent (rendered as their ready-to-use
-        # localized question) and (2) free-form information requests raised
-        # by the red-flag aggregator. Both are numbered in a single list, in
-        # the natural reading order: checklist first (deterministic), then
-        # LLM-derived requests.
+        # Information Requests are rendered with the firm's section
+        # structure (A. Documenti societari... / B. Beni immobili / ...)
+        # using the checklist data — items are grouped by section_code so
+        # the reader recognises the standard layout. Free-form requests
+        # raised by the red-flag aggregator land in an "Altri rilievi /
+        # Other items" trailing section.
         from app.models.missing_document import MissingDocument
+        from packages.agents.dd_checklist import (
+            CHECKLIST,
+            SECTIONS_ORDER,
+            SECTION_NAMES,
+            items_by_key,
+        )
+
         missing_docs = (
             db.query(MissingDocument)
             .filter(MissingDocument.deal_id == deal_id)
             .order_by(MissingDocument.id.asc())
             .all()
         )
-        info_lines: list[str] = []
-        n = 1
-        for md in missing_docs:
-            info_lines.append(f"{n}. {(md.reason or md.expected_item).strip()}")
-            n += 1
-        for f in info_requests:
-            info_lines.append(f"{n}. **{f.title}.** {f.description}")
-            n += 1
-        info_requests_md = (
-            "\n".join(info_lines) or _L10N[lang]["none_identified"]
+        info_requests_md = _render_information_requests(
+            missing_docs, info_requests, lang
         )
 
         markdown = "\n".join([
@@ -494,8 +580,6 @@ def generate_due_diligence_report(
             _L10N[lang]["observations_heading"],
             "",
             observations_md,
-            "",
-            _L10N[lang]["info_requests_heading"],
             "",
             info_requests_md,
             "",

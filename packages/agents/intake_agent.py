@@ -255,13 +255,14 @@ class DataRoomIntakeAgent:
             items_by_key = {item["key"]: item for item in CHECKLIST}
             for key in missing_item_keys:
                 item = items_by_key[key]
+                # expected_item is String(500); keep a short label there
+                # (firm code + section name), full request goes in reason.
+                expected = f"{item['key']} — {item['section_name_it']}"
                 md = MissingDocument(
                     deal_id=deal_id,
                     document_category=key,
-                    # Italian name as the human-readable label. The report
-                    # renderer uses the localized question stored in `reason`.
-                    expected_item=item["name_it"],
-                    reason=item["question_it"],
+                    expected_item=expected[:480],
+                    reason=item["request_it"],
                     priority=item["priority"],
                 )
                 db.add(md)
@@ -270,7 +271,7 @@ class DataRoomIntakeAgent:
             logger.info(
                 "[%s] deal=%d — %d missing checklist items: %s",
                 self.AGENT_NAME, deal_id,
-                len(missing_item_keys), missing_item_keys,
+                len(missing_item_keys), missing_item_keys[:10],
             )
 
             db.flush()
