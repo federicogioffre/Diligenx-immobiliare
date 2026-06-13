@@ -56,14 +56,6 @@ AGENT_CORPORATE_INTRO = "corporate_intro_extraction"  # == CorporateIntroAgent.A
 AGENT_RED_FLAG = "red_flag_aggregation"
 AGENT_REPORT = "report_generation"
 
-# Standard document categories expected in due diligence.
-_EXPECTED_DOC_CATEGORIES = {
-    "contract": "Primary contract or service agreement",
-    "financial": "Audited financial statements or projections",
-    "legal": "Legal opinions, regulatory filings, or compliance certificates",
-    "insurance": "Certificate of insurance or policy summary",
-}
-
 
 # ── Helper: AgentRun lifecycle ────────────────────────────────────────────
 
@@ -145,7 +137,6 @@ def _stage_intake(deal_id: int, db: Session) -> dict:
     from app.models.deal import Deal, DealStatus
     from app.models.document import Document, DocumentStatus
     from app.models.missing_document import MissingDocument
-    from app.models.open_question import Priority
 
     agent = AGENT_INTAKE
     logger.info("[%s] deal=%d — starting intake stage", agent, deal_id)
@@ -181,32 +172,31 @@ def _stage_intake(deal_id: int, db: Session) -> dict:
             agent, deal_id, len(docs), len(processed),
         )
 
-        # Detect missing standard categories (simple heuristic based on
-        # filenames / raw text keywords — real implementation would be
-        # more sophisticated).
-        present_categories: set[str] = set()
+        # Detect which NM Standard Legal Checklist items the data room
+        # covers, and record a MissingDocument for every item that no
+        # document matches. Matching uses the same keyword logic the
+        # report renderer relies on (filename + first 1000 chars).
+        from packages.agents.dd_checklist import CHECKLIST, matched_keys
+
+        present_keys: set[str] = set()
         for doc in processed:
-            name_lower = (doc.filename or "").lower()
-            text_lower = (doc.raw_text or "")[:500].lower()
-            for cat in _EXPECTED_DOC_CATEGORIES:
-                if cat in name_lower or cat in text_lower:
-                    present_categories.add(cat)
-            # Contracts/agreements are detected liberally
-            if any(kw in name_lower or kw in text_lower for kw in ("contract", "agreement", "service")):
-                present_categories.add("contract")
+            present_keys |= matched_keys(doc.filename, doc.raw_text)
 
         missing_docs: list[MissingDocument] = []
-        for cat, description in _EXPECTED_DOC_CATEGORIES.items():
-            if cat not in present_categories:
-                md = MissingDocument(
-                    deal_id=deal_id,
-                    document_category=cat,
-                    expected_item=description,
-                    reason=f"No document matching category '{cat}' was found in the deal.",
-                    priority=Priority.medium,
-                )
-                db.add(md)
-                missing_docs.append(md)
+        for item in CHECKLIST:
+            if item["key"] in present_keys:
+                continue
+            # expected_item is String(500): firm code + section label.
+            expected = f"{item['key']} — {item['section_name_it']}"
+            md = MissingDocument(
+                deal_id=deal_id,
+                document_category=item["key"],
+                expected_item=expected[:480],
+                reason=item["request_it"],
+                priority=item["priority"],
+            )
+            db.add(md)
+            missing_docs.append(md)
 
         db.flush()
         _complete_run(db, run)

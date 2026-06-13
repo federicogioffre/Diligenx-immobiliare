@@ -211,19 +211,25 @@ class TestIntakeStage:
         assert intake["processed_documents"] == 1
 
     def test_intake_creates_missing_document_rows(self, db, test_deal, processed_doc):
-        """Standard categories not covered by the service agreement should appear."""
+        """Checklist items not covered by the data room should appear as
+        MissingDocument rows keyed by the firm's checklist codes (A.1, ...)."""
+        from packages.agents.dd_checklist import CHECKLIST
         run_deal_analysis_pipeline(test_deal.id, db)
         missing = (
             db.query(MissingDocument)
             .filter(MissingDocument.deal_id == test_deal.id)
             .all()
         )
-        # "contract" is recognised by the liberal heuristic (name contains "agreement").
-        # At least financial and insurance are absent.
-        assert len(missing) > 0
-        categories = {m.document_category for m in missing}
-        assert "financial" in categories
-        assert "insurance" in categories
+        # A single service-agreement doc covers very few of the ~80 items,
+        # so the vast majority must be flagged as missing.
+        assert len(missing) > 50
+        keys = {m.document_category for m in missing}
+        # Firm-coded keys, not the old broad categories.
+        assert "A.1" in keys       # Visure Registro Imprese
+        assert "C.1" in keys       # Bilanci
+        # Every key must belong to the checklist.
+        all_keys = {item["key"] for item in CHECKLIST}
+        assert keys <= all_keys
 
     def test_intake_missing_count_matches_result(self, db, test_deal, processed_doc):
         result = run_deal_analysis_pipeline(test_deal.id, db)
