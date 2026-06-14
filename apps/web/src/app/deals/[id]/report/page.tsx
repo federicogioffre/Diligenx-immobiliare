@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -13,31 +13,50 @@ import Spinner from '@/components/ui/Spinner'
 
 type DownloadFormat = 'pdf' | 'docx'
 
-// Markdown finding headings end with a [SEVERITY] token (colorized in the
-// PDF/DOCX exports); on screen we render it as a colored badge instead.
+// Severity badge classes used to colorize [HIGH]/[MEDIUM]/[LOW] tokens that
+// appear inside Key Findings table cells. The token is rendered as an
+// inline badge with the colour matching the PDF/DOCX exporters.
 const SEVERITY_BADGE: Record<string, string> = {
   HIGH: 'bg-orange-100 text-orange-700',
   MEDIUM: 'bg-amber-100 text-amber-700',
   LOW: 'bg-slate-100 text-slate-600',
 }
 
-function FindingHeading({ children }: { children?: React.ReactNode }) {
-  if (typeof children === 'string') {
-    const m = children.match(/^(.*?)\s*\[(HIGH|MEDIUM|LOW)\]\s*$/)
-    if (m) {
-      return (
-        <h4 className="flex items-center gap-2 flex-wrap">
-          <span>{m[1]}</span>
-          <span
-            className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wide not-prose ${SEVERITY_BADGE[m[2]]}`}
-          >
-            {m[2]}
-          </span>
-        </h4>
+const SEVERITY_TOKEN_RE = /\[(HIGH|MEDIUM|LOW)\]/
+
+function colorizeSeverityChildren(
+  children: React.ReactNode,
+): React.ReactNode {
+  // Replace every [HIGH]/[MEDIUM]/[LOW] token inside a string node with a
+  // styled badge. Other node types pass through unchanged.
+  return React.Children.map(children, (child) => {
+    if (typeof child !== 'string') return child
+    const parts: React.ReactNode[] = []
+    let remaining = child
+    let m: RegExpExecArray | null
+    let i = 0
+    while ((m = SEVERITY_TOKEN_RE.exec(remaining))) {
+      const before = remaining.slice(0, m.index)
+      const level = m[1]
+      if (before) parts.push(before)
+      parts.push(
+        <span
+          key={`sev-${i++}`}
+          className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide not-prose ${SEVERITY_BADGE[level]}`}
+        >
+          {level}
+        </span>,
       )
+      remaining = remaining.slice(m.index + m[0].length)
     }
-  }
-  return <h4>{children}</h4>
+    if (remaining) parts.push(remaining)
+    return parts.length ? parts : child
+  })
+}
+
+// Custom td/th that colorizes severity tokens in table cells.
+function StyledTd({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) {
+  return <td {...props}>{colorizeSeverityChildren(children)}</td>
 }
 
 export default function ReportPage() {
@@ -198,15 +217,15 @@ export default function ReportPage() {
             prose-p:text-slate-600 prose-p:leading-relaxed prose-p:text-justify prose-p:hyphens-auto
             prose-li:text-slate-600 prose-li:text-justify prose-li:hyphens-auto
             prose-strong:text-slate-800
-            prose-table:border prose-table:border-slate-200
-            prose-th:bg-slate-50 prose-th:text-slate-600 prose-th:font-semibold
-            prose-td:border prose-td:border-slate-100
+            prose-table:border prose-table:border-slate-200 prose-table:table-fixed prose-table:text-xs
+            prose-th:bg-slate-50 prose-th:text-slate-600 prose-th:font-semibold prose-th:align-top
+            prose-td:border prose-td:border-slate-100 prose-td:align-top prose-td:break-words
             prose-hr:border-slate-100
             prose-code:text-blue-600 prose-code:bg-blue-50 prose-code:rounded prose-code:px-1"
           >
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
-              components={{ h4: FindingHeading }}
+              components={{ td: StyledTd }}
             >
               {markdown}
             </ReactMarkdown>

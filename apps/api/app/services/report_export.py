@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 import markdown as md_lib
 from docx import Document as _DocxDocument
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Pt, RGBColor
+from docx.shared import Cm, Pt, RGBColor
 from xhtml2pdf import pisa
 
 if TYPE_CHECKING:
@@ -55,9 +55,15 @@ p  { margin: 6pt 0; text-align: justify; }
 ul, ol { margin: 6pt 0; padding-left: 20pt; }
 li { margin: 2pt 0; text-align: justify; }
 strong { color: #0f172a; }
-table { border-collapse: collapse; width: 100%; margin: 8pt 0; }
-th, td { border: 1px solid #cbd5e1; padding: 5pt 8pt; font-size: 9.5pt; }
+table { border-collapse: collapse; width: 100%; margin: 8pt 0; table-layout: fixed; }
+th, td { border: 1px solid #cbd5e1; padding: 5pt 7pt; font-size: 9pt; vertical-align: top; word-wrap: break-word; -pdf-keep-with-next: false; }
 th { background-color: #f1f5f9; font-weight: 600; text-align: left; color: #334155; }
+/* 5-col Key Findings table: # | Issue | Risk | Recommendation | Severity */
+table.findings th:nth-child(1), table.findings td:nth-child(1) { width: 4%; text-align: center; }
+table.findings th:nth-child(2), table.findings td:nth-child(2) { width: 32%; }
+table.findings th:nth-child(3), table.findings td:nth-child(3) { width: 25%; }
+table.findings th:nth-child(4), table.findings td:nth-child(4) { width: 29%; }
+table.findings th:nth-child(5), table.findings td:nth-child(5) { width: 10%; text-align: center; }
 .severity-critical { color: #b91c1c; font-weight: 700; }
 .severity-high     { color: #c2410c; font-weight: 700; }
 .severity-medium   { color: #b45309; font-weight: 600; }
@@ -88,6 +94,33 @@ def _colorize_severity_markdown(md_text: str) -> str:
     return _SEVERITY_RE.sub(_sub, md_text)
 
 
+# Header words that identify a Key Findings table (IT + EN). Used to tag
+# the table with class="findings" so the column-width CSS applies.
+_FINDINGS_HEADER_RE = re.compile(
+    r"<th[^>]*>\s*(Issue|Argomento|Rischio|Risk)\s*</th>",
+    re.IGNORECASE,
+)
+_TABLE_RE = re.compile(r"<table([^>]*)>([\s\S]*?)</table>")
+
+
+def _tag_findings_tables(html: str) -> str:
+    """Add class="findings" to <table> elements whose headers match the
+    Key Findings header row. Detection is content-based (one of the
+    distinctive header words is enough)."""
+
+    def _sub(m: re.Match[str]) -> str:
+        attrs = m.group(1)
+        inner = m.group(2)
+        if not _FINDINGS_HEADER_RE.search(inner):
+            return m.group(0)
+        # Don't double-tag if a class is already there.
+        if "class=" in attrs:
+            return m.group(0)
+        return f'<table{attrs} class="findings">{inner}</table>'
+
+    return _TABLE_RE.sub(_sub, html)
+
+
 def render_pdf(deal: "Deal", report: "Report") -> bytes:
     """Render the report as a branded A4 PDF."""
     body_md = _colorize_severity_markdown(report.content or "")
@@ -95,6 +128,7 @@ def render_pdf(deal: "Deal", report: "Report") -> bytes:
         body_md,
         extensions=["tables", "fenced_code", "sane_lists"],
     )
+    body_html = _tag_findings_tables(body_html)
 
     generated_on = datetime.now(timezone.utc).strftime("%d/%m/%Y")
     header_html = (
@@ -189,6 +223,14 @@ def _render_table(doc, lines: list[str], start: int) -> int:
 
     table = doc.add_table(rows=1 + len(rows), cols=len(headers))
     table.style = "Light Grid Accent 1"
+    # On a 5-column Key Findings table, apply the same column widths the
+    # PDF export uses (% of A4 minus margins, approx. 16.5 cm usable).
+    if _is_findings_header(headers):
+        table.autofit = False
+        widths_cm = [0.7, 5.5, 4.3, 4.9, 1.6]
+        for col_idx, w in enumerate(widths_cm):
+            for cell in table.columns[col_idx].cells:
+                cell.width = Cm(w)
     hdr_cells = table.rows[0].cells
     for col, text in enumerate(headers):
         hdr_cells[col].text = ""
@@ -202,6 +244,17 @@ def _render_table(doc, lines: list[str], start: int) -> int:
             _render_inline(cells[col].paragraphs[0], text)
 
     return i
+
+
+def _is_findings_header(headers: list[str]) -> bool:
+    """Detect the Key Findings header row (IT or EN) so column widths apply."""
+    if len(headers) != 5:
+        return False
+    joined = " ".join(headers).lower()
+    return any(
+        kw in joined
+        for kw in ("issue", "argomento", "rischio", "risk")
+    )
 
 
 def _append_markdown_body(doc, md_text: str) -> None:

@@ -84,6 +84,8 @@ _L10N: dict[str, dict[str, str]] = {
         "issue_label": "Issue",
         "risk_label": "Risk",
         "recommendation_label": "Recommendation",
+        "findings_header": "| # | Issue | Risk | Recommendation | Severity |",
+        "findings_sep": "|---|-------|------|----------------|----------|",
         "doc_table_header": "| Document | Language | Pages |",
         "doc_table_sep": "|----------|----------|-------|",
         "field": "Field",
@@ -105,6 +107,8 @@ _L10N: dict[str, dict[str, str]] = {
         "issue_label": "Rilievo",
         "risk_label": "Rischio",
         "recommendation_label": "Raccomandazione",
+        "findings_header": "| # | Argomento | Rischio | Raccomandazione | Gravità |",
+        "findings_sep": "|---|-----------|---------|-----------------|---------|",
         "doc_table_header": "| Documento | Lingua | Pagine |",
         "doc_table_sep": "|-----------|--------|--------|",
         "field": "Campo",
@@ -177,9 +181,13 @@ def _format_report_date(d: date, lang: str) -> str:
 
 
 def _md_cell(text: str | None) -> str:
-    """Make text safe for a Markdown table cell (no pipes / newlines)."""
+    """Make text safe for a Markdown table cell (no pipes / newlines).
+
+    Returns the placeholder "n/a" when the source text is missing so the
+    output never contains em-dashes (Italian legal prose convention).
+    """
     if not text:
-        return "—"
+        return "n/a"
     return text.replace("|", "\\|").replace("\n", " ").strip()
 
 
@@ -197,13 +205,15 @@ def _render_introduction(deal_title: str, areas_reviewed: list[str], lang: str) 
 
 
 def _render_key_findings(red_flags: list, lang: str) -> str:
-    """One block per finding, grouped by DD area.
+    """One table per DD area: rows hold the # / Issue / Risk / Recommendation
+    / Severity quintuple. Mirrors the layout used by professional Italian
+    red-flag DD reports (see the 5 anonymised sample reports). Flags
+    without an area fall under "Other Matters".
 
-    Issue / Risk / Recommendation render as labelled paragraphs rather than
-    table cells: the texts are full sentences, and prose squeezed into
-    Markdown table columns is unreadable both on screen and in the PDF
-    export. Professional red-flag reports use the same block structure.
-    Flags without an area fall under Other Matters.
+    The first column of each row carries the finding title in bold
+    followed by the issue prose in the same cell, so both are visible
+    even at narrow column widths. PDF / DOCX exporters apply explicit
+    column widths so long prose wraps cleanly.
     """
     if not red_flags:
         return (
@@ -224,19 +234,19 @@ def _render_key_findings(red_flags: list, lang: str) -> str:
             continue
         flags.sort(key=lambda f: sev_rank.get(f.severity.value, 3))
         parts.append(f"### {_AREA_TITLES[lang][area_key]}\n")
+        parts.append(_L10N[lang]["findings_header"])
+        parts.append(_L10N[lang]["findings_sep"])
         for i, f in enumerate(flags, start=1):
             # [SEVERITY] tokens are colorized by both PDF and DOCX exporters.
             sev = f"[{f.severity.value.upper()}]"
-            title = f.title or _L10N[lang]["issue_label"]
-            parts.append(f"#### {i}. {title} {sev}\n")
-            parts.append(f"**{_L10N[lang]['issue_label']}:** {f.issue.strip()}\n")
-            if f.risk:
-                parts.append(f"**{_L10N[lang]['risk_label']}:** {f.risk.strip()}\n")
-            if f.recommendation:
-                parts.append(
-                    f"**{_L10N[lang]['recommendation_label']}:** "
-                    f"{f.recommendation.strip()}\n"
-                )
+            issue_cell = (
+                f"**{f.title}.** {f.issue.strip()}"
+                if f.title else f.issue.strip()
+            )
+            parts.append(
+                f"| {i} | {_md_cell(issue_cell)} | {_md_cell(f.risk)} "
+                f"| {_md_cell(f.recommendation)} | {sev} |"
+            )
         parts.append("")
     return "\n".join(parts)
 
@@ -387,7 +397,7 @@ def _render_documents_appendix(documents: list, lang: str) -> str:
             f"{_L10N[lang]['no_documents']}\n"
         )
     rows = "\n".join(
-        f"| {_md_cell(d.filename)} | {d.language or '—'} | {d.page_count or '—'} |"
+        f"| {_md_cell(d.filename)} | {d.language or 'n/a'} | {d.page_count or 'n/a'} |"
         for d in documents
     )
     return (
