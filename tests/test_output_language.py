@@ -67,25 +67,27 @@ class TestItalianReport:
     def test_italian_headings_when_docs_italian(self, db, test_deal):
         _doc(db, test_deal, "it", 1)
         md = generate_due_diligence_report(test_deal.id, db)["markdown"]
-        assert "## Introduzione" in md
-        assert "### Scopo del Report" in md
+        # Section numbering (1., 1.1, ...) is applied at render time.
+        assert "## 1. Introduzione" in md
+        assert "### 1.1 Scopo del Report" in md
         assert "_STRETTAMENTE CONFIDENZIALE_" in md
+        # The Allegato keeps its roman numeral (skipped by the numbering pass).
         assert "## Allegato I: Lista dei Documenti Esaminati" in md
         # Per the bilingual practice in professional reports, these stay English:
-        assert "## Executive Summary" in md
-        assert "## Key Findings" in md
+        assert "Executive Summary" in md
+        assert "Key Findings" in md
 
     def test_italian_via_explicit_override(self, db, test_deal):
         test_deal.report_language = "it"
         db.commit()
         _doc(db, test_deal, "en", 1)  # docs English, override wins
         md = generate_due_diligence_report(test_deal.id, db)["markdown"]
-        assert "## Introduzione" in md
+        assert "## 1. Introduzione" in md
 
     def test_english_report_unchanged(self, db, test_deal):
         _doc(db, test_deal, "en", 1)
         md = generate_due_diligence_report(test_deal.id, db)["markdown"]
-        assert "## Introduction" in md
+        assert "## 1. Introduction" in md
         assert "_STRICTLY PRIVATE AND CONFIDENTIAL_" in md
         assert "## Appendix I: Documents Reviewed" in md
 

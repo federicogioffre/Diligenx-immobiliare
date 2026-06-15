@@ -125,12 +125,14 @@ class TestGenerateDueDiligenceReport:
     def test_markdown_contains_required_sections(self, db: Session, analyzed_deal: Deal):
         result = generate_due_diligence_report(analyzed_deal.id, db)
         md = result["markdown"]
-        assert "## Introduction" in md
-        assert "## Corporate Introductory Information" in md
-        assert "## Executive Summary" in md
-        assert "## Key Findings" in md
-        assert "## Observations" in md
-        assert "## Information Requests" in md
+        # Headings carry legal-style numbering (1., 2., 3., ...). The
+        # appendix keeps its roman-numeral label and is not arabic-numbered.
+        assert "## 1. Introduction" in md
+        assert "## 2. Corporate Introductory Information" in md
+        assert "## 3. Executive Summary" in md
+        assert "## 4. Key Findings" in md
+        assert "## 5. Observations" in md
+        assert "## 6. Information Requests" in md
         assert "## Appendix I: Documents Reviewed" in md
 
     def test_markdown_is_stored_as_content(self, db: Session, analyzed_deal: Deal):

@@ -180,6 +180,57 @@ def _format_report_date(d: date, lang: str) -> str:
     return d.strftime("%d %B %Y")
 
 
+import re as _re
+
+# Heading patterns that should NOT be auto-numbered:
+#   * Appendices (already labelled "Allegato I" / "Appendix I")
+#   * Information Requests sub-sections that already carry the firm's
+#     letter code ("### A. Documenti societari ...")
+_APPENDIX_HEADING_RE = _re.compile(
+    r"^(allegato|appendice|appendix)\b", _re.IGNORECASE
+)
+_FIRM_LETTER_PREFIX_RE = _re.compile(r"^[A-Z]\.\s")
+
+
+def _add_section_numbering(markdown: str) -> str:
+    """Prefix ## and ### headings with legal numbering (1., 1.1, 2., ...).
+
+    The H1 title and Appendix headings are left unchanged. H3 sub-sections
+    whose text already starts with a firm code (``A. Documenti ...``) are
+    left unchanged too — that prefix IS their numbering.
+
+    The numbering resets to 1 on every new ## (so H3 counters are scoped
+    to their parent H2). This is a single-pass, line-by-line rewrite —
+    fenced code blocks are not used in this template, so we don't need
+    to skip them.
+    """
+    h2 = 0
+    h3 = 0
+    out: list[str] = []
+    for line in markdown.splitlines():
+        if line.startswith("### "):
+            text = line[4:].strip()
+            if _FIRM_LETTER_PREFIX_RE.match(text):
+                out.append(line)
+                continue
+            h3 += 1
+            out.append(f"### {h2}.{h3} {text}")
+            continue
+        if line.startswith("## "):
+            text = line[3:].strip()
+            if _APPENDIX_HEADING_RE.match(text):
+                # Appendix keeps its roman numeral, resets H3 counter.
+                h3 = 0
+                out.append(line)
+                continue
+            h2 += 1
+            h3 = 0
+            out.append(f"## {h2}. {text}")
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def _md_cell(text: str | None) -> str:
     """Make text safe for a Markdown table cell (no pipes / newlines).
 
@@ -595,6 +646,11 @@ def generate_due_diligence_report(
             "",
             _render_documents_appendix(documents, lang),
         ])
+
+        # Apply legal section numbering (1., 1.1, 2., 2.1, ...) before
+        # persisting. Headings already carrying a firm letter code (A.1)
+        # or the appendix label are left alone — see _add_section_numbering.
+        markdown = _add_section_numbering(markdown)
 
         # ── Persist result ────────────────────────────────────────────── #
         report.content = markdown

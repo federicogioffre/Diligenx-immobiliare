@@ -68,10 +68,16 @@ table.findings th:nth-child(5), table.findings td:nth-child(5) { width: 10%; tex
 .severity-high     { color: #c2410c; font-weight: 700; }
 .severity-medium   { color: #b45309; font-weight: 600; }
 .severity-low      { color: #475569; font-weight: 600; }
-.doc-header { border-bottom: 2px solid #2563eb; padding-bottom: 12pt; margin-bottom: 16pt; }
-.doc-header .brand { color: #2563eb; font-weight: 700; letter-spacing: 0.5pt; font-size: 10pt; }
-.doc-header .deal-title { font-size: 16pt; font-weight: 600; margin-top: 4pt; color: #0f172a; }
-.doc-header .deal-meta { font-size: 9pt; color: #64748b; margin-top: 4pt; }
+/* Cover page: full first page, forces a break before the body starts. */
+.cover { page-break-after: always; text-align: center; }
+.cover .brand { color: #2563eb; font-weight: 700; letter-spacing: 1.5pt; font-size: 11pt; margin-top: 4cm; }
+.cover .rule { border-top: 2px solid #2563eb; width: 4cm; margin: 1.2cm auto 0 auto; }
+.cover .doc-kind { color: #64748b; font-size: 10pt; letter-spacing: 0.8pt; margin-top: 1.4cm; }
+.cover .title { color: #0f172a; font-size: 26pt; font-weight: 600; margin-top: 0.6cm; line-height: 1.2; }
+.cover .target-label { color: #64748b; font-size: 9.5pt; letter-spacing: 0.6pt; margin-top: 3cm; }
+.cover .target-name { color: #0f172a; font-size: 16pt; font-weight: 600; margin-top: 0.3cm; }
+.cover .confidential { color: #b91c1c; font-size: 10.5pt; font-weight: 700; letter-spacing: 1pt; margin-top: 3.5cm; }
+.cover .date { color: #475569; font-size: 10pt; margin-top: 0.6cm; font-style: italic; }
 #footer_content { font-size: 8.5pt; color: #94a3b8; text-align: center; }
 """
 
@@ -121,23 +127,71 @@ def _tag_findings_tables(html: str) -> str:
     return _TABLE_RE.sub(_sub, html)
 
 
+def _detect_report_language(markdown: str) -> str:
+    """Best-effort language detection from the rendered markdown."""
+    if "Introduzione" in markdown or "STRETTAMENTE CONFIDENZIALE" in markdown:
+        return "it"
+    return "en"
+
+
+def _strip_lead_block(markdown: str) -> str:
+    """Drop the H1 title + deal-title + confidential + date lines.
+
+    The cover page on PDF / DOCX already carries this information; keeping
+    it at the top of the body would duplicate it on page 2. Strips from
+    the start of the source to (but not including) the first ``## `` line.
+    """
+    lines = markdown.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("## ") and not line.startswith("### "):
+            return "\n".join(lines[i:])
+    return markdown
+
+
+def _build_cover_html(deal_title: str, lang: str) -> str:
+    """Render the PDF cover page (first page, page-break-after)."""
+    from packages.agents.report_agent import _format_report_date
+    from datetime import date as _date
+
+    if lang == "it":
+        doc_kind = "Legal Due Diligence Report"
+        target_label = "PROGETTO"
+        confidential = "STRETTAMENTE CONFIDENZIALE"
+    else:
+        doc_kind = "Legal Due Diligence Report"
+        target_label = "PROJECT"
+        confidential = "STRICTLY PRIVATE AND CONFIDENTIAL"
+    title_main = "Red Flag Due Diligence Report"
+    date_str = _format_report_date(_date.today(), lang)
+
+    return (
+        '<div class="cover">'
+        '<div class="brand">DILIGENX</div>'
+        '<div class="rule"></div>'
+        f'<div class="doc-kind">{doc_kind}</div>'
+        f'<div class="title">{title_main}</div>'
+        f'<div class="target-label">{target_label}</div>'
+        f'<div class="target-name">{html.escape(deal_title or "")}</div>'
+        f'<div class="confidential">{confidential}</div>'
+        f'<div class="date">{date_str}</div>'
+        '</div>'
+    )
+
+
 def render_pdf(deal: "Deal", report: "Report") -> bytes:
     """Render the report as a branded A4 PDF."""
-    body_md = _colorize_severity_markdown(report.content or "")
+    raw_md = report.content or ""
+    # Cover page already carries title/confidential/date — drop the lead
+    # block from the body so it doesn't repeat on page 2.
+    body_md = _colorize_severity_markdown(_strip_lead_block(raw_md))
     body_html = md_lib.markdown(
         body_md,
         extensions=["tables", "fenced_code", "sane_lists"],
     )
     body_html = _tag_findings_tables(body_html)
 
-    generated_on = datetime.now(timezone.utc).strftime("%d/%m/%Y")
-    header_html = (
-        '<div class="doc-header">'
-        '<div class="brand">DILIGENX &middot; DUE DILIGENCE REPORT</div>'
-        f'<div class="deal-title">{html.escape(deal.title or "")}</div>'
-        f'<div class="deal-meta">Generato il {generated_on}</div>'
-        "</div>"
-    )
+    lang = _detect_report_language(raw_md)
+    cover_html = _build_cover_html(deal.title or "", lang)
     footer_html = (
         '<div id="footer_content">Diligenx &middot; '
         '<pdf:pagenumber/> / <pdf:pagecount/></div>'
@@ -146,7 +200,7 @@ def render_pdf(deal: "Deal", report: "Report") -> bytes:
     full_html = (
         "<html><head><meta charset='utf-8'>"
         f"<style>{_PDF_CSS}</style></head><body>"
-        f"{header_html}{body_html}{footer_html}"
+        f"{cover_html}{body_html}{footer_html}"
         "</body></html>"
     )
 
@@ -323,6 +377,59 @@ def _append_markdown_body(doc, md_text: str) -> None:
         i += 1
 
 
+def _append_cover_docx(doc, deal_title: str, lang: str) -> None:
+    """Add a single-page cover with brand / title / target / confidential
+    label / date. Ends with a page break so the body starts on page 2."""
+    from packages.agents.report_agent import _format_report_date
+    from datetime import date as _date
+    from docx.enum.text import WD_BREAK
+
+    if lang == "it":
+        target_label = "PROGETTO"
+        confidential = "STRETTAMENTE CONFIDENZIALE"
+    else:
+        target_label = "PROJECT"
+        confidential = "STRICTLY PRIVATE AND CONFIDENTIAL"
+
+    def _centered(text: str, *, size: int, bold: bool = False,
+                  color: RGBColor | None = None, italic: bool = False,
+                  space_before: int = 0) -> None:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        if space_before:
+            p.paragraph_format.space_before = Pt(space_before)
+        run = p.add_run(text)
+        run.bold = bold
+        run.italic = italic
+        run.font.size = Pt(size)
+        if color is not None:
+            run.font.color.rgb = color
+
+    _centered(
+        "DILIGENX",
+        size=11, bold=True,
+        color=RGBColor(0x25, 0x63, 0xEB),
+        space_before=120,  # ~4cm down the page
+    )
+    _centered("Legal Due Diligence Report", size=10,
+              color=RGBColor(0x64, 0x74, 0x8B), space_before=24)
+    _centered("Red Flag Due Diligence Report", size=24, bold=True,
+              color=RGBColor(0x0F, 0x17, 0x2A), space_before=12)
+    _centered(target_label, size=9,
+              color=RGBColor(0x64, 0x74, 0x8B), space_before=60)
+    _centered(deal_title or "", size=16, bold=True,
+              color=RGBColor(0x0F, 0x17, 0x2A), space_before=6)
+    _centered(confidential, size=10, bold=True,
+              color=RGBColor(0xB9, 0x1C, 0x1C), space_before=80)
+    _centered(_format_report_date(_date.today(), lang), size=10,
+              italic=True, color=RGBColor(0x47, 0x55, 0x69),
+              space_before=12)
+
+    # Page break — body starts on next page.
+    p = doc.add_paragraph()
+    p.add_run().add_break(WD_BREAK.PAGE)
+
+
 def render_docx(deal: "Deal", report: "Report") -> bytes:
     """Render the report as a branded DOCX."""
     doc = _DocxDocument()
@@ -332,29 +439,11 @@ def render_docx(deal: "Deal", report: "Report") -> bytes:
     style.font.name = "Calibri"
     style.font.size = Pt(11)
 
-    # Title block (brand + deal + date)
-    p = doc.add_paragraph()
-    run = p.add_run("DILIGENX · DUE DILIGENCE REPORT")
-    run.bold = True
-    run.font.color.rgb = RGBColor(0x25, 0x63, 0xEB)
-    run.font.size = Pt(9)
+    raw_md = report.content or ""
+    lang = _detect_report_language(raw_md)
+    _append_cover_docx(doc, deal.title or "", lang)
 
-    p = doc.add_paragraph()
-    run = p.add_run(deal.title or "")
-    run.bold = True
-    run.font.size = Pt(16)
-
-    p = doc.add_paragraph()
-    run = p.add_run(
-        f"Generato il {datetime.now(timezone.utc).strftime('%d/%m/%Y')}"
-    )
-    run.italic = True
-    run.font.color.rgb = RGBColor(0x64, 0x74, 0x8B)
-    run.font.size = Pt(9)
-
-    doc.add_paragraph()  # spacer before body
-
-    _append_markdown_body(doc, report.content or "")
+    _append_markdown_body(doc, _strip_lead_block(raw_md))
 
     # Page footer
     footer = doc.sections[0].footer
