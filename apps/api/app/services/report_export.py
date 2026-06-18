@@ -78,6 +78,16 @@ table.findings th:nth-child(5), table.findings td:nth-child(5) { width: 10%; tex
 .cover .target-name { color: #0f172a; font-size: 16pt; font-weight: 600; margin-top: 0.3cm; }
 .cover .confidential { color: #b91c1c; font-size: 10.5pt; font-weight: 700; letter-spacing: 1pt; margin-top: 3.5cm; }
 .cover .date { color: #475569; font-size: 10pt; margin-top: 0.6cm; font-style: italic; }
+/* Table of Contents page. The markdown 'toc' extension adds id="…" to
+   every heading; the TOC entries below use <a href="#…"> against the
+   same slug for clickable internal navigation in xhtml2pdf. */
+.toc-page { page-break-after: always; }
+.toc-title { font-size: 18pt; color: #0f172a; font-weight: 600; margin-top: 0.5cm; border-bottom: 2px solid #2563eb; padding-bottom: 6pt; margin-bottom: 14pt; }
+.toc { margin-top: 8pt; }
+.toc .toc-h2 { font-size: 10.5pt; color: #0f172a; margin: 6pt 0 2pt 0; font-weight: 500; }
+.toc .toc-h2 a { color: #0f172a; text-decoration: none; }
+.toc .toc-h3 { font-size: 9.5pt; color: #475569; margin: 2pt 0 2pt 1.2cm; }
+.toc .toc-h3 a { color: #475569; text-decoration: none; }
 #footer_content { font-size: 8.5pt; color: #94a3b8; text-align: center; }
 """
 
@@ -178,20 +188,69 @@ def _build_cover_html(deal_title: str, lang: str) -> str:
     )
 
 
+def _build_toc_section(markdown_body: str, lang: str) -> str:
+    """Build the TOC HTML by walking the markdown headings ourselves.
+
+    The Markdown ``toc`` extension is enabled in the body renderer so
+    headings receive ``id="..."`` attributes; we discard its auto-generated
+    TOC because the nested-<ul> structure mis-nests H2s that have no H3
+    children under the previous H2 (xhtml2pdf rendering quirk). Building a
+    flat two-level structure here gives predictable layout and clickable
+    anchors that match the body ids.
+    """
+    from markdown.extensions.toc import slugify as _toc_slugify
+
+    entries: list[tuple[int, str, str]] = []
+    for line in markdown_body.splitlines():
+        if line.startswith("### "):
+            text = line[4:].strip()
+            entries.append((3, text, _toc_slugify(text, "-")))
+        elif line.startswith("## "):
+            text = line[3:].strip()
+            entries.append((2, text, _toc_slugify(text, "-")))
+
+    if not entries:
+        return ""
+
+    title = "Indice" if lang == "it" else "Table of Contents"
+    parts: list[str] = [
+        '<div class="toc-page">',
+        f'<div class="toc-title">{title}</div>',
+        '<div class="toc">',
+    ]
+    for level, text, slug in entries:
+        cls = "toc-h2" if level == 2 else "toc-h3"
+        parts.append(
+            f'<div class="{cls}"><a href="#{slug}">{html.escape(text)}</a></div>'
+        )
+    parts.append("</div></div>")
+    return "\n".join(parts)
+
+
 def render_pdf(deal: "Deal", report: "Report") -> bytes:
     """Render the report as a branded A4 PDF."""
     raw_md = report.content or ""
     # Cover page already carries title/confidential/date — drop the lead
     # block from the body so it doesn't repeat on page 2.
     body_md = _colorize_severity_markdown(_strip_lead_block(raw_md))
-    body_html = md_lib.markdown(
-        body_md,
-        extensions=["tables", "fenced_code", "sane_lists"],
+
+    # Use the Markdown class (not the one-shot function) so we can read
+    # the generated TOC and the auto-injected heading ids. ``toc_depth``
+    # limits the TOC to ## and ### levels — the report only uses #-####.
+    # The ``toc`` extension is enabled only for the side-effect of
+    # injecting id="..." attributes on every heading; the TOC HTML itself
+    # is rebuilt by _build_toc_section using the same slugify, so the
+    # anchors line up.
+    md_renderer = md_lib.Markdown(
+        extensions=["tables", "fenced_code", "sane_lists", "toc"],
+        extension_configs={"toc": {"toc_depth": "2-3"}},
     )
+    body_html = md_renderer.convert(body_md)
     body_html = _tag_findings_tables(body_html)
 
     lang = _detect_report_language(raw_md)
     cover_html = _build_cover_html(deal.title or "", lang)
+    toc_section = _build_toc_section(body_md, lang)
     footer_html = (
         '<div id="footer_content">Diligenx &middot; '
         '<pdf:pagenumber/> / <pdf:pagecount/></div>'
@@ -200,7 +259,7 @@ def render_pdf(deal: "Deal", report: "Report") -> bytes:
     full_html = (
         "<html><head><meta charset='utf-8'>"
         f"<style>{_PDF_CSS}</style></head><body>"
-        f"{cover_html}{body_html}{footer_html}"
+        f"{cover_html}{toc_section}{body_html}{footer_html}"
         "</body></html>"
     )
 
