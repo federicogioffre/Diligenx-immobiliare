@@ -70,7 +70,8 @@ table.findings th:nth-child(5), table.findings td:nth-child(5) { width: 10%; tex
 .severity-low      { color: #475569; font-weight: 600; }
 /* Cover page: full first page, forces a break before the body starts. */
 .cover { page-break-after: always; text-align: center; }
-.cover .brand { color: #2563eb; font-weight: 700; letter-spacing: 1.5pt; font-size: 11pt; margin-top: 4cm; }
+.cover .cover-logo { width: 2.4cm; height: 2.4cm; margin-top: 3.2cm; }
+.cover .brand { color: #2563eb; font-weight: 700; letter-spacing: 1.5pt; font-size: 11pt; margin-top: 0.4cm; }
 .cover .rule { border-top: 2px solid #2563eb; width: 4cm; margin: 1.2cm auto 0 auto; }
 .cover .doc-kind { color: #64748b; font-size: 10pt; letter-spacing: 0.8pt; margin-top: 1.4cm; }
 .cover .title { color: #0f172a; font-size: 26pt; font-weight: 600; margin-top: 0.6cm; line-height: 1.2; }
@@ -162,6 +163,7 @@ def _build_cover_html(deal_title: str, lang: str) -> str:
     """Render the PDF cover page (first page, page-break-after)."""
     from packages.agents.report_agent import _format_report_date
     from datetime import date as _date
+    from pathlib import Path as _Path
 
     if lang == "it":
         doc_kind = "Legal Due Diligence Report"
@@ -174,8 +176,13 @@ def _build_cover_html(deal_title: str, lang: str) -> str:
     title_main = "Red Flag Due Diligence Report"
     date_str = _format_report_date(_date.today(), lang)
 
+    # xhtml2pdf reads <img src="..."> by absolute path. The asset is
+    # vendored next to this module so it travels with the deploy.
+    logo_path = _Path(__file__).parent / "assets" / "diligenx-logo.png"
+
     return (
         '<div class="cover">'
+        f'<img class="cover-logo" src="{logo_path}" />'
         '<div class="brand">DILIGENX</div>'
         '<div class="rule"></div>'
         f'<div class="doc-kind">{doc_kind}</div>'
@@ -464,11 +471,19 @@ def _append_cover_docx(doc, deal_title: str, lang: str) -> None:
         if color is not None:
             run.font.color.rgb = color
 
+    # Logo at the top, then the wordmark below it.
+    from pathlib import Path as _Path
+    logo_path = _Path(__file__).parent / "assets" / "diligenx-logo.png"
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_before = Pt(90)  # ~3cm down the page
+    p.add_run().add_picture(str(logo_path), width=Cm(2.4))
+
     _centered(
         "DILIGENX",
         size=11, bold=True,
         color=RGBColor(0x25, 0x63, 0xEB),
-        space_before=120,  # ~4cm down the page
+        space_before=8,
     )
     _centered("Legal Due Diligence Report", size=10,
               color=RGBColor(0x64, 0x74, 0x8B), space_before=24)
