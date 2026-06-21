@@ -8,7 +8,16 @@ import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { isTokenExpired } from '@/lib/auth'
 
-const PUBLIC_PATHS = ['/', '/login']
+const PUBLIC_PATHS = [
+  '/',         // public marketing landing
+  '/login',
+  // Compliance / legal pages — publicly accessible without auth.
+  '/privacy',
+  '/cookies',
+  '/terms',
+  '/dpa',
+  '/security',
+]
 const IGNORED_PREFIXES = ['/_next', '/api', '/favicon']
 
 function isPublic(path: string): boolean {
