@@ -8,8 +8,9 @@ const STORAGE_KEY = 'dm_cookie_notice_dismissed'
 /**
  * Cookie information banner.
  *
- * Today Diligenx only sets technical session cookies (``dm_token``,
- * ``dm_workspace``) that are strictly necessary for the service to work,
+ * Today Diligenx only sets technical session cookies (``dm_token`` —
+ * HttpOnly, server-set — plus ``dm_authed`` and ``dm_workspace``) that are
+ * strictly necessary for the service to work,
  * so we render an *informative* banner (per the Italian Garante's May 2021
  * guidelines), not a consent-based one. There is no "Reject" path because
  * the cookies cannot be refused without breaking authentication.

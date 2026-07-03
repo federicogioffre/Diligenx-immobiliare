@@ -639,6 +639,36 @@ def get_risk_score(
     return result
 
 
+@router.post("/{deal_id}/stream-ticket")
+@limiter.limit("30/minute")
+def issue_stream_ticket(
+    request: Request,
+    deal_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Issue a short-lived, deal-scoped ticket for the SSE analysis stream.
+
+    The browser ``EventSource`` API cannot send headers and the stream
+    endpoint is reached directly (not through the Next.js proxy), so the
+    credential must travel in the URL. This ticket expires in seconds and
+    grants nothing beyond streaming this one deal — see
+    :func:`app.core.security.create_stream_ticket`.
+    """
+    deal = (
+        db.query(Deal)
+        .join(Deal.workspace)
+        .filter(Deal.id == deal_id, Workspace.owner_id == current_user.id)
+        .first()
+    )
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+
+    from app.core.security import create_stream_ticket
+
+    return {"ticket": create_stream_ticket(current_user.email, deal_id)}
+
+
 # Pipeline stage order for predictable SSE output
 _PIPELINE_STAGES = [
     "intake",
@@ -654,7 +684,7 @@ _PIPELINE_STAGES = [
 @router.get("/{deal_id}/analysis-stream")
 async def stream_analysis_progress(
     deal_id: int,
-    token: str,
+    ticket: str,
     db: Session = Depends(get_db),
 ):
     """Server-Sent Events stream for real-time pipeline progress.
@@ -663,9 +693,11 @@ async def stream_analysis_progress(
     snapshot of all 6 pipeline stages.  The stream closes automatically
     when the deal leaves ``analyzing`` status (pipeline finished or failed).
 
-    Authentication uses a ``?token=<jwt>`` query parameter because the
-    browser ``EventSource`` API cannot send custom headers.  The token is
-    the same JWT used for all other API calls.
+    Authentication uses a ``?ticket=`` query parameter because the browser
+    ``EventSource`` API cannot send custom headers.  The ticket is a
+    short-lived, deal-scoped token obtained from
+    ``POST /deals/{deal_id}/stream-ticket`` — the full session JWT is never
+    placed in a URL.
 
     SSE format::
 
@@ -675,10 +707,10 @@ async def stream_analysis_progress(
     through the Next.js proxy, which buffers the full response before
     forwarding and breaks streaming.
     """
-    from app.core.security import decode_token
+    from app.core.security import decode_stream_ticket
 
-    # Auth: validate JWT passed as query param (EventSource limitation)
-    email = decode_token(token)
+    # Auth: validate the deal-scoped ticket passed as query param
+    email = decode_stream_ticket(ticket, deal_id)
     user = db.query(User).filter(User.email == email, User.is_active == True).first()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")

@@ -252,7 +252,8 @@
       "mcp__bdad6b08-b8d8-4a4c-bb0b-3527039467f8__get_runtime_logs",
       "mcp__bdad6b08-b8d8-4a4c-bb0b-3527039467f8__get_project",
       "mcp__bdad6b08-b8d8-4a4c-bb0b-3527039467f8__web_fetch_vercel_url",
-      "mcp__Claude_Code_Remote__send_later"
+      "mcp__Claude_Code_Remote__send_later",
+      "mcp__Claude_Code_Remote__delete_trigger"
     ]
   }
 }

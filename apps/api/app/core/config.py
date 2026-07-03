@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "change-me-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24h
+    # Secure attribute on the auth cookies. Keep True everywhere except local
+    # development over plain http (Safari refuses Secure cookies on
+    # http://localhost, unlike Chrome/Firefox).
+    AUTH_COOKIE_SECURE: bool = True
 
     # CORS
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]

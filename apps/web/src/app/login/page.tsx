@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
-import { setToken, setWorkspaceId } from '@/lib/auth'
+import { setWorkspaceId } from '@/lib/auth'
 
 type Tab = 'login' | 'register'
 
@@ -22,8 +22,10 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
 
   async function doLogin(email: string, password: string) {
-    const token = await api.auth.login(email, password)
-    setToken(token.access_token)
+    // The backend sets the HttpOnly session cookie on this response; the
+    // browser applies it before the fetch promise resolves, so the calls
+    // below are already authenticated.
+    await api.auth.login(email, password)
     const workspaces = await api.workspaces.list()
     if (workspaces.length > 0) {
       setWorkspaceId(workspaces[0].id)
