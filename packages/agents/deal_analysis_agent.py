@@ -103,8 +103,13 @@ def is_grounded(content: str, source: str) -> bool:
     if not content or not source:
         return False
 
-    # Strip trailing ellipsis added by the LLM when truncating long clauses
-    raw = content.rstrip("…").rstrip("...").strip()
+    # Strip a trailing ellipsis the LLM adds when truncating long clauses.
+    # NB: str.rstrip takes a *set of characters*, so rstrip("...") would strip
+    # every trailing '.' (mangling e.g. "S.p.A." → "S.p.A"). Use removesuffix.
+    raw = content.strip()
+    for suffix in ("…", "..."):
+        while raw.endswith(suffix):
+            raw = raw[: -len(suffix)].strip()
     if not raw:
         return False
 
@@ -114,6 +119,14 @@ def is_grounded(content: str, source: str) -> bool:
     # 1. Exact substring match
     if content_norm in source_norm:
         return True
+
+    # Guard against the most dangerous hallucination for legal DD: invented
+    # figures (amounts, penalties, dates, percentages). Every numeric token in
+    # the content must actually appear in the source, or the clause is rejected
+    # regardless of how many surrounding words happen to overlap.
+    source_numbers = set(re.findall(r"\d+", source_norm))
+    if any(num not in source_numbers for num in re.findall(r"\d+", content_norm)):
+        return False
 
     # 2. Word-overlap fallback
     content_words = content_norm.split()

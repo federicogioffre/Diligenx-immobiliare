@@ -5,6 +5,7 @@ The default is OpenAI's ``text-embedding-3-small`` (1536 dims).
 For tests or offline use, ``FakeEmbeddingProvider`` returns deterministic
 vectors without network calls.
 """
+import hashlib
 import logging
 import math
 from abc import ABC, abstractmethod
@@ -90,11 +91,18 @@ class FakeEmbeddingProvider(EmbeddingProvider):
         return [self._hash_embed(t) for t in texts]
 
     def _hash_embed(self, text: str) -> list[float]:
-        """Derive a reproducible unit-length vector from text content."""
+        """Derive a reproducible unit-length vector from text content.
+
+        Uses a stable hash (SHA-256) rather than the builtin ``hash()``, which
+        is salted per process (``PYTHONHASHSEED``). Embeddings are written in
+        the ingestion process and queried in the API process; a per-process
+        salt would put the two in incompatible vector spaces and make retrieval
+        return random results with no error.
+        """
         raw = []
         for i in range(self._dimension):
-            # Simple deterministic hash per dimension
-            h = hash(f"{text}:{i}") % 10000
+            digest = hashlib.sha256(f"{text}:{i}".encode("utf-8")).digest()
+            h = int.from_bytes(digest[:4], "big") % 10000
             raw.append(h / 10000.0 - 0.5)
         # L2 normalise
         norm = math.sqrt(sum(x * x for x in raw)) or 1.0
@@ -176,6 +184,15 @@ def generate_embeddings_for_document(
 
     texts = [c.content for c in chunks]
     embeddings = provider.embed_texts(texts)
+
+    # Guard against a provider returning a partial batch: zip() would silently
+    # leave the trailing chunks with NULL embeddings while the document is still
+    # marked processed, quietly shrinking retrieval coverage.
+    if len(embeddings) != len(chunks):
+        raise ValueError(
+            f"Embedding count mismatch for document {document_id}: "
+            f"{len(embeddings)} vectors for {len(chunks)} chunks"
+        )
 
     for chunk, vec in zip(chunks, embeddings):
         chunk.embedding = vec

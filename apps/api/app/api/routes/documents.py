@@ -30,6 +30,36 @@ ALLOWED_MIME_TYPES = {
 # Max document ingestion pipelines running at once (see _run_ingestion).
 _INGESTION_SLOTS = threading.BoundedSemaphore(4)
 
+# Max files accepted in a single /upload-batch request.
+_MAX_BATCH_FILES = 50
+
+# Chunk size for the bounded upload read.
+_READ_CHUNK = 1024 * 1024  # 1 MiB
+
+
+class _FileTooLarge(Exception):
+    """Raised by _read_capped when an upload exceeds the configured limit."""
+
+
+def _read_capped(upload: UploadFile, max_bytes: int) -> bytes:
+    """Read an upload fully, aborting as soon as it exceeds *max_bytes*.
+
+    Reading the whole body with ``file.read()`` before checking its length
+    lets a client exhaust memory with a multi-GB upload. Reading in bounded
+    chunks and stopping at the limit caps memory at roughly *max_bytes*.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = upload.file.read(_READ_CHUNK)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise _FileTooLarge()
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 def _storage_key(deal_id: int, original_filename: str) -> str:
     """Build a unique storage key (used as both the S3 object key and local sub-path)."""
@@ -105,12 +135,15 @@ async def upload_document(
     if file.content_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.content_type}")
 
-    content = file.file.read()
-    file_size = len(content)
-
     max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
-    if file_size > max_bytes:
-        raise HTTPException(status_code=400, detail=f"File troppo grande. Massimo {settings.MAX_UPLOAD_SIZE_MB} MB")
+    try:
+        content = _read_capped(file, max_bytes)
+    except _FileTooLarge:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File troppo grande. Massimo {settings.MAX_UPLOAD_SIZE_MB} MB",
+        )
+    file_size = len(content)
 
     base_name = (file.filename or "unknown").replace("\\", "/").split("/")[-1]
     key = _storage_key(deal_id, base_name)
@@ -141,7 +174,9 @@ async def upload_document(
 
 
 @router.post("/upload-batch", response_model=list[DocumentUploadResponse], status_code=201)
+@limiter.limit("10/minute")
 def upload_documents_batch(
+    request: Request,
     deal_id: int,
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
@@ -151,17 +186,25 @@ def upload_documents_batch(
     """Upload multiple documents in a single request."""
     _assert_deal_access(deal_id, current_user.id, db)
 
+    if len(files) > _MAX_BATCH_FILES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Too many files in one request. Maximum {_MAX_BATCH_FILES}.",
+        )
+
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
     results = []
     for file in files:
         if file.content_type not in ALLOWED_MIME_TYPES:
             logger.warning("Skipping unsupported type %s: %s", file.filename, file.content_type)
             continue
 
-        content = file.file.read()
-        file_size = len(content)
-        if file_size > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
-            logger.warning("Skipping oversized file %s (%d bytes)", file.filename, file_size)
+        try:
+            content = _read_capped(file, max_bytes)
+        except _FileTooLarge:
+            logger.warning("Skipping oversized file %s", file.filename)
             continue
+        file_size = len(content)
 
         base_name = (file.filename or "unknown").replace("\\", "/").split("/")[-1]
         key = _storage_key(deal_id, base_name)

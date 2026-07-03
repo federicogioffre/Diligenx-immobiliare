@@ -31,7 +31,18 @@ class ChunkMatch:
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Compute cosine similarity between two equal-length vectors."""
+    """Compute cosine similarity between two equal-length vectors.
+
+    Returns 0.0 on a dimension mismatch rather than silently comparing the
+    common prefix (``zip`` truncation), which would yield a plausible-but-wrong
+    score — e.g. after swapping embedding providers or dimensions.
+    """
+    if len(a) != len(b):
+        logger.warning(
+            "cosine similarity dimension mismatch: %d vs %d — treating as no match",
+            len(a), len(b),
+        )
+        return 0.0
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))

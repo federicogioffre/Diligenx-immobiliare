@@ -42,6 +42,7 @@ from packages.agents.deal_analysis_agent import (
     LLMProvider,
     get_llm_provider,
     _safe_json,
+    _normalize_severity,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,8 +60,6 @@ _VALID_INSIGHT_TYPES = frozenset({
     "veto_right",
     "unusual_clause",
 })
-
-_VALID_CORPORATE_SEVERITIES = frozenset({"low", "medium", "high"})
 
 # Keywords used to recognise corporate-governance documents automatically.
 # Matching is case-insensitive against the normalised filename (underscores /
@@ -356,9 +355,10 @@ class CorporateAgent:
             if insight_type not in _VALID_INSIGHT_TYPES:
                 insight_type = "unusual_clause"
 
-            severity_str = item.get("severity", "low")
-            if severity_str not in _VALID_CORPORATE_SEVERITIES:
-                severity_str = "low"
+            # Normalize the LLM severity onto the 3-level scale. Crucially this
+            # maps "critical" → "high" (a critical governance risk must not be
+            # silently downgraded to "low"); anything unrecognised → "medium".
+            severity_str = _normalize_severity(str(item.get("severity", "")).lower())
 
             finding = AgentFinding(
                 deal_id=deal_id,
