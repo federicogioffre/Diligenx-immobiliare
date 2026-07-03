@@ -56,6 +56,20 @@ AGENT_CORPORATE_INTRO = "corporate_intro_extraction"  # == CorporateIntroAgent.A
 AGENT_RED_FLAG = "red_flag_aggregation"
 AGENT_REPORT = "report_generation"
 
+# Maps the stage keys used in the pipeline summary dict to the canonical
+# ``AgentRun.agent_name`` recorded for that stage. Used when a stage has to
+# be rolled back and its failure re-recorded in a fresh transaction (the
+# stage's own AgentRun disappears with the rollback).
+_STAGE_AGENT_NAMES = {
+    "intake": AGENT_INTAKE,
+    "document_routing": AGENT_ROUTER,
+    "specialist_analysis": AGENT_SPECIALIST,
+    "corporate_analysis": AGENT_CORPORATE,
+    "corporate_intro_extraction": AGENT_CORPORATE_INTRO,
+    "red_flag_aggregation": AGENT_RED_FLAG,
+    "report_generation": AGENT_REPORT,
+}
+
 
 # ── Helper: AgentRun lifecycle ────────────────────────────────────────────
 
@@ -128,6 +142,64 @@ def _clear_previous_runs(db: Session, deal_id: int, agent_name: str) -> None:
         AgentRun.agent_name == agent_name,
     ).delete(synchronize_session=False)
     db.flush()
+
+
+# ── Helper: transactional stage isolation ────────────────────────────────
+
+def _record_failed_run(db: Session, deal_id: int, stage_key: str, error: str) -> None:
+    """Record a failed AgentRun for *stage_key* in a fresh committed transaction.
+
+    Called after a stage has been rolled back — the AgentRun the stage created
+    for itself is gone with the rollback, so the failure is re-recorded here so
+    it stays visible on the ``/agent-runs`` and SSE surfaces.
+    """
+    agent_name = _STAGE_AGENT_NAMES.get(stage_key, stage_key)
+    try:
+        _clear_previous_runs(db, deal_id, agent_name)
+        run = _create_run(db, deal_id, agent_name)
+        _complete_run(db, run, error=error)
+        db.commit()
+    except Exception:
+        logger.exception(
+            "[%s] deal=%d — could not record failed run", agent_name, deal_id
+        )
+        db.rollback()
+
+
+def _execute_stage(db: Session, deal_id: int, stage_key: str, fn) -> dict:
+    """Run one pipeline stage with transactional isolation.
+
+    On **success** the stage's work is committed immediately, so it is durable
+    and cannot be undone by a later stage's failure. On **failure** (an
+    exception, a poisoned session, or a stage that returned ``{"error": ...}``)
+    the uncommitted work is rolled back — which protects earlier committed
+    results and, crucially, restores rows a delete-then-regenerate stage may
+    have deleted before failing — and the failure is recorded separately.
+    """
+    try:
+        result = fn()
+    except Exception as exc:  # stage crashed outright (e.g. poisoned session)
+        logger.exception("[%s] deal=%d — stage crashed", stage_key, deal_id)
+        db.rollback()
+        _record_failed_run(db, deal_id, stage_key, str(exc))
+        return {"error": str(exc)}
+
+    if isinstance(result, dict) and "error" in result:
+        # Stage handled its own exception and reported failure: discard its
+        # (possibly partial) work so it can't wipe previously-good data.
+        db.rollback()
+        _record_failed_run(db, deal_id, stage_key, str(result.get("error")))
+        return result
+
+    try:
+        db.commit()
+    except Exception as exc:  # commit itself failed — treat as a stage failure
+        logger.exception("[%s] deal=%d — stage commit failed", stage_key, deal_id)
+        db.rollback()
+        _record_failed_run(db, deal_id, stage_key, str(exc))
+        return {"error": str(exc)}
+
+    return result
 
 
 # ── Stage 1: Intake ──────────────────────────────────────────────────────
@@ -270,6 +342,12 @@ def _stage_document_routing(
                     "[%s] deal=%d doc=%d — parse error: %r",
                     agent, deal_id, doc.id, raw,
                 )
+                classification = None
+
+            # Parsing may succeed yet yield a non-dict (e.g. a JSON array). Coerce
+            # anything that isn't a dict to a safe default so a single odd LLM
+            # response can't crash routing for every document in the deal.
+            if not isinstance(classification, dict):
                 classification = {
                     "document_type": "other",
                     "confidence": 0.0,
@@ -513,39 +591,73 @@ def run_deal_analysis_pipeline(
 
     stages: dict[str, dict] = {}
 
+    # Each stage runs inside ``_execute_stage``: its work is committed on
+    # success and rolled back on failure, so one stage's error can neither
+    # poison the session for the next stage nor wipe an earlier stage's data.
+
     # ── Stage 1: Intake ────────────────────────────────────────────────
-    stages["intake"] = _stage_intake(deal_id, db)
+    stages["intake"] = _execute_stage(
+        db, deal_id, "intake", lambda: _stage_intake(deal_id, db)
+    )
 
     # ── Stage 2: Document routing ──────────────────────────────────────
-    stages["document_routing"] = _stage_document_routing(deal_id, db, llm)
+    stages["document_routing"] = _execute_stage(
+        db, deal_id, "document_routing",
+        lambda: _stage_document_routing(deal_id, db, llm),
+    )
 
     # Extract classifications for stage 3
     classifications = stages["document_routing"].get("classifications", [])
 
     # ── Stage 3: Specialist analysis ───────────────────────────────────
-    stages["specialist_analysis"] = _stage_specialist_analysis(
-        deal_id, db, llm, classifications,
+    stages["specialist_analysis"] = _execute_stage(
+        db, deal_id, "specialist_analysis",
+        lambda: _stage_specialist_analysis(deal_id, db, llm, classifications),
     )
 
     # ── Stage 4: Corporate governance analysis ─────────────────────────
-    stages["corporate_analysis"] = _stage_corporate_analysis(deal_id, db, llm)
+    stages["corporate_analysis"] = _execute_stage(
+        db, deal_id, "corporate_analysis",
+        lambda: _stage_corporate_analysis(deal_id, db, llm),
+    )
 
     # Stage 4b — Corporate Introductory Information extraction
-    stages["corporate_intro_extraction"] = _stage_corporate_intro_extraction(deal_id, db, llm)
+    stages["corporate_intro_extraction"] = _execute_stage(
+        db, deal_id, "corporate_intro_extraction",
+        lambda: _stage_corporate_intro_extraction(deal_id, db, llm),
+    )
 
     # ── Stage 5: Red-flag aggregation ──────────────────────────────────
-    stages["red_flag_aggregation"] = _stage_red_flag_aggregation(deal_id, db, llm)
+    stages["red_flag_aggregation"] = _execute_stage(
+        db, deal_id, "red_flag_aggregation",
+        lambda: _stage_red_flag_aggregation(deal_id, db, llm),
+    )
 
     # ── Stage 6: Report generation ─────────────────────────────────────
-    stages["report_generation"] = _stage_report_generation(deal_id, db, llm)
+    # The report still runs even if an earlier stage failed (pipeline
+    # resilience is a deliberate design contract). The falsely-clean-report
+    # risk from a failed red-flag stage is mitigated by _execute_stage's
+    # rollback: a failed aggregation no longer wipes the previous run's
+    # RedFlag rows, and a deal with any failed stage is left in `draft`
+    # (not `reviewed`) to signal the analysis is incomplete.
+    stages["report_generation"] = _execute_stage(
+        db, deal_id, "report_generation",
+        lambda: _stage_report_generation(deal_id, db, llm),
+    )
 
     # ── Finalise deal status ───────────────────────────────────────────
     all_ok = all("error" not in s for s in stages.values())
 
-    deal = db.query(Deal).filter(Deal.id == deal_id).first()
-    if deal:
-        deal.status = DealStatus.reviewed if all_ok else DealStatus.draft
-        db.commit()
+    try:
+        deal = db.query(Deal).filter(Deal.id == deal_id).first()
+        if deal:
+            deal.status = DealStatus.reviewed if all_ok else DealStatus.draft
+            db.commit()
+    except Exception:
+        logger.exception(
+            "=== Pipeline: failed to finalise status for deal %d ===", deal_id
+        )
+        db.rollback()
 
     logger.info(
         "=== Pipeline %s for deal %d ===",

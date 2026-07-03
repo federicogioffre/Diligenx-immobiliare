@@ -533,7 +533,7 @@ export function openAnalysisStream(
 ): () => void {
   const token = getToken()
   // Bypass Next.js proxy — connect directly to FastAPI
-  const base = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8001'
+  const base = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
   const url = `${base}/deals/${dealId}/analysis-stream?token=${encodeURIComponent(token ?? '')}`
   const es = new EventSource(url)
 

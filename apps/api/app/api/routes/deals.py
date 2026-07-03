@@ -154,6 +154,18 @@ def _run_pipeline_background(deal_id: int) -> None:
         run_deal_analysis_pipeline(deal_id, db)
     except Exception:
         logger.exception("Background analysis pipeline failed for deal %d", deal_id)
+        # The pipeline sets the deal to `analyzing` up front; if it crashes
+        # before finalising status, reset it so the deal doesn't stay stuck.
+        try:
+            db.rollback()
+            from app.models.deal import Deal, DealStatus
+            deal = db.query(Deal).filter(Deal.id == deal_id).first()
+            if deal and deal.status == DealStatus.analyzing:
+                deal.status = DealStatus.draft
+                db.commit()
+        except Exception:
+            logger.exception("Failed to reset stuck status for deal %d", deal_id)
+            db.rollback()
     finally:
         db.close()
 

@@ -55,6 +55,29 @@ from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_SECRET_KEY = "change-me-in-production"
+
+
+def _validate_runtime_secrets() -> None:
+    """Fail fast if the JWT signing key is left at its public default.
+
+    The default ``SECRET_KEY`` is committed to the repo, so shipping it would
+    let anyone forge a token for any user and defeat every tenancy check.
+    We only enforce this in a production-like context (non-SQLite database and
+    ``DEBUG`` off); local dev and the SQLite test suite keep working with the
+    default.
+    """
+    is_sqlite = settings.DATABASE_URL.startswith("sqlite")
+    production_like = not settings.DEBUG and not is_sqlite
+    if not production_like:
+        return
+    if settings.SECRET_KEY == _DEFAULT_SECRET_KEY or len(settings.SECRET_KEY) < 32:
+        raise RuntimeError(
+            "SECRET_KEY must be set to a strong, unique value (>= 32 chars) in "
+            "production. Refusing to start with the default/weak signing key — "
+            "it would allow forging authentication tokens for any user."
+        )
+
 
 @asynccontextmanager
 async def _lifespan(app_: FastAPI):
@@ -63,6 +86,7 @@ async def _lifespan(app_: FastAPI):
     Without REDIS_URL the app behaves exactly as before: routes fall back
     to FastAPI BackgroundTasks (see app.services.jobs.enqueue_or_run).
     """
+    _validate_runtime_secrets()
     app_.state.arq_pool = None
     if settings.REDIS_URL:
         try:

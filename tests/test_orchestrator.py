@@ -602,6 +602,31 @@ class TestFailureIsolation:
                 f"Expected {name} to be completed, got {run.status}"
             )
 
+    def test_failed_red_flag_stage_preserves_prior_red_flags(
+        self, db, test_deal, processed_doc, failing_red_flag_llm
+    ):
+        """Regression: a red-flag stage deletes prior RedFlag rows before
+        regenerating them. If it then fails, the transactional rollback must
+        restore the previous run's rows — otherwise a transient LLM error
+        would silently wipe a deal's red flags and yield a falsely-clean
+        report."""
+        # First run succeeds and commits red flags.
+        run_deal_analysis_pipeline(test_deal.id, db)
+        before = db.query(RedFlag).filter(RedFlag.deal_id == test_deal.id).count()
+        assert before > 0, "precondition: first run should produce red flags"
+
+        # Second run: red-flag aggregation deletes the rows then fails.
+        result = run_deal_analysis_pipeline(
+            test_deal.id, db, provider=failing_red_flag_llm
+        )
+        assert "error" in result["stages"]["red_flag_aggregation"]
+
+        after = db.query(RedFlag).filter(RedFlag.deal_id == test_deal.id).count()
+        assert after == before, (
+            f"red flags must survive a failed aggregation "
+            f"(had {before}, now {after})"
+        )
+
     def test_clause_findings_present_despite_red_flag_failure(
         self, db, test_deal, processed_doc, failing_red_flag_llm
     ):

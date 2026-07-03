@@ -352,7 +352,31 @@ class TestInsightTypeCoercion:
         for f in _agent_findings(db, test_deal):
             assert f.category in _VALID_INSIGHT_TYPES
 
-    def test_invalid_severity_coerced_to_low(self, db: Session, test_deal: Deal):
+    def test_critical_severity_normalized_to_high(self, db: Session, test_deal: Deal):
+        """'critical' maps onto the 3-level scale as 'high' — a critical
+        governance risk must never be silently downgraded to 'low'."""
+        class _CriticalSeverityLLM(LLMProvider):
+            def complete(self, prompt: str, max_tokens: int = 2048) -> str:
+                if "CORPORATE GOVERNANCE" in prompt.upper():
+                    return json.dumps([{
+                        "insight_type": "governance_structure",
+                        "title": "Some clause",
+                        "description": "desc",
+                        "severity": "critical",
+                        "confidence": 0.5,
+                    }])
+                return json.dumps([])
+
+        doc = _make_doc(db, test_deal)
+        CorporateAgent(provider=_CriticalSeverityLLM()).run(
+            test_deal.id, db, document_ids={doc.id}
+        )
+        findings = _agent_findings(db, test_deal)
+        assert len(findings) == 1
+        assert findings[0].severity == Severity.high
+
+    def test_unknown_severity_coerced_to_medium(self, db: Session, test_deal: Deal):
+        """An unrecognised severity string falls back to 'medium', not 'low'."""
         class _BadSeverityLLM(LLMProvider):
             def complete(self, prompt: str, max_tokens: int = 2048) -> str:
                 if "CORPORATE GOVERNANCE" in prompt.upper():
@@ -360,7 +384,7 @@ class TestInsightTypeCoercion:
                         "insight_type": "governance_structure",
                         "title": "Some clause",
                         "description": "desc",
-                        "severity": "critical",  # not valid for corporate agent
+                        "severity": "banana",
                         "confidence": 0.5,
                     }])
                 return json.dumps([])
@@ -371,7 +395,7 @@ class TestInsightTypeCoercion:
         )
         findings = _agent_findings(db, test_deal)
         assert len(findings) == 1
-        assert findings[0].severity == Severity.low
+        assert findings[0].severity == Severity.medium
 
 
 class TestReturnValue:
