@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Cookie, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
@@ -6,14 +6,24 @@ from app.core.security import decode_token
 from app.db.session import get_db
 from app.models.user import User
 
-bearer = HTTPBearer()
+# auto_error=False: a missing Authorization header falls through to the
+# session cookie instead of short-circuiting with a 403.
+bearer = HTTPBearer(auto_error=False)
 
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    dm_token: str | None = Cookie(None, alias="dm_token"),
     db: Session = Depends(get_db),
 ) -> User:
-    token = credentials.credentials
+    """Resolve the authenticated user from a Bearer header or session cookie.
+
+    The Bearer header wins when both are present (API clients, tests); the
+    browser client relies on the HttpOnly ``dm_token`` cookie set at login.
+    """
+    token = credentials.credentials if credentials else dm_token
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     email = decode_token(token)
     user = db.query(User).filter(User.email == email, User.is_active == True).first()
     if not user:

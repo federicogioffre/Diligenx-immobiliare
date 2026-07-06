@@ -3,7 +3,7 @@
 ## Stack
 - **Backend:** FastAPI + SQLAlchemy 2.0 (mapped_column style) + Pydantic v2
 - **Database:** PostgreSQL (default) + pgvector extension; SQLite for tests
-- **Auth:** JWT Bearer → `python-jose` + `bcrypt` (no passlib)
+- **Auth:** JWT via HttpOnly session cookie (browser) or Bearer header (API clients) → `python-jose` + `bcrypt` (no passlib); SSE authenticated by short-lived deal-scoped tickets
 - **Migrations:** Alembic (`apps/api/alembic/`)
 - **Embeddings:** OpenAI `text-embedding-3-small` (1536 dims); `FakeEmbeddingProvider` for tests
 - **LLM:** Anthropic Claude (`claude-sonnet-4-6` by default); `FakeLLMProvider` for tests
@@ -129,13 +129,15 @@ User 1──* Workspace 1──* Deal 1──* Document 1──* DocumentChunk (
 |--------|------|-------------|
 | GET | `/health` | Health check |
 | POST | `/auth/register` | Register → UserRead |
-| POST | `/auth/login` | Login (form) → Token |
+| POST | `/auth/login` | Login (form) → Token + HttpOnly session cookie |
+| POST | `/auth/logout` | Clear session cookies (unauthenticated by design) |
 | GET/POST/PATCH/DELETE | `/workspaces/...` | Workspace CRUD (last workspace and non-empty workspaces protected from deletion) |
 | GET/POST | `/deals/?workspace_id=N` | List / create deals in workspace |
 | GET/PATCH/DELETE | `/deals/{deal_id}` | Deal CRUD (PATCH also sets `report_language`: it\|en\|auto) |
 | POST | `/deals/{deal_id}/analyze` | **202** → queues multi-agent pipeline in BackgroundTask |
 | GET | `/deals/{deal_id}/agent-runs` | List AgentRun rows in pipeline order |
-| GET | `/deals/{deal_id}/analysis-stream` | SSE stream of pipeline progress |
+| POST | `/deals/{deal_id}/stream-ticket` | Short-lived deal-scoped ticket for the SSE stream |
+| GET | `/deals/{deal_id}/analysis-stream` | SSE stream of pipeline progress (`?ticket=` from stream-ticket) |
 | POST | `/deals/{deal_id}/report` | Generate Markdown due-diligence report |
 | GET | `/deals/{deal_id}/report` | Get current report |
 | GET | `/deals/{deal_id}/report/export?format=pdf\|docx` | Branded export |
@@ -213,7 +215,8 @@ python -m pytest ../../tests -q   # 573 passed
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/diligenx` | Database connection |
-| `SECRET_KEY` | `change-me-in-production` | JWT signing key |
+| `SECRET_KEY` | `change-me-in-production` | JWT signing key (startup guard refuses the default in production) |
+| `AUTH_COOKIE_SECURE` | `true` | Secure attribute on auth cookies; set `false` only for local http dev |
 | `ALLOWED_ORIGINS` | `["http://localhost:3000"]` | CORS origins |
 | `UPLOAD_DIR` | `uploads` | Local file upload directory (when `S3_BUCKET` empty) |
 | `MAX_UPLOAD_SIZE_MB` | `50` | Max upload size |

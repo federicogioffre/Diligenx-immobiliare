@@ -1,4 +1,4 @@
-import { getToken, clearAuth } from './auth'
+import { clearAuth } from './auth'
 
 const BASE = '/api'
 
@@ -236,27 +236,31 @@ export interface AnalysisStreamEvent {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-
-function authHeaders(): HeadersInit {
-  const token = getToken()
-  return token ? { Authorization: `Bearer ${token}` } : {}
-}
+//
+// Auth travels in the HttpOnly session cookie set by the backend at login.
+// Every call below goes through the same-origin /api proxy, so the browser
+// attaches the cookie automatically — no Authorization header needed.
 
 /**
  * Handle an expired/invalid session response from the backend.
  *
  * Called by every authenticated fetch. If the backend returns 401 it means
- * the token is no longer accepted — clear auth state and force a full-page
+ * the session is no longer accepted — clear auth state and force a full-page
  * redirect to /login. A hard redirect (not router.push) is intentional:
  * it wipes all client-side state that may still reference the dead session.
+ *
+ * MUST be awaited: only the backend logout can delete the HttpOnly session
+ * cookie. If we redirected first, the middleware would still see the (dead
+ * but unexpired-looking) cookie on /login and bounce back to /dashboard,
+ * whose API calls 401 again — an infinite loop.
  *
  * NOTE: do NOT use this for `POST /auth/login` — a 401 there means "wrong
  * credentials", not "session expired", and should be surfaced as an error.
  */
-function handle401IfNeeded(res: Response): boolean {
+async function handle401IfNeeded(res: Response): Promise<boolean> {
   if (res.status !== 401) return false
   if (typeof window !== 'undefined') {
-    clearAuth()
+    await clearAuth()
     window.location.href = '/login'
   }
   return true
@@ -266,12 +270,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: {
       'Content-Type': 'application/json',
-      ...authHeaders(),
       ...options.headers,
     },
     ...options,
   })
-  if (handle401IfNeeded(res)) {
+  if (await handle401IfNeeded(res)) {
     throw new Error('Unauthorized')
   }
   if (!res.ok) {
@@ -331,11 +334,8 @@ export const api = {
       })
     },
     async delete(id: number): Promise<void> {
-      const res = await fetch(`${BASE}/workspaces/${id}`, {
-        method: 'DELETE',
-        headers: { ...authHeaders() },
-      })
-      if (handle401IfNeeded(res)) throw new Error('Unauthorized')
+      const res = await fetch(`${BASE}/workspaces/${id}`, { method: 'DELETE' })
+      if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
       if (!res.ok) throw new Error(await res.text())
     },
     insights(id: number): Promise<WorkspaceInsights> {
@@ -387,11 +387,8 @@ export const api = {
       return request(`/deals/${id}/report`, { method: 'POST' })
     },
     async downloadReport(id: number, format: 'pdf' | 'docx'): Promise<Blob> {
-      const res = await fetch(
-        `${BASE}/deals/${id}/report/export?format=${format}`,
-        { headers: { ...authHeaders() } },
-      )
-      if (handle401IfNeeded(res)) throw new Error('Unauthorized')
+      const res = await fetch(`${BASE}/deals/${id}/report/export?format=${format}`)
+      if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
       if (!res.ok) throw new Error(await res.text())
       return res.blob()
     },
@@ -419,11 +416,8 @@ export const api = {
       })
     },
     async delete(id: number): Promise<void> {
-      const res = await fetch(`${BASE}/deals/${id}`, {
-        method: 'DELETE',
-        headers: { ...authHeaders() },
-      })
-      if (handle401IfNeeded(res)) throw new Error('Unauthorized')
+      const res = await fetch(`${BASE}/deals/${id}`, { method: 'DELETE' })
+      if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
       if (!res.ok) throw new Error(await res.text())
     },
   },
@@ -437,10 +431,9 @@ export const api = {
       form.append('file', file)
       const res = await fetch(`${BASE}/documents/upload?deal_id=${dealId}`, {
         method: 'POST',
-        headers: { ...authHeaders() },
         body: form,
       })
-      if (handle401IfNeeded(res)) throw new Error('Unauthorized')
+      if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
       if (!res.ok) throw new Error(await res.text())
       return res.json()
     },
@@ -460,20 +453,20 @@ export const api = {
     ): Promise<DocumentUploadResponse> {
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest()
+        // Same-origin request: the browser attaches the session cookie.
         xhr.open('POST', `${BASE}/documents/upload?deal_id=${dealId}`)
-
-        const token = getToken()
-        if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
 
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) onProgress(e.loaded, e.total)
         }
         xhr.onload = () => {
           if (xhr.status === 401) {
-            // Same contract as handle401IfNeeded but adapted to XHR.
+            // Same contract as handle401IfNeeded but adapted to XHR:
+            // await the backend logout before redirecting (see that helper).
             if (typeof window !== 'undefined') {
-              clearAuth()
-              window.location.href = '/login'
+              clearAuth().finally(() => {
+                window.location.href = '/login'
+              })
             }
             reject(new Error('Unauthorized'))
             return
@@ -505,11 +498,8 @@ export const api = {
       })
     },
     async delete(documentId: number): Promise<void> {
-      const res = await fetch(`${BASE}/documents/${documentId}`, {
-        method: 'DELETE',
-        headers: { ...authHeaders() },
-      })
-      if (handle401IfNeeded(res)) throw new Error('Unauthorized')
+      const res = await fetch(`${BASE}/documents/${documentId}`, { method: 'DELETE' })
+      if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
       if (!res.ok) throw new Error(await res.text())
     },
   },
@@ -521,9 +511,14 @@ export const api = {
  * Connects directly to the FastAPI server (not via the Next.js proxy) because
  * Next.js rewrites buffer the full response before forwarding, which breaks SSE.
  *
- * Auth is via ?token= query param because EventSource cannot send custom headers.
+ * Auth: EventSource cannot send headers and the direct connection is
+ * cross-origin (no session cookie), so we first obtain a short-lived,
+ * deal-scoped ticket from the backend (cookie-authenticated, via the proxy)
+ * and pass it as a query param. The ticket expires in seconds and grants
+ * nothing beyond this one stream — the session JWT never appears in a URL.
  *
  * @returns A cleanup function — call it to close the EventSource early.
+ *          Safe to call while the ticket fetch is still in flight.
  */
 export function openAnalysisStream(
   dealId: number,
@@ -531,30 +526,44 @@ export function openAnalysisStream(
   onDone: () => void,
   onError: () => void,
 ): () => void {
-  const token = getToken()
-  // Bypass Next.js proxy — connect directly to FastAPI
-  const base = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
-  const url = `${base}/deals/${dealId}/analysis-stream?token=${encodeURIComponent(token ?? '')}`
-  const es = new EventSource(url)
+  let cancelled = false
+  let es: EventSource | null = null
 
-  es.onmessage = (e) => {
-    try {
-      const payload: AnalysisStreamEvent = JSON.parse(e.data)
-      onMessage(payload)
-      // The server closes the stream when done; we mirror that on the client
-      if (payload.deal_status !== 'analyzing') {
-        es.close()
-        onDone()
+  request<{ ticket: string }>(`/deals/${dealId}/stream-ticket`, { method: 'POST' })
+    .then(({ ticket }) => {
+      if (cancelled) return
+      // Bypass Next.js proxy — connect directly to FastAPI
+      const base = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
+      es = new EventSource(
+        `${base}/deals/${dealId}/analysis-stream?ticket=${encodeURIComponent(ticket)}`,
+      )
+
+      es.onmessage = (e) => {
+        try {
+          const payload: AnalysisStreamEvent = JSON.parse(e.data)
+          onMessage(payload)
+          // The server closes the stream when done; we mirror that on the client
+          if (payload.deal_status !== 'analyzing') {
+            es?.close()
+            onDone()
+          }
+        } catch {
+          // malformed JSON — ignore
+        }
       }
-    } catch {
-      // malformed JSON — ignore
-    }
-  }
 
-  es.onerror = () => {
-    es.close()
-    onError()
-  }
+      es.onerror = () => {
+        es?.close()
+        onError()
+      }
+    })
+    .catch(() => {
+      // Ticket fetch failed — callers fall back to polling.
+      if (!cancelled) onError()
+    })
 
-  return () => es.close()
+  return () => {
+    cancelled = true
+    es?.close()
+  }
 }

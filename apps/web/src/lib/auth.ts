@@ -1,14 +1,20 @@
-// Auth storage + JWT utilities.
+// Auth state + JWT utilities.
 //
-// Storage lives in cookies (not localStorage) so the Next.js middleware —
-// which runs on the edge and cannot read localStorage — can read the token
-// and guard protected routes server-side before any content is rendered.
+// The session JWT lives in an HttpOnly cookie (`dm_token`) set by the
+// backend at login — client JS can neither read nor delete it, which is the
+// point: an XSS cannot exfiltrate the session. All API calls go through the
+// same-origin /api proxy, so the browser attaches the cookie automatically.
 //
-// Cookies are intentionally NOT HttpOnly because the JS still needs to read
-// the token to set the `Authorization: Bearer` header on API calls. The
-// backend is unchanged.
+// Client JS only manages two non-sensitive cookies:
+//   - `dm_authed`  — a "1" flag mirroring the session lifetime, set by the
+//                    backend, used purely as a UX signal (isLoggedIn()).
+//   - `dm_workspace` — the currently selected workspace id.
+//
+// The Next.js middleware (server-side) still reads `dm_token` directly —
+// HttpOnly only hides a cookie from client JS, not from the server.
 
-const TOKEN_KEY = 'dm_token'
+const AUTHED_FLAG_KEY = 'dm_authed'
+const LEGACY_TOKEN_KEY = 'dm_token'
 const WORKSPACE_KEY = 'dm_workspace'
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 7 // 7 days (upper bound; JWT `exp` wins)
 
@@ -80,19 +86,7 @@ export function isTokenExpired(token: string | null): boolean {
   return Date.now() >= exp * 1000
 }
 
-// ── Public API (unchanged signatures) ──────────────────────────────────────
-
-export function getToken(): string | null {
-  return getCookie(TOKEN_KEY)
-}
-
-export function setToken(token: string): void {
-  setCookie(TOKEN_KEY, token, COOKIE_MAX_AGE)
-}
-
-export function clearToken(): void {
-  deleteCookie(TOKEN_KEY)
-}
+// ── Public API ──────────────────────────────────────────────────────────────
 
 export function getWorkspaceId(): number {
   return Number(getCookie(WORKSPACE_KEY) ?? '0')
@@ -102,12 +96,29 @@ export function setWorkspaceId(id: number): void {
   setCookie(WORKSPACE_KEY, String(id), COOKIE_MAX_AGE)
 }
 
-export function clearAuth(): void {
-  deleteCookie(TOKEN_KEY)
+/**
+ * End the session. MUST be awaited before navigating: only the backend can
+ * delete the HttpOnly session cookie, and navigating away can abort the
+ * in-flight request, leaving the browser "still logged in".
+ */
+export async function clearAuth(): Promise<void> {
+  try {
+    await fetch('/api/auth/logout', { method: 'POST' })
+  } catch {
+    // Network failure: fall through — the JS-visible cookies are cleared
+    // below and the middleware will bounce once the session cookie expires.
+  }
+  deleteCookie(AUTHED_FLAG_KEY)
   deleteCookie(WORKSPACE_KEY)
 }
 
+/**
+ * UX-only signal — the real gate is the backend (and the middleware for
+ * page routing). The legacy check covers sessions created before the
+ * HttpOnly migration, whose `dm_token` is still JS-readable.
+ */
 export function isLoggedIn(): boolean {
-  const t = getToken()
-  return !!t && !isTokenExpired(t)
+  if (getCookie(AUTHED_FLAG_KEY) === '1') return true
+  const legacy = getCookie(LEGACY_TOKEN_KEY)
+  return !!legacy && !isTokenExpired(legacy)
 }

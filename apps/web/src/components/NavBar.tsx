@@ -13,8 +13,10 @@ export default function NavBar() {
   // header — the in-app NavBar is hidden there.
   if (pathname === '/' || pathname === '/login') return null
 
-  function handleLogout() {
-    clearAuth()
+  async function handleLogout() {
+    // Await: only the backend can delete the HttpOnly session cookie, and
+    // navigating first can abort the request, leaving the user logged in.
+    await clearAuth()
     router.push('/login')
   }
 

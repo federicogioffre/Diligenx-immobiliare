@@ -40,8 +40,21 @@ export default function CookiePolicyPage() {
           <tbody>
             <tr>
               <td><code>dm_token</code></td>
-              <td>Mantenere la sessione autenticata (JWT)</td>
-              <td>7 giorni (o fino al logout)</td>
+              <td>
+                Mantenere la sessione autenticata (JWT). Impostato dal server
+                con attributo <code>HttpOnly</code>: non è accessibile agli
+                script della pagina.
+              </td>
+              <td>24 ore (o fino al logout)</td>
+              <td>Tecnico, prima parte</td>
+            </tr>
+            <tr>
+              <td><code>dm_authed</code></td>
+              <td>
+                Indicare all&apos;interfaccia che una sessione è attiva (non
+                contiene credenziali)
+              </td>
+              <td>24 ore (o fino al logout)</td>
               <td>Tecnico, prima parte</td>
             </tr>
             <tr>

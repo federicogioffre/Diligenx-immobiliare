@@ -43,8 +43,12 @@ export function middleware(req: NextRequest) {
     const loginUrl = new URL('/login', req.url)
     loginUrl.searchParams.set('next', pathname)
     const res = NextResponse.redirect(loginUrl)
-    // Kill any stale/garbage cookie so the browser doesn't keep sending it.
-    if (token) res.cookies.delete('dm_token')
+    // Kill any stale/garbage cookies so the browser doesn't keep sending
+    // them (dm_authed too, or the landing-page CTA shows a ghost session).
+    if (token) {
+      res.cookies.delete('dm_token')
+      res.cookies.delete('dm_authed')
+    }
     return res
   }
 
