@@ -23,8 +23,9 @@ from typing import TYPE_CHECKING
 
 import markdown as md_lib
 from docx import Document as _DocxDocument
+from docx.enum.section import WD_ORIENT, WD_SECTION
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Cm, Pt, RGBColor
+from docx.shared import Cm, Emu, Pt, RGBColor
 from xhtml2pdf import pisa
 
 if TYPE_CHECKING:
@@ -43,6 +44,20 @@ _PDF_CSS = """
     bottom: 1.2cm;
     margin-left: 2cm;
     margin-right: 2cm;
+    height: 0.8cm;
+  }
+}
+/* Landscape template for the Key Findings section: the 5-column table gets
+   ~26cm of usable width instead of ~17cm. Switched via pdf:nexttemplate
+   (the unnamed @page above is xhtml2pdf's "body" template). */
+@page landscape {
+  size: A4 landscape;
+  margin: 2cm 2.2cm 2.5cm 2.2cm;
+  @frame footer_frame {
+    -pdf-frame-content: footer_content;
+    bottom: 1.2cm;
+    margin-left: 2.2cm;
+    margin-right: 2.2cm;
     height: 0.8cm;
   }
 }
@@ -136,6 +151,38 @@ def _tag_findings_tables(html: str) -> str:
         return f'<table{attrs} class="findings">{inner}</table>'
 
     return _TABLE_RE.sub(_sub, html)
+
+
+# The Key Findings H2 as emitted by report_agent: legal numbering may prefix
+# the (always-English) heading text, e.g. "4. Key Findings".
+_KEY_FINDINGS_H2_HTML_RE = re.compile(
+    r"<h2[^>]*>\s*(?:\d+\.\s*)?Key Findings\s*</h2>", re.IGNORECASE
+)
+_H2_OPEN_RE = re.compile(r"<h2[^>]*>")
+
+
+def _wrap_findings_landscape(html: str) -> str:
+    """Wrap the Key Findings section in landscape page-template switches.
+
+    The section spans from its H2 to the next H2 (or the end of the body).
+    ``pdf:nexttemplate`` selects the ``@page landscape`` template and
+    ``pdf:nextpage`` forces the break on which it takes effect; the section
+    therefore starts on a fresh landscape page and the following section
+    returns to the default portrait template ("body").
+    """
+    m = _KEY_FINDINGS_H2_HTML_RE.search(html)
+    if not m:
+        return html
+    next_h2 = _H2_OPEN_RE.search(html, m.end())
+    end = next_h2.start() if next_h2 else len(html)
+
+    return (
+        html[: m.start()]
+        + '<pdf:nexttemplate name="landscape"/><pdf:nextpage/>'
+        + html[m.start():end]
+        + '<pdf:nexttemplate name="body"/><pdf:nextpage/>'
+        + html[end:]
+    )
 
 
 def _detect_report_language(markdown: str) -> str:
@@ -254,6 +301,7 @@ def render_pdf(deal: "Deal", report: "Report") -> bytes:
     )
     body_html = md_renderer.convert(body_md)
     body_html = _tag_findings_tables(body_html)
+    body_html = _wrap_findings_landscape(body_html)
 
     lang = _detect_report_language(raw_md)
     cover_html = _build_cover_html(deal.title or "", lang)
@@ -343,14 +391,18 @@ def _render_table(doc, lines: list[str], start: int) -> int:
 
     table = doc.add_table(rows=1 + len(rows), cols=len(headers))
     table.style = "Light Grid Accent 1"
-    # On a 5-column Key Findings table, apply the same column widths the
-    # PDF export uses (% of A4 minus margins, approx. 16.5 cm usable).
+    # On a 5-column Key Findings table, apply the same column proportions the
+    # PDF export uses. Widths are computed from the CURRENT section's usable
+    # width, so the table fills the page in both portrait and landscape.
     if _is_findings_header(headers):
         table.autofit = False
-        widths_cm = [0.7, 5.5, 4.3, 4.9, 1.6]
-        for col_idx, w in enumerate(widths_cm):
+        sec = doc.sections[-1]
+        usable = int(sec.page_width) - int(sec.left_margin) - int(sec.right_margin)
+        fractions = [0.04, 0.32, 0.25, 0.29, 0.10]
+        for col_idx, frac in enumerate(fractions):
+            w = Emu(int(usable * frac))
             for cell in table.columns[col_idx].cells:
-                cell.width = Cm(w)
+                cell.width = w
     hdr_cells = table.rows[0].cells
     for col, text in enumerate(headers):
         hdr_cells[col].text = ""
@@ -377,10 +429,36 @@ def _is_findings_header(headers: list[str]) -> bool:
     )
 
 
+# The Key Findings H2 in the markdown source (legal numbering may prefix the
+# always-English heading text, e.g. "## 4. Key Findings").
+_KEY_FINDINGS_H2_MD_RE = re.compile(
+    r"^##\s+(?:\d+\.\s*)?Key Findings\s*$", re.IGNORECASE
+)
+
+
+def _start_section(doc, *, landscape: bool) -> None:
+    """Start a new page-break section in the given orientation.
+
+    python-docx does not swap the page dimensions when the orientation flag
+    changes, so width/height are reassigned explicitly from the previous
+    section's dimensions.
+    """
+    prev = doc.sections[-1]
+    w, h = int(prev.page_width), int(prev.page_height)
+    sec = doc.add_section(WD_SECTION.NEW_PAGE)
+    if landscape:
+        sec.orientation = WD_ORIENT.LANDSCAPE
+        sec.page_width, sec.page_height = Emu(max(w, h)), Emu(min(w, h))
+    else:
+        sec.orientation = WD_ORIENT.PORTRAIT
+        sec.page_width, sec.page_height = Emu(min(w, h)), Emu(max(w, h))
+
+
 def _append_markdown_body(doc, md_text: str) -> None:
     """Line-by-line Markdown → DOCX renderer for the known report shape."""
     lines = md_text.splitlines()
     i = 0
+    in_findings_section = False
     while i < len(lines):
         line = lines[i].rstrip()
 
@@ -401,6 +479,15 @@ def _append_markdown_body(doc, md_text: str) -> None:
             i += 1
             continue
         if line.startswith("## "):
+            # The Key Findings section is laid out on landscape pages so the
+            # 5-column table gets the full width; the next section returns
+            # to portrait. Mirrors the PDF's landscape page template.
+            if _KEY_FINDINGS_H2_MD_RE.match(line):
+                _start_section(doc, landscape=True)
+                in_findings_section = True
+            elif in_findings_section:
+                _start_section(doc, landscape=False)
+                in_findings_section = False
             doc.add_heading(line[3:].strip(), level=2)
             i += 1
             continue
