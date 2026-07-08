@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import decode_token
 from app.db.session import get_db
+from app.db.tenant_context import set_tenant_context
 from app.models.user import User
 
 # auto_error=False: a missing Authorization header falls through to the
@@ -28,4 +29,8 @@ def get_current_user(
     user = db.query(User).filter(User.email == email, User.is_active == True).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    # Bind the RLS tenant context on this request's connection: from here
+    # on, Postgres row-level policies restrict every query to this user's
+    # rows — even if a handler forgets an ownership filter. No-op on SQLite.
+    set_tenant_context(db, user.id)
     return user

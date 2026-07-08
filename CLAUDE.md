@@ -211,6 +211,35 @@ python -m pytest ../../tests -q   # 573 passed
 - **Durable jobs**: when `REDIS_URL` is set, `/analyze` and `/upload` enqueue jobs to an Arq pool (managed via FastAPI lifespan); a separate worker process consumes them (`arq app.worker.WorkerSettings`). When unset, jobs run in-process via FastAPI `BackgroundTasks` — same behaviour as before. Enqueue failures fall back transparently.
 - **Anthropic prompt caching**: every LLM prompt is sent with `cache_control={"type":"ephemeral"}` so the idempotent `/analyze` re-runs hit Anthropic's cache (~90% input-cost reduction within the 5-minute TTL).
 
+- **Postgres Row-Level Security (RLS)** — defense-in-depth on top of the application-level filters. Migration `012` enables RLS + `FORCE` + tenant-isolation policies on every workspace/deal/document-scoped table (incl. `company_profiles`). The auth dependency and every fresh `SessionLocal` (HTTP request, BackgroundTask, Arq worker, SSE stream) bind the tenant via `set_tenant_context(db, user_id)`, which writes the `app.current_user_id` GUC. A pool `checkin` event clears the GUC when a connection is returned. SQLite (test env) and superuser Postgres connections are no-ops — see "Enforcing RLS in production" below.
+
+### Enforcing RLS in production
+Postgres superusers (and roles with `BYPASSRLS`) ignore RLS unconditionally. Railway's default `postgres` user is a superuser, so out of the box the policies installed by migration `012` are inert. To actually enforce them:
+
+```sql
+-- One-time setup (run as superuser on the production DB)
+CREATE ROLE diligenx_app WITH LOGIN PASSWORD '<strong-random-pw>';
+GRANT CONNECT ON DATABASE diligenx TO diligenx_app;
+GRANT USAGE ON SCHEMA public TO diligenx_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO diligenx_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO diligenx_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO diligenx_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO diligenx_app;
+```
+
+Then on Railway, change `DATABASE_URL` on the API service to use `diligenx_app` instead of `postgres`. Migrations should still run as `postgres` (the app role lacks DDL privileges) — either from a one-off shell or by keeping a separate `MIGRATIONS_DATABASE_URL`.
+
+To verify RLS is active in production, run from the API container:
+```sql
+SELECT current_user, current_setting('is_superuser'), current_setting('app.current_user_id', true);
+-- Expect: diligenx_app | off | <some int after a request>
+```
+
+Enforcement tests live in `tests/test_rls_isolation.py` (opt-in: set `RLS_TEST_DATABASE_URL` to a non-superuser Postgres role).
+
+
 ## Environment Variables
 | Variable | Default | Description |
 |----------|---------|-------------|

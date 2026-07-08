@@ -33,6 +33,23 @@ if settings.DATABASE_URL.startswith("sqlite"):
         cursor.execute("PRAGMA busy_timeout=30000")  # wait up to 30 s on lock
         cursor.close()
 
+# RLS tenant context: clear ``app.current_user_id`` whenever a Postgres
+# connection is returned to the pool, so a subsequent request can never
+# inherit a stale tenant context. ``set_tenant_context`` rebinds the GUC
+# at the start of each authenticated request / background job.
+if engine.dialect.name == "postgresql":
+    @event.listens_for(engine, "checkin")
+    def _reset_tenant_context(dbapi_conn, _record):  # noqa: ANN001
+        try:
+            cursor = dbapi_conn.cursor()
+            cursor.execute("RESET app.current_user_id")
+            cursor.close()
+        except Exception:
+            # Don't propagate — the pool will discard a broken connection
+            # on the next checkout / ping.
+            pass
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

@@ -79,7 +79,7 @@ def _assert_deal_access(deal_id: int, user_id: int, db: Session) -> Deal:
     return deal
 
 
-def _run_ingestion(document_id: int) -> None:
+def _run_ingestion(document_id: int, user_id: int) -> None:
     """Run the full ingestion pipeline in a FRESH DB session.
 
     Intended to be scheduled via FastAPI BackgroundTasks so the HTTP
@@ -88,7 +88,10 @@ def _run_ingestion(document_id: int) -> None:
     request lifecycle — the client never sees a 500 caused by ingestion.
 
     A separate SessionLocal is used because the request-scoped `db`
-    dependency is closed as soon as the response is sent.
+    dependency is closed as soon as the response is sent. *user_id* is
+    the uploader; it binds the RLS tenant context on the fresh session so
+    row-level policies apply to the background work exactly as they do
+    inside a request handler.
 
     Concurrency is capped by `_INGESTION_SLOTS`: each pipeline run holds a
     DB connection from start to finish (including slow embedding API
@@ -96,11 +99,13 @@ def _run_ingestion(document_id: int) -> None:
     pool. The semaphore is acquired BEFORE opening the session, so queued
     ingestions wait without holding a connection.
     """
+    from app.db.tenant_context import set_tenant_context
     from packages.parsing.ingestion_pipeline import process_document
 
     with _INGESTION_SLOTS:
         db = SessionLocal()
         try:
+            set_tenant_context(db, user_id)
             process_document(document_id, db)
         except Exception:
             logger.exception("Background ingestion failed for document %d", document_id)
@@ -168,7 +173,7 @@ async def upload_document(
     from app.services.jobs import enqueue_or_run
     await enqueue_or_run(
         request, background_tasks,
-        "run_ingestion_for_document", _run_ingestion, doc.id,
+        "run_ingestion_for_document", _run_ingestion, doc.id, current_user.id,
     )
     return doc
 
@@ -222,7 +227,7 @@ def upload_documents_batch(
         db.commit()
         db.refresh(doc)
 
-        background_tasks.add_task(_run_ingestion, doc.id)
+        background_tasks.add_task(_run_ingestion, doc.id, current_user.id)
         results.append(doc)
 
     return results

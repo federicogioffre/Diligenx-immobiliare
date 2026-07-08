@@ -144,13 +144,20 @@ def delete_deal(
     db.commit()
 
 
-def _run_pipeline_background(deal_id: int) -> None:
-    """Run the analysis pipeline in a background task with its own DB session."""
+def _run_pipeline_background(deal_id: int, user_id: int) -> None:
+    """Run the analysis pipeline in a background task with its own DB session.
+
+    *user_id* is the deal owner; it binds the RLS tenant context on the
+    fresh session so row-level policies apply to the pipeline's queries
+    exactly as they do inside a request handler.
+    """
     from app.db.session import SessionLocal
+    from app.db.tenant_context import set_tenant_context
     from packages.agents.orchestrator import run_deal_analysis_pipeline
 
     db = SessionLocal()
     try:
+        set_tenant_context(db, user_id)
         run_deal_analysis_pipeline(deal_id, db)
     except Exception:
         logger.exception("Background analysis pipeline failed for deal %d", deal_id)
@@ -208,7 +215,7 @@ async def analyze_deal(
     from app.services.jobs import enqueue_or_run
     await enqueue_or_run(
         request, background_tasks,
-        "run_pipeline_for_deal", _run_pipeline_background, deal_id,
+        "run_pipeline_for_deal", _run_pipeline_background, deal_id, current_user.id,
     )
 
     return DealAnalysisResponse(
@@ -715,6 +722,12 @@ async def stream_analysis_progress(
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
+    # Bind the RLS tenant context — this endpoint bypasses get_current_user
+    # (EventSource can't send headers), so the binding done there doesn't
+    # apply here.
+    from app.db.tenant_context import set_tenant_context
+    set_tenant_context(db, user.id)
+
     # Ownership check using the injected (short-lived) db session
     deal = (
         db.query(Deal)
@@ -727,11 +740,13 @@ async def stream_analysis_progress(
 
     async def event_generator():
         from app.db.session import SessionLocal
+        from app.db.tenant_context import set_tenant_context
         from app.models.agent_run import AgentRun
         from app.models.deal import Deal as DealModel
 
         stream_db = SessionLocal()
         try:
+            set_tenant_context(stream_db, user.id)
             while True:
                 # Force fresh reads on every tick (bypass SQLAlchemy identity cache)
                 stream_db.expire_all()
