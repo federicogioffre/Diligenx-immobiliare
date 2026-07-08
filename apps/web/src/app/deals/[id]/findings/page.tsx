@@ -149,6 +149,7 @@ function RedFlagCard({ f, docMap, index }: { f: RedFlagRead; docMap: Map<number,
             {filename}
           </span>
         )}
+        {f.source_page != null && <span>Pag. {f.source_page}</span>}
         {f.confidence != null && <span>Conf. {(f.confidence * 100).toFixed(0)}%</span>}
       </div>
     </div>

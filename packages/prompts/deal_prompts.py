@@ -263,12 +263,13 @@ For each item, provide:
 - category: free-text fine-grained label, e.g. "transfer_restriction", "change_of_control", "pledge", "missing_document"
 - confidence: 0.0–1.0
 - source_document_id: integer document ID or null
+- source_page: integer page where the item appears, or null. Use ONLY a page shown as "(p. N)" next to the relevant clause finding below; never guess. Null when no page is shown for the item.
 
 EXAMPLES of correctly structured red_flag entries (synthetic — illustrate format and calibration only):
 [
-  {{"finding_type": "red_flag", "title": "Pledge over the Target's shares", "issue": "A pledge over shares representing 81% of the corporate capital of the Target exists in favour of a lender, securing bond payment obligations (Bond Subscription Agreement, art. 10).", "risk": "If the secured debt is not repaid before closing, the Purchaser acquires shares that remain encumbered by the pledge.", "recommendation": "As a condition precedent to Closing, the lender should release the pledge.", "severity": "high", "area": "corporate", "category": "pledge", "confidence": 0.92, "source_document_id": 3}},
-  {{"finding_type": "red_flag", "title": "Change-of-control clause in loan agreement", "issue": "Article 5 of the loan agreement provides that the lender may terminate in case of any event negatively affecting the financial or corporate situation of the company.", "risk": "Although unlikely, after the Transaction the lender may claim the change of control qualifies and accelerate repayment.", "recommendation": "As a condition precedent to Closing, obtain the lender's consent to the Transaction.", "severity": "medium", "area": "indebtedness", "category": "change_of_control", "confidence": 0.85, "source_document_id": 7}},
-  {{"finding_type": "red_flag", "title": "Rent indexation above legal cap", "issue": "The lease agreement provides annual rent indexation at 100% of the ISTAT variation, while the maximum allowed under Italian law is 75%.", "risk": "The company may pay, or may have paid, amounts not due under applicable law.", "recommendation": "Insert specific Sellers' representations and warranties in the SPA; renegotiate the clause.", "severity": "low", "area": "real_estate", "category": "void_clause", "confidence": 0.80, "source_document_id": 12}}
+  {{"finding_type": "red_flag", "title": "Pledge over the Target's shares", "issue": "A pledge over shares representing 81% of the corporate capital of the Target exists in favour of a lender, securing bond payment obligations (Bond Subscription Agreement, art. 10).", "risk": "If the secured debt is not repaid before closing, the Purchaser acquires shares that remain encumbered by the pledge.", "recommendation": "As a condition precedent to Closing, the lender should release the pledge.", "severity": "high", "area": "corporate", "category": "pledge", "confidence": 0.92, "source_document_id": 3, "source_page": 10}},
+  {{"finding_type": "red_flag", "title": "Change-of-control clause in loan agreement", "issue": "Article 5 of the loan agreement provides that the lender may terminate in case of any event negatively affecting the financial or corporate situation of the company.", "risk": "Although unlikely, after the Transaction the lender may claim the change of control qualifies and accelerate repayment.", "recommendation": "As a condition precedent to Closing, obtain the lender's consent to the Transaction.", "severity": "medium", "area": "indebtedness", "category": "change_of_control", "confidence": 0.85, "source_document_id": 7, "source_page": 5}},
+  {{"finding_type": "red_flag", "title": "Rent indexation above legal cap", "issue": "The lease agreement provides annual rent indexation at 100% of the ISTAT variation, while the maximum allowed under Italian law is 75%.", "risk": "The company may pay, or may have paid, amounts not due under applicable law.", "recommendation": "Insert specific Sellers' representations and warranties in the SPA; renegotiate the clause.", "severity": "low", "area": "real_estate", "category": "void_clause", "confidence": 0.80, "source_document_id": 12, "source_page": null}}
 ]
 
 Priority order: check all PRIORITY RISKS first, then apply SAFE HARBOUR before raising anything else.
@@ -276,7 +277,7 @@ Priority order: check all PRIORITY RISKS first, then apply SAFE HARBOUR before r
 {findings_by_document}
 
 Return ONLY a JSON array (no markdown fences, no explanation):
-[{{"finding_type": "red_flag", "title": "...", "issue": "...", "risk": "...", "recommendation": "...", "severity": "high", "area": "...", "category": "...", "confidence": 0.0, "source_document_id": null}}, ...]
+[{{"finding_type": "red_flag", "title": "...", "issue": "...", "risk": "...", "recommendation": "...", "severity": "high", "area": "...", "category": "...", "confidence": 0.0, "source_document_id": null, "source_page": null}}, ...]
 
 If no findings, return an empty array: []
 """

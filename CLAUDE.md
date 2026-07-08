@@ -40,7 +40,7 @@ Diligenx/
 │   │   │   ├── document.py               # Document + DocumentStatus(pending|processing|processed|failed) + language + raw_text
 │   │   │   ├── document_chunk.py         # DocumentChunk + VectorType (pgvector on PG, JSON on SQLite) + EMBEDDING_DIM=1536
 │   │   │   ├── clause_finding.py         # ClauseFinding + ClauseType enum
-│   │   │   ├── red_flag.py               # RedFlag (issue/risk/recommendation triple) + Severity(low|medium|high) + DueDiligenceArea (9 standard DD report sections)
+│   │   │   ├── red_flag.py               # RedFlag (issue/risk/recommendation triple) + Severity(low|medium|high) + DueDiligenceArea (9 standard DD report sections) + source_document_id/source_page citation
 │   │   │   ├── report.py                 # Report + ReportType + ReportStatus enums
 │   │   │   ├── agent_run.py              # AgentRun (one row per pipeline stage execution)
 │   │   │   ├── agent_finding.py          # AgentFinding (intermediate per-doc findings, e.g. routing)
@@ -161,7 +161,7 @@ Triggered async by `POST /deals/{id}/analyze`. Each stage gets its own `AgentRun
 3. **Contract analysis** (`ContractAgent`) — extract clauses → `ClauseFinding` (with grounding check + min confidence).
 4. **Corporate governance** (`CorporateAgent`) — bylaws / shareholder agreement insights.
 4b. **Corporate intro extraction** (`CorporateIntroAgent`) — extracts the Corporate Introductory Information for each target company (visure / atti / statuti) → `CompanyProfile` rows. Auto-detects corporate-looking docs via filename + first-1500-chars keyword match.
-5. **Red-flag aggregation** — produce `RedFlag` rows (Issue/Risk/Recommendation triple, severity low|medium|high, DD area) + `OpenQuestion` items for high-severity flags.
+5. **Red-flag aggregation** — produce `RedFlag` rows (Issue/Risk/Recommendation triple, severity low|medium|high, DD area, `source_document_id` + validated `source_page` pinpoint citation) + `OpenQuestion` items for high-severity flags. A cited `source_page` is kept only if it matches a real page of that document's ClauseFindings (guards against hallucinated citations).
 6. **Report generation** (`report_agent.generate_due_diligence_report`) — bilingual (IT/EN — explicit `deal.report_language` or majority language of processed documents, fallback EN; LLM prose follows, boilerplate localized faithfully to studio practice: title/Executive Summary/Key Findings stay English) deterministic template (Introduction / Corporate Introductory Information from `CompanyProfile` / Executive Summary via LLM / Key Findings tabellari per DD area / Observations / Information Requests / Appendix Documents); stored as Markdown in `Report` table.
 
 ## Ingestion Pipeline (on upload)

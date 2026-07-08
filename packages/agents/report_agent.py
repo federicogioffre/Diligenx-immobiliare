@@ -255,7 +255,25 @@ def _render_introduction(deal_title: str, areas_reviewed: list[str], lang: str) 
     )
 
 
-def _render_key_findings(red_flags: list, lang: str) -> str:
+def _format_source_citation(flag, doc_names: dict, lang: str) -> str:
+    """Inline pinpoint citation for a red flag, e.g. "(SPA.pdf, p. 12)".
+
+    Returns "" when there is no source document. The page is included only
+    when the aggregator attributed (and validated) one.
+    """
+    doc_id = getattr(flag, "source_document_id", None)
+    if doc_id is None:
+        return ""
+    filename = doc_names.get(doc_id)
+    if not filename:
+        return ""
+    page = getattr(flag, "source_page", None)
+    page_label = "p." if lang == "en" else "pag."
+    inner = f"{filename}, {page_label} {page}" if page is not None else filename
+    return f"({inner})"
+
+
+def _render_key_findings(red_flags: list, lang: str, doc_names: dict | None = None) -> str:
     """One table per DD area: rows hold the # / Issue / Risk / Recommendation
     / Severity quintuple. Mirrors the layout used by professional Italian
     red-flag DD reports (see the 5 anonymised sample reports). Flags
@@ -266,6 +284,7 @@ def _render_key_findings(red_flags: list, lang: str) -> str:
     even at narrow column widths. PDF / DOCX exporters apply explicit
     column widths so long prose wraps cleanly.
     """
+    doc_names = doc_names or {}
     if not red_flags:
         return (
             "## Key Findings\n\n"
@@ -294,6 +313,11 @@ def _render_key_findings(red_flags: list, lang: str) -> str:
                 f"**{f.title}.** {f.issue.strip()}"
                 if f.title else f.issue.strip()
             )
+            # Append an inline pinpoint citation (document + page) so the
+            # reader can trace each finding to its source.
+            citation = _format_source_citation(f, doc_names, lang)
+            if citation:
+                issue_cell = f"{issue_cell} _{citation}_"
             parts.append(
                 f"| {i} | {_md_cell(issue_cell)} | {_md_cell(f.risk)} "
                 f"| {_md_cell(f.recommendation)} | {sev} |"
@@ -637,7 +661,9 @@ def generate_due_diligence_report(
             "",
             executive_summary,
             "",
-            _render_key_findings(red_flags, lang),
+            _render_key_findings(
+                red_flags, lang, {d.id: d.filename for d in documents}
+            ),
             _L10N[lang]["observations_heading"],
             "",
             observations_md,

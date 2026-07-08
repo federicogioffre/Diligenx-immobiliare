@@ -167,6 +167,13 @@ class RedFlagAggregationAgent:
             clause_findings = self._gather_clause_findings(db, doc_map)
             agent_findings = self._gather_agent_findings(db, deal_id)
 
+            # Real page numbers per document, used to validate the page the
+            # LLM cites (guards against a hallucinated source_page).
+            pages_by_doc: dict[int, set[int]] = {}
+            for cf in clause_findings:
+                if cf.page_number is not None:
+                    pages_by_doc.setdefault(cf.document_id, set()).add(cf.page_number)
+
             logger.info(
                 "[%s] deal=%d — gathered %d clause finding(s), %d agent finding(s)",
                 self.AGENT_NAME, deal_id,
@@ -202,7 +209,7 @@ class RedFlagAggregationAgent:
 
             # ── 6. Persist ────────────────────────────────────────────── #
             red_flags, open_questions = self._persist_flags_and_questions(
-                deal_id, deduped_flags, db
+                deal_id, deduped_flags, db, pages_by_doc
             )
 
             db.flush()
@@ -330,7 +337,9 @@ class RedFlagAggregationAgent:
                 parts.append("Clause Findings:")
                 for cf in doc_clauses:
                     snippet = (cf.content or "")[:200]
-                    parts.append(f"  [{cf.clause_type.value}] {cf.title}: {snippet}")
+                    # Expose the page so the LLM can cite it in source_page.
+                    page = f" (p. {cf.page_number})" if cf.page_number is not None else ""
+                    parts.append(f"  [{cf.clause_type.value}]{page} {cf.title}: {snippet}")
 
             doc_agents = agents_by_doc.get(doc_id, [])
             if doc_agents:
@@ -429,8 +438,26 @@ class RedFlagAggregationAgent:
 
     # ── Persistence ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def _validate_source_page(
+        raw_page, source_doc_id, pages_by_doc: dict[int, set[int]]
+    ) -> int | None:
+        """Return the cited page only if it is a real page of that document's
+        clause findings; otherwise None. Prevents hallucinated citations."""
+        if raw_page is None or source_doc_id is None:
+            return None
+        try:
+            page = int(raw_page)
+        except (TypeError, ValueError):
+            return None
+        return page if page in pages_by_doc.get(source_doc_id, set()) else None
+
     def _persist_flags_and_questions(
-        self, deal_id: int, flags: list[dict], db: Session
+        self,
+        deal_id: int,
+        flags: list[dict],
+        db: Session,
+        pages_by_doc: dict[int, set[int]] | None = None,
     ) -> tuple[list, list]:
         """Persist ``RedFlag`` rows and generate ``OpenQuestion`` for high/critical.
 
@@ -445,6 +472,7 @@ class RedFlagAggregationAgent:
 
         _VALID_FINDING_TYPES = {"red_flag", "observation", "information_request"}
         _MIN_FLAG_CONFIDENCE = 0.50   # drop red_flags below this threshold
+        pages_by_doc = pages_by_doc or {}
 
         red_flags: list[RedFlag] = []
         for item in flags:
@@ -477,6 +505,7 @@ class RedFlagAggregationAgent:
                 )
                 db.add(af)
             else:
+                source_doc_id = item.get("source_document_id")
                 flag = RedFlag(
                     deal_id=deal_id,
                     title=str(item.get("title", ""))[:500],
@@ -488,7 +517,10 @@ class RedFlagAggregationAgent:
                     area=_parse_dd_area(item.get("area")),
                     category=str(item.get("category", "general"))[:100],
                     confidence=item.get("confidence"),
-                    source_document_id=item.get("source_document_id"),
+                    source_document_id=source_doc_id,
+                    source_page=self._validate_source_page(
+                        item.get("source_page"), source_doc_id, pages_by_doc
+                    ),
                 )
                 db.add(flag)
                 red_flags.append(flag)

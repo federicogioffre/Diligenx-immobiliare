@@ -79,13 +79,14 @@ def _make_clause_finding(
     title: str = "Termination Clause",
     content: str = "Either party may terminate with 30 days notice.",
     confidence: float = 0.9,
+    page_number: int | None = 1,
 ) -> ClauseFinding:
     cf = ClauseFinding(
         document_id=doc.id,
         clause_type=clause_type,
         title=title,
         content=content,
-        page_number=1,
+        page_number=page_number,
         confidence=confidence,
     )
     db.add(cf)
@@ -249,6 +250,50 @@ class TestRedFlagCreation:
         RedFlagAggregationAgent(provider=DocLinkedLLM()).run(test_deal.id, db)
         flag = _red_flags(db, test_deal)[0]
         assert flag.source_document_id == doc.id
+
+    def _page_llm(self, doc_id, page):
+        """A fake LLM that emits one red flag citing (doc_id, page)."""
+        class _PageLLM(FakeLLMProvider):
+            def complete(self, prompt, max_tokens=2048):
+                if "RED FLAGS" in prompt.upper() and "DUE DILIGENCE" not in prompt.upper():
+                    return json.dumps([{
+                        "title": "Cited Clause",
+                        "issue": "A clause worth citing.",
+                        "risk": "Some risk.",
+                        "recommendation": "Do something.",
+                        "severity": "high",
+                        "category": "liability",
+                        "confidence": 0.9,
+                        "source_document_id": doc_id,
+                        "source_page": page,
+                    }])
+                return super().complete(prompt, max_tokens)
+        return _PageLLM()
+
+    def test_source_page_persisted_when_it_matches_a_clause_page(self, db, test_deal):
+        """A cited page that exists among the document's clause findings is kept."""
+        doc = _make_doc(db, test_deal)
+        _make_clause_finding(db, doc, page_number=7)
+        RedFlagAggregationAgent(provider=self._page_llm(doc.id, 7)).run(test_deal.id, db)
+        flag = _red_flags(db, test_deal)[0]
+        assert flag.source_page == 7
+
+    def test_hallucinated_source_page_rejected(self, db, test_deal):
+        """A cited page NOT backed by any clause finding is dropped to None,
+        so a hallucinated citation never reaches the report."""
+        doc = _make_doc(db, test_deal)
+        _make_clause_finding(db, doc, page_number=7)
+        RedFlagAggregationAgent(provider=self._page_llm(doc.id, 99)).run(test_deal.id, db)
+        flag = _red_flags(db, test_deal)[0]
+        assert flag.source_document_id == doc.id
+        assert flag.source_page is None
+
+    def test_source_page_ignored_without_source_document(self, db, test_deal):
+        """A page with no source_document_id cannot be validated → None."""
+        _make_doc(db, test_deal)
+        RedFlagAggregationAgent(provider=self._page_llm(None, 3)).run(test_deal.id, db)
+        flag = _red_flags(db, test_deal)[0]
+        assert flag.source_page is None
 
     def test_no_documents_zero_flags(self, db, test_deal):
         """A deal with no documents produces an empty context → FakeLLM still

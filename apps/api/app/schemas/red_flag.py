@@ -21,6 +21,10 @@ class RedFlagRead(BaseModel):
     category: str
     confidence: float | None
     source_document_id: int | None
+    # Pinpoint citation: page within source_document_id, when the aggregator
+    # could attribute (and validate) one. The frontend resolves the filename
+    # from source_document_id via its documents list.
+    source_page: int | None
     created_at: datetime
 
     model_config = {"from_attributes": True}

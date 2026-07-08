@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import String, Float, Text, ForeignKey, Enum
+from sqlalchemy import String, Float, Text, Integer, ForeignKey, Enum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -65,6 +65,9 @@ class RedFlag(TimestampMixin, Base):
     source_document_id: Mapped[int | None] = mapped_column(
         ForeignKey("documents.id", ondelete="SET NULL")
     )
+    # Page within source_document_id where the flagged item appears. NULL when
+    # the aggregator could not attribute (or validate) a specific page.
+    source_page: Mapped[int | None] = mapped_column(Integer)
 
     deal = relationship("Deal", back_populates="red_flags")
     source_document = relationship("Document", overlaps="red_flags")
