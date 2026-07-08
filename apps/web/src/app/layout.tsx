@@ -5,9 +5,32 @@ import NavBar from '@/components/NavBar'
 import AppFooter from '@/components/AppFooter'
 import CookieBanner from '@/components/CookieBanner'
 
+const SITE_URL = 'https://diligenx.it'
+const SITE_DESCRIPTION =
+  'Diligenx — piattaforma di due diligence legale assistita da AI: analisi di contratti e documenti societari, red flag e report professionali.'
+
 export const metadata: Metadata = {
-  title: 'Diligenx',
-  description: 'AI-powered due diligence platform',
+  metadataBase: new URL(SITE_URL),
+  applicationName: 'Diligenx',
+  title: {
+    default: 'Diligenx — Legal Due Diligence Platform',
+    template: '%s — Diligenx',
+  },
+  description: SITE_DESCRIPTION,
+  robots: { index: true, follow: true },
+  openGraph: {
+    type: 'website',
+    siteName: 'Diligenx',
+    title: 'Diligenx — Legal Due Diligence Platform',
+    description: SITE_DESCRIPTION,
+    url: SITE_URL,
+    locale: 'it_IT',
+  },
+  twitter: {
+    card: 'summary',
+    title: 'Diligenx — Legal Due Diligence Platform',
+    description: SITE_DESCRIPTION,
+  },
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
