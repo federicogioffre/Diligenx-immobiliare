@@ -204,3 +204,121 @@ def test_export_docx_contains_deal_title_and_sections(
 
     # The Documents Reviewed pipe-table becomes a real Word table
     assert len(doc.tables) >= 1
+
+
+# ── Landscape layout for the Key Findings section ──────────────────────────
+
+FINDINGS_MARKDOWN = """\
+## 1. Executive Summary
+Sintesi di prova.
+
+## 2. Key Findings
+
+### 2.1 Corporate Matters
+
+| # | Issue | Risk | Recommendation | Severity |
+|---|-------|------|----------------|----------|
+| 1 | Clausola di cambio di controllo nel contratto quadro | Risoluzione anticipata | Rinegoziare la clausola | [HIGH] |
+| 2 | Quorum rafforzati in assemblea | Stallo decisionale | Patto parasociale | [MEDIUM] |
+
+## 3. Observations
+Osservazione successiva alla tabella.
+"""
+
+
+@pytest.fixture
+def findings_report_fixture(db: Session, test_deal: Deal) -> Report:
+    r = Report(
+        deal_id=test_deal.id,
+        report_type=ReportType.due_diligence,
+        title="Findings Report",
+        content=FINDINGS_MARKDOWN,
+        status=ReportStatus.completed,
+    )
+    db.add(r)
+    db.commit()
+    db.refresh(r)
+    return r
+
+
+def test_pdf_key_findings_pages_are_landscape(
+    client, auth_headers, test_deal, findings_report_fixture
+):
+    """The Key Findings section renders on landscape pages; the sections
+    before and after stay portrait."""
+    from pypdf import PdfReader
+
+    resp = client.get(
+        f"/deals/{test_deal.id}/report/export?format=pdf",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+
+    reader = PdfReader(io.BytesIO(resp.content))
+    orientations = []
+    findings_page_landscape = None
+    for page in reader.pages:
+        w, h = float(page.mediabox.width), float(page.mediabox.height)
+        landscape = w > h
+        orientations.append(landscape)
+        if "Key Findings" in (page.extract_text() or ""):
+            findings_page_landscape = landscape
+
+    assert any(orientations), "expected at least one landscape page"
+    assert not all(orientations), "cover/body pages must stay portrait"
+    assert findings_page_landscape is True, (
+        "the page carrying the Key Findings table must be landscape"
+    )
+
+
+def test_pdf_without_key_findings_stays_all_portrait(
+    client, auth_headers, test_deal, report_fixture
+):
+    from pypdf import PdfReader
+
+    resp = client.get(
+        f"/deals/{test_deal.id}/report/export?format=pdf",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    reader = PdfReader(io.BytesIO(resp.content))
+    for page in reader.pages:
+        w, h = float(page.mediabox.width), float(page.mediabox.height)
+        assert h > w, "no landscape pages expected without a Key Findings section"
+
+
+def test_docx_key_findings_section_is_landscape(
+    client, auth_headers, test_deal, findings_report_fixture
+):
+    from docx import Document as _DocxDocument
+    from docx.enum.section import WD_ORIENT
+
+    resp = client.get(
+        f"/deals/{test_deal.id}/report/export?format=docx",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+
+    doc = _DocxDocument(io.BytesIO(resp.content))
+    sections = doc.sections
+    # cover+summary (portrait) / key findings (landscape) / rest (portrait)
+    assert len(sections) == 3
+    assert sections[0].orientation == WD_ORIENT.PORTRAIT
+    assert sections[1].orientation == WD_ORIENT.LANDSCAPE
+    assert int(sections[1].page_width) > int(sections[1].page_height)
+    assert sections[2].orientation == WD_ORIENT.PORTRAIT
+    assert int(sections[2].page_width) < int(sections[2].page_height)
+
+
+def test_docx_without_key_findings_single_portrait_section(
+    client, auth_headers, test_deal, report_fixture
+):
+    from docx import Document as _DocxDocument
+
+    resp = client.get(
+        f"/deals/{test_deal.id}/report/export?format=docx",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    doc = _DocxDocument(io.BytesIO(resp.content))
+    assert len(doc.sections) == 1
