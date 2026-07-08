@@ -25,6 +25,22 @@ from app.core.config import settings
 from app.core.limiter import limiter
 from app.api.routes import health, auth, deals, documents, users, workspaces
 
+# ── Error monitoring ──────────────────────────────────────────────────────
+# Initialised only when SENTRY_DSN is configured, so the SDK is inert in
+# local dev, in tests and in any deploy that hasn't opted in. The FastAPI
+# integration is auto-enabled by sentry-sdk when it detects the framework.
+if settings.SENTRY_DSN:
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        environment=settings.SENTRY_ENVIRONMENT,
+        traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
+        # Redact request bodies / user PII by default; errors carry the
+        # stack and route, which is what we need for triage.
+        send_default_pii=False,
+    )
+
 
 # Pure ASGI middleware: rewrites /workspaces → /workspaces/ and /deals → /deals/
 # This avoids cross-origin 307 redirects that drop the Authorization header

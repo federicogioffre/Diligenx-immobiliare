@@ -62,5 +62,13 @@ class Settings(BaseSettings):
     #   rediss://...                          (TLS, recommended on Upstash)
     REDIS_URL: str = ""
 
+    # Error monitoring (Sentry). Leave empty to run without Sentry — the
+    # SDK is only initialised when a DSN is provided, so the dependency
+    # is inert in local dev and tests. traces_sample_rate is kept low by
+    # default: errors are always captured, performance traces are sampled.
+    SENTRY_DSN: str = ""
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
+    SENTRY_ENVIRONMENT: str = "production"
+
 
 settings = Settings()
