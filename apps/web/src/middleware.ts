@@ -18,11 +18,16 @@ const PUBLIC_PATHS = [
   '/dpa',
   '/security',
 ]
-const IGNORED_PREFIXES = ['/_next', '/api', '/favicon']
+const IGNORED_PREFIXES = ['/_next', '/api', '/favicon', '/.well-known']
+// Well-known crawler/SEO endpoints must stay publicly reachable — otherwise
+// the auth guard redirects them to /login and reputation scanners see a
+// login wall instead of the file.
+const PUBLIC_FILES = ['/robots.txt', '/sitemap.xml']
 
 function isPublic(path: string): boolean {
   return (
     PUBLIC_PATHS.includes(path) ||
+    PUBLIC_FILES.includes(path) ||
     IGNORED_PREFIXES.some((p) => path.startsWith(p))
   )
 }
