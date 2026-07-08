@@ -23,7 +23,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.limiter import limiter
-from app.api.routes import health, auth, deals, documents, workspaces
+from app.api.routes import health, auth, deals, documents, users, workspaces
 
 
 # Pure ASGI middleware: rewrites /workspaces → /workspaces/ and /deals → /deals/
@@ -139,6 +139,7 @@ _fastapi.include_router(health.router)
 _fastapi.include_router(auth.router, prefix="/auth", tags=["auth"])
 _fastapi.include_router(deals.router, prefix="/deals", tags=["deals"])
 _fastapi.include_router(documents.router, prefix="/documents", tags=["documents"])
+_fastapi.include_router(users.router, prefix="/users", tags=["users"])
 _fastapi.include_router(workspaces.router, prefix="/workspaces", tags=["workspaces"])
 
 # Uvicorn entry point: wrap FastAPI with the slash-normalisation ASGI middleware

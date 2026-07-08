@@ -311,6 +311,31 @@ export const api = {
     },
   },
 
+  users: {
+    me(): Promise<UserRead> {
+      return request('/users/me')
+    },
+    /** GDPR art. 20 — full structured export, returned as a Blob to download. */
+    async exportData(): Promise<Blob> {
+      const res = await fetch(`${BASE}/users/me/export`)
+      if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
+      if (!res.ok) throw new Error(await res.text())
+      return res.blob()
+    },
+    /** GDPR art. 17 — erase the account. Requires the password as a
+     *  deliberate-action check; 403 means wrong password. */
+    async deleteAccount(password: string): Promise<void> {
+      const res = await fetch(`${BASE}/users/me`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      })
+      if (res.status === 403) throw new Error('Password errata')
+      if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
+      if (!res.ok) throw new Error(await res.text())
+    },
+  },
+
   workspaces: {
     list(): Promise<WorkspaceRead[]> {
       return request('/workspaces')

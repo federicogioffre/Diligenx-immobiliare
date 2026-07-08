@@ -59,6 +59,16 @@ export default function NavBar() {
           >
             Insights
           </Link>
+          <Link
+            href="/account"
+            className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${
+              pathname === '/account'
+                ? 'text-slate-900 bg-slate-100'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+            }`}
+          >
+            Account
+          </Link>
           <button
             onClick={handleLogout}
             className="text-sm text-slate-600 hover:text-slate-900 font-medium px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-colors ml-1"
