@@ -309,6 +309,29 @@ export const api = {
         body: JSON.stringify(data),
       })
     },
+
+    /** Start the password-reset flow. Always resolves (202) — the backend
+     *  never reveals whether the address exists. */
+    async forgotPassword(email: string): Promise<void> {
+      const res = await fetch(`${BASE}/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+    },
+
+    /** Complete the reset with the token from the email link. */
+    async resetPassword(token: string, newPassword: string): Promise<void> {
+      const res = await fetch(`${BASE}/auth/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, new_password: newPassword }),
+      })
+      if (res.status === 400) throw new Error('Link non valido o scaduto. Richiedi un nuovo link.')
+      if (res.status === 422) throw new Error('La password deve avere almeno 8 caratteri.')
+      if (!res.ok) throw new Error(await res.text())
+    },
   },
 
   users: {

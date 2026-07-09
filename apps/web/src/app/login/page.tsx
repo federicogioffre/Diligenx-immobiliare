@@ -140,6 +140,14 @@ export default function LoginPage() {
               >
                 {loading ? 'Accesso in corso…' : 'Accedi'}
               </button>
+              <p className="text-center">
+                <a
+                  href="/forgot-password"
+                  className="text-xs text-slate-500 hover:text-blue-600 font-medium transition-colors"
+                >
+                  Password dimenticata?
+                </a>
+              </p>
             </form>
           ) : (
             <form onSubmit={handleRegister} className="space-y-4">

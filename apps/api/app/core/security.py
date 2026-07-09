@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -75,4 +76,51 @@ def decode_stream_ticket(ticket: str, deal_id: int) -> str:
         or payload.get("deal_id") != deal_id
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid ticket")
+    return sub
+
+
+# ── Password reset tokens ───────────────────────────────────────────────────
+#
+# Stateless single-use: the token embeds a fingerprint of the CURRENT
+# password hash. As soon as the password changes, every token issued before
+# the change stops validating — no server-side token table needed. TTL keeps
+# a leaked link short-lived.
+
+PASSWORD_RESET_TTL_MINUTES = 30
+
+
+def _password_fingerprint(hashed_password: str) -> str:
+    return hashlib.sha256(hashed_password.encode()).hexdigest()[:16]
+
+
+def create_password_reset_token(subject: str, hashed_password: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=PASSWORD_RESET_TTL_MINUTES)
+    payload = {
+        "sub": subject,
+        "exp": expire,
+        "scope": "pwreset",
+        "fp": _password_fingerprint(hashed_password),
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def decode_password_reset_token(token: str, current_hashed_password: str) -> str:
+    """Validate a password-reset token and return its subject (email).
+
+    Rejects: plain access tokens / stream tickets (wrong scope), expired
+    tokens (JWTError), and tokens minted before the last password change
+    (fingerprint mismatch → already used or superseded).
+    """
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Link non valido o scaduto")
+
+    sub = payload.get("sub")
+    if (
+        sub is None
+        or payload.get("scope") != "pwreset"
+        or payload.get("fp") != _password_fingerprint(current_hashed_password)
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Link non valido o scaduto")
     return sub

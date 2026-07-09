@@ -11,6 +11,9 @@ import { isTokenExpired } from '@/lib/auth'
 const PUBLIC_PATHS = [
   '/',         // public marketing landing
   '/login',
+  // Password reset — reached from an email link, necessarily unauthenticated.
+  '/forgot-password',
+  '/reset-password',
   // Compliance / legal pages — publicly accessible without auth.
   '/privacy',
   '/cookies',

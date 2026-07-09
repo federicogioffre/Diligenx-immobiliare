@@ -70,5 +70,20 @@ class Settings(BaseSettings):
     SENTRY_TRACES_SAMPLE_RATE: float = 0.1
     SENTRY_ENVIRONMENT: str = "production"
 
+    # Outbound email (SMTP). Leave SMTP_HOST empty to disable sending —
+    # flows that email (password reset) then log the message instead, so
+    # they stay testable without mailboxes. Hostinger Titan example:
+    #   SMTP_HOST=smtp.titan.email  SMTP_PORT=465 (SSL)
+    #   SMTP_USER=privacy@diligenx.it  SMTP_FROM=privacy@diligenx.it
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 465
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = ""
+
+    # Public URL of the frontend, used to build links in outbound email
+    # (password reset). No trailing slash.
+    FRONTEND_URL: str = "https://www.diligenx.it"
+
 
 settings = Settings()

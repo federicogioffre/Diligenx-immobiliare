@@ -6,7 +6,13 @@ from app.core.config import settings
 from app.core.limiter import limiter
 from app.db.session import get_db
 from app.models.user import User
-from app.core.security import hash_password, verify_password, create_access_token
+from app.core.security import (
+    create_access_token,
+    create_password_reset_token,
+    decode_password_reset_token,
+    hash_password,
+    verify_password,
+)
 from app.schemas.user import UserCreate, UserRead, Token
 
 router = APIRouter()
@@ -103,3 +109,96 @@ def logout(response: Response):
     HttpOnly cookie — JS cannot delete it.
     """
     _clear_session_cookies(response)
+
+
+# ── Password reset ──────────────────────────────────────────────────────────
+
+from pydantic import BaseModel, EmailStr
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+@router.post("/forgot-password", status_code=202)
+@limiter.limit("3/minute")
+def forgot_password(
+    request: Request,
+    payload: ForgotPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    """Start the password-reset flow.
+
+    ALWAYS returns 202, whether or not the email exists — the response
+    must not reveal which addresses have accounts (user enumeration).
+    When the account exists, a single-use reset link (30-minute TTL,
+    invalidated by any password change) is emailed; with SMTP not yet
+    configured, the mailer logs the link instead so the flow remains
+    testable.
+    """
+    from app.services.mailer import send_email
+
+    user = db.query(User).filter(
+        User.email == payload.email, User.is_active == True
+    ).first()
+    if user:
+        token = create_password_reset_token(user.email, user.hashed_password)
+        link = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+        send_email(
+            to=user.email,
+            subject="Diligenx — reimposta la tua password",
+            body=(
+                "Ciao,\n\n"
+                "abbiamo ricevuto una richiesta di reimpostazione della password "
+                "per il tuo account Diligenx.\n\n"
+                f"Apri questo link per scegliere una nuova password (valido 30 minuti):\n{link}\n\n"
+                "Se non hai richiesto tu la reimpostazione, ignora questa email: "
+                "la tua password resta invariata.\n\n"
+                "— Diligenx"
+            ),
+        )
+    return {"detail": "Se l'indirizzo è registrato, riceverai un'email con le istruzioni."}
+
+
+@router.post("/reset-password", status_code=204)
+@limiter.limit("5/minute")
+def reset_password(
+    request: Request,
+    payload: ResetPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    """Complete the password-reset flow with a token from the email link.
+
+    The token embeds a fingerprint of the password hash it was issued
+    against, so it is single-use: the first successful reset (or any
+    password change) invalidates every outstanding token.
+    """
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=422, detail="La password deve avere almeno 8 caratteri")
+
+    # Decode WITHOUT the fingerprint first to locate the user, then
+    # validate properly against that user's current hash.
+    from jose import jwt as _jwt, JWTError as _JWTError
+    try:
+        claims = _jwt.decode(
+            payload.token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+    except _JWTError:
+        raise HTTPException(status_code=400, detail="Link non valido o scaduto")
+
+    user = db.query(User).filter(
+        User.email == claims.get("sub"), User.is_active == True
+    ).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Link non valido o scaduto")
+
+    # Full validation: scope + fingerprint against the CURRENT hash.
+    decode_password_reset_token(payload.token, user.hashed_password)
+
+    user.hashed_password = hash_password(payload.new_password)
+    db.commit()
