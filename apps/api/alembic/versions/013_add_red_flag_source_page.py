@@ -1,7 +1,7 @@
 """add source_page to red_flags
 
-Revision ID: 012
-Revises: 011
+Revision ID: 013
+Revises: 012
 Create Date: 2026-07-08
 
 Pinpoint citation: the page of source_document_id where the flagged item
@@ -14,8 +14,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "012"
-down_revision: Union[str, None] = "011"
+revision: str = "013"
+down_revision: Union[str, None] = "012"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
