@@ -44,10 +44,20 @@ if engine.dialect.name == "postgresql":
             cursor = dbapi_conn.cursor()
             cursor.execute("RESET app.current_user_id")
             cursor.close()
+            # psycopg2 opened an implicit transaction for the RESET above.
+            # Commit it so the connection is returned to the pool with no
+            # open transaction — otherwise the next checkout's pool_pre_ping
+            # (which sets autocommit=True) raises "set_session cannot be used
+            # inside a transaction", 500-ing every reused connection.
+            # Commit (not rollback) so the RESET itself persists.
+            dbapi_conn.commit()
         except Exception:
             # Don't propagate — the pool will discard a broken connection
             # on the next checkout / ping.
-            pass
+            try:
+                dbapi_conn.rollback()
+            except Exception:
+                pass
 
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
