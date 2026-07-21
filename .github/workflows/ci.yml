@@ -78,9 +78,11 @@ jobs:
       # connection-pool lifecycle. This is the job that would have caught
       # the incident where the RLS checkin handler left a transaction open,
       # 500-ing every reused connection in production.
+      # `python -m alembic` (not the bare `alembic` console script) so the
+      # cwd is added to sys.path — alembic/env.py does `from app.core...`.
       - name: Run Alembic migrations against Postgres
         working-directory: apps/api
-        run: alembic upgrade head
+        run: python -m alembic upgrade head
 
       - name: Run Postgres integration suite
         working-directory: apps/api
