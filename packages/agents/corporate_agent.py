@@ -204,19 +204,29 @@ class CorporateAgent:
             all_findings: list = []
             findings_by_document: list[dict] = []
 
+            # LLM+parse per document is pure → fan out on a bounded pool;
+            # ORM persistence happens below on this thread, in input order.
+            to_analyse = []
             for doc in documents:
                 text = (doc.raw_text or "").strip()
-                if not text:
+                if text:
+                    to_analyse.append((doc, text))
+                else:
                     logger.warning(
                         "[%s] deal=%d doc=%d — no text, skipping",
                         self.AGENT_NAME, deal_id, doc.id,
                     )
-                    continue
 
-                # ── 4. Extract governance insights via LLM ────────────── #
-                doc_findings = self._extract_governance_insights(
-                    doc, text, deal_id, db
-                )
+            from packages.agents.concurrency import run_llm_tasks
+
+            payload_lists = run_llm_tasks(
+                to_analyse,
+                lambda pair: self._governance_payloads(pair[0].filename, pair[1], pair[0].id),
+            )
+
+            for (doc, _), payloads in zip(to_analyse, payload_lists):
+                # ── 4. Persist one AgentFinding per insight ───────────── #
+                doc_findings = self._persist_insights(doc, payloads, deal_id, db)
                 all_findings.extend(doc_findings)
 
                 logger.info(
@@ -319,23 +329,22 @@ class CorporateAgent:
 
     # ── Insight extraction ──────────────────────────────────────────────
 
-    def _extract_governance_insights(
+    def _governance_payloads(
         self,
-        doc,
+        filename: str,
         text: str,
-        deal_id: int,
-        db: Session,
-    ) -> list:
-        """Call the LLM and persist one ``AgentFinding`` per insight.
+        document_id: int,
+    ) -> list[dict]:
+        """Call the LLM and return normalized insight payload dicts.
 
-        Returns the list of newly created (flushed) ``AgentFinding`` objects.
+        PURE with respect to the database — safe to run on a worker thread
+        (see packages.agents.concurrency). Persistence happens separately in
+        :meth:`_persist_insights`.
         """
-        from app.models.agent_finding import AgentFinding
-        from app.models.red_flag import Severity
         from packages.prompts.deal_prompts import CORPORATE_GOVERNANCE_PROMPT
 
         prompt = CORPORATE_GOVERNANCE_PROMPT.format(
-            filename=doc.filename,
+            filename=filename,
             text=text[:8000],
         )
         raw = self._llm.complete(prompt, max_tokens=2048)
@@ -345,11 +354,11 @@ class CorporateAgent:
         except Exception:
             logger.warning(
                 "[%s] doc=%d — governance parse error: %r",
-                self.AGENT_NAME, doc.id, raw,
+                self.AGENT_NAME, document_id, raw,
             )
             items = []
 
-        findings: list = []
+        payloads: list[dict] = []
         for item in items if isinstance(items, list) else []:
             insight_type = item.get("insight_type", "unusual_clause")
             if insight_type not in _VALID_INSIGHT_TYPES:
@@ -360,17 +369,33 @@ class CorporateAgent:
             # silently downgraded to "low"); anything unrecognised → "medium".
             severity_str = _normalize_severity(str(item.get("severity", "")).lower())
 
+            payloads.append({
+                "insight_type": insight_type,
+                "title": str(item.get("title", ""))[:100],
+                "description": str(item.get("description", ""))[:400],
+                "severity": severity_str,
+                "confidence": item.get("confidence"),
+            })
+        return payloads
+
+    def _persist_insights(self, doc, payloads: list[dict], deal_id: int, db: Session) -> list:
+        """Create one ``AgentFinding`` per payload. Main-thread only."""
+        from app.models.agent_finding import AgentFinding
+        from app.models.red_flag import Severity
+
+        findings: list = []
+        for p in payloads:
             finding = AgentFinding(
                 deal_id=deal_id,
                 document_id=doc.id,
                 agent_name=self.AGENT_NAME,
-                category=insight_type,
-                title=str(item.get("title", ""))[:100],
-                description=str(item.get("description", ""))[:400],
-                severity=Severity(severity_str),
-                confidence=item.get("confidence"),
+                category=p["insight_type"],
+                title=p["title"],
+                description=p["description"],
+                severity=Severity(p["severity"]),
+                confidence=p["confidence"],
                 structured_payload_json={
-                    "insight_type": insight_type,
+                    "insight_type": p["insight_type"],
                     "document_id": doc.id,
                     "filename": doc.filename,
                 },

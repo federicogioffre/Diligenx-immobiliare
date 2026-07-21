@@ -323,15 +323,23 @@ def _stage_document_routing(
 
         classifications: list[dict] = []
 
+        # Inputs are read on this thread; the LLM+parse work per document is
+        # pure, so it fans out on a bounded pool (results come back in input
+        # order). Persistence stays on this thread — Sessions aren't
+        # thread-safe.
+        to_classify = []
         for doc in documents:
-            text = doc.raw_text or ""
-            if not text:
-                logger.warning("[%s] deal=%d doc=%d — no text, skipping", agent, deal_id, doc.id)
-                continue
+            if doc.raw_text:
+                to_classify.append(doc)
+            else:
+                logger.warning(
+                    "[%s] deal=%d doc=%d — no text, skipping", agent, deal_id, doc.id
+                )
 
+        def _classify(doc) -> dict:
             prompt = DOCUMENT_CLASSIFICATION_PROMPT.format(
                 filename=doc.filename,
-                text=text[:3000],
+                text=(doc.raw_text or "")[:3000],
             )
             raw = llm.complete(prompt, max_tokens=256)
 
@@ -353,7 +361,13 @@ def _stage_document_routing(
                     "confidence": 0.0,
                     "rationale": raw,
                 }
+            return classification
 
+        from packages.agents.concurrency import run_llm_tasks
+
+        results = run_llm_tasks(to_classify, _classify)
+
+        for doc, classification in zip(to_classify, results):
             doc_type = classification.get("document_type", "other")
             confidence = classification.get("confidence", 0.0)
 

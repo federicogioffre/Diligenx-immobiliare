@@ -127,9 +127,19 @@ class CorporateIntroAgent:
 
         try:
             documents = self._resolve_documents(db, deal_id, document_ids)
+
+            # LLM+parse per document is pure → fan out on a bounded pool;
+            # ORM persistence happens below on this thread, in input order.
+            from packages.agents.concurrency import run_llm_tasks
+
+            payload_lists = run_llm_tasks(
+                documents,
+                lambda doc: self._profile_payloads(doc.filename, doc.raw_text or "", doc.id),
+            )
+
             profiles: list = []
-            for doc in documents:
-                profiles.extend(self._extract_for_document(doc, deal_id, db))
+            for doc, payloads in zip(documents, payload_lists):
+                profiles.extend(self._persist_profiles(doc, payloads, deal_id, db))
 
             db.flush()
 
@@ -192,27 +202,32 @@ class CorporateIntroAgent:
         )
         return any(kw in haystack for kw in _CORPORATE_INTRO_KEYWORDS)
 
-    def _extract_for_document(self, doc, deal_id: int, db: Session) -> list:
-        from app.models.company_profile import CompanyProfile
+    def _profile_payloads(self, filename: str, raw_text: str, document_id: int) -> list[dict]:
+        """Call the LLM and return validated profile payload dicts.
+
+        PURE with respect to the database — safe to run on a worker thread
+        (see packages.agents.concurrency). Persistence happens separately in
+        :meth:`_persist_profiles`.
+        """
         from packages.prompts.deal_prompts import CORPORATE_INTRO_EXTRACTION_PROMPT
 
-        text = (doc.raw_text or "")[:_TEXT_MAX_CHARS]
+        text = raw_text[:_TEXT_MAX_CHARS]
         if not text.strip():
             return []
 
         prompt = CORPORATE_INTRO_EXTRACTION_PROMPT.format(
-            filename=doc.filename, text=text,
+            filename=filename, text=text,
         )
         try:
             raw = self._llm.complete(prompt, max_tokens=4096)
             items = _safe_json(raw)
         except Exception:
             logger.warning(
-                "[%s] doc=%d — parse error on LLM output", self.AGENT_NAME, doc.id,
+                "[%s] doc=%d — parse error on LLM output", self.AGENT_NAME, document_id,
             )
             return []
 
-        profiles: list = []
+        payloads: list[dict] = []
         if not isinstance(items, list):
             return []
         for item in items:
@@ -223,13 +238,21 @@ class CorporateIntroAgent:
             if conf is not None and conf < _MIN_PROFILE_CONFIDENCE:
                 logger.debug(
                     "[%s] doc=%d — dropped low-conf profile %r (%.2f)",
-                    self.AGENT_NAME, doc.id, name, conf,
+                    self.AGENT_NAME, document_id, name, conf,
                 )
                 continue
+            payloads.append({**item, "company_name": name, "confidence": conf})
+        return payloads
 
+    def _persist_profiles(self, doc, payloads: list[dict], deal_id: int, db: Session) -> list:
+        """Create one ``CompanyProfile`` per payload. Main-thread only."""
+        from app.models.company_profile import CompanyProfile
+
+        profiles: list = []
+        for item in payloads:
             cp = CompanyProfile(
                 deal_id=deal_id,
-                company_name=name[:500],
+                company_name=item["company_name"][:500],
                 legal_form=_str_or_none(item.get("legal_form"), 200),
                 incorporation_date=_str_or_none(item.get("incorporation_date"), 100),
                 registered_office=_str_or_none(item.get("registered_office"), 500),
@@ -242,7 +265,7 @@ class CorporateIntroAgent:
                 business=_str_or_none(item.get("business")),
                 fiscal_year=_str_or_none(item.get("fiscal_year"), 200),
                 duration=_str_or_none(item.get("duration"), 200),
-                confidence=conf,
+                confidence=item["confidence"],
                 source_document_id=doc.id,
             )
             db.add(cp)
