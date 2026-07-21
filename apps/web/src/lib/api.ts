@@ -117,6 +117,7 @@ export interface RedFlagRead {
   category: string
   confidence: number | null
   source_document_id: number | null
+  source_page: number | null
   created_at: string
 }
 
