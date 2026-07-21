@@ -36,6 +36,58 @@ jobs:
         working-directory: apps/api
         run: python -m pytest ../../tests -q
 
+  backend-postgres-integration:
+    name: Backend Postgres integration (connection-pool regression)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: diligenx_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/diligenx_ci
+      # A non-SQLite DATABASE_URL puts main.py's startup guard into
+      # production mode, which then requires a strong SECRET_KEY too.
+      # CI-only value, never used anywhere real.
+      SECRET_KEY: ci-postgres-integration-secret-key-not-for-production-use
+      AUTH_COOKIE_SECURE: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r apps/api/requirements.txt
+
+      # Runs the full migration chain (including the RLS-enabling migration)
+      # against a REAL Postgres, then a small, focused suite that — unlike
+      # tests/ (SQLite, get_db() overridden) — exercises the app's actual
+      # connection-pool lifecycle. This is the job that would have caught
+      # the incident where the RLS checkin handler left a transaction open,
+      # 500-ing every reused connection in production.
+      # `python -m alembic` (not the bare `alembic` console script) so the
+      # cwd is added to sys.path — alembic/env.py does `from app.core...`.
+      - name: Run Alembic migrations against Postgres
+        working-directory: apps/api
+        run: python -m alembic upgrade head
+
+      - name: Run Postgres integration suite
+        working-directory: apps/api
+        run: python -m pytest ../../tests_integration -q
+
   web-build:
     name: Web build (Next.js)
     runs-on: ubuntu-latest
