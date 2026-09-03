@@ -645,7 +645,7 @@ class TestEdgeCases:
 # ── 8. Relevance filtering ─────────────────────────────────────────────────
 
 class TestRelevanceFiltering:
-    """_classify_and_filter_clauses() removes low-relevance findings."""
+    """_classify_relevance_payloads() drops low-relevance clause payloads."""
 
     # Custom LLM that marks first clause as high, second as low.
     class _MixedRelevanceLLM(FakeLLMProvider):
@@ -834,38 +834,33 @@ class TestCCNLFiltering:
         from packages.agents.contract_agent import ContractAgent as CA
         import types
 
-        original_extract = CA._extract_clauses
+        original_extract = CA._extract_clause_payloads
 
-        def patched_extract(self_inner, document_id, text, db_inner):
-            """Inject a CCNL clause alongside a real M&A clause."""
-            from app.models.clause_finding import ClauseFinding, ClauseType
-            rows = [
-                ClauseFinding(
-                    document_id=document_id,
-                    clause_type=ClauseType.termination,
-                    title="Termination for Change of Control",
-                    content="Either party may terminate upon change of control of the counterparty.",
-                    confidence=0.9,
-                ),
-                ClauseFinding(
-                    document_id=document_id,
-                    clause_type=ClauseType.other,
-                    title="CCNL Applicability",
-                    content="The employment relationship is governed by the CCNL Metalmeccanici.",
-                    confidence=0.85,
-                ),
+        def patched_extract(self_inner, document_id, text):
+            """Inject a CCNL clause payload alongside a real M&A clause payload."""
+            return [
+                {
+                    "clause_type": "termination",
+                    "title": "Termination for Change of Control",
+                    "content": "Either party may terminate upon change of control of the counterparty.",
+                    "page_number": None,
+                    "confidence": 0.9,
+                },
+                {
+                    "clause_type": "other",
+                    "title": "CCNL Applicability",
+                    "content": "The employment relationship is governed by the CCNL Metalmeccanici.",
+                    "page_number": None,
+                    "confidence": 0.85,
+                },
             ]
-            for r in rows:
-                db_inner.add(r)
-            db_inner.flush()
-            return rows
 
-        CA._extract_clauses = patched_extract
+        CA._extract_clause_payloads = patched_extract
         try:
             _make_doc(db, test_deal, filename="employment_agreement.txt")
             ContractAgent().run(test_deal.id, db)
         finally:
-            CA._extract_clauses = original_extract
+            CA._extract_clause_payloads = original_extract
 
         all_clauses = db.query(ClauseFinding).filter(
             ClauseFinding.document_id.in_(

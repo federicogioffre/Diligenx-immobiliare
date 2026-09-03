@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # AI Analysis
     ANTHROPIC_API_KEY: str = ""
     ANALYSIS_MODEL: str = "claude-sonnet-4-6"
+    # Max concurrent LLM calls within a pipeline stage (per-document fan-out).
+    # The analysis pipeline parallelises independent per-document calls with a
+    # bounded thread pool of this size; 1 restores fully sequential behaviour.
+    LLM_MAX_CONCURRENCY: int = 4
 
     # Durable job queue (Arq + Redis). Leave empty to use FastAPI
     # BackgroundTasks — the original in-process path. When set, /analyze

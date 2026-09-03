@@ -211,51 +211,58 @@ class ContractAgent:
             all_agent_findings: list = []
             clauses_by_document: list[dict] = []
 
+            # ── 4. Analyse documents (LLM) — fanned out ───────────── #
+            # The whole per-document analysis (extraction, CCNL filters,
+            # compliance check, relevance classification) is pure — LLM
+            # calls plus in-memory filtering — so documents fan out on a
+            # bounded pool. Only the surviving payloads are persisted below,
+            # on this thread, in input order (Sessions aren't thread-safe;
+            # this also removes the old insert-then-delete churn).
+            to_analyse = []
             for doc in documents:
                 text = (doc.raw_text or "").strip()
-                if not text:
+                if text:
+                    to_analyse.append((doc, text))
+                else:
                     logger.warning(
                         "[%s] deal=%d doc=%d — no text, skipping",
                         self.AGENT_NAME, deal_id, doc.id,
                     )
-                    continue
 
-                # ── 4. CCNL detection ─────────────────────────────── #
-                is_ccnl = self._is_ccnl(doc.filename, text)
+            from packages.agents.concurrency import run_llm_tasks
 
-                # ── 5. Extract clauses via LLM ─────────────────────── #
-                doc_clauses = self._extract_clauses(doc.id, text, db)
+            analyses = run_llm_tasks(
+                to_analyse,
+                lambda pair: self._analyze_document_payloads(
+                    pair[0].id, pair[0].filename, pair[1]
+                ),
+            )
 
-                logger.info(
-                    "[%s] deal=%d doc=%d — extracted %d clause(s) (pre-filter)",
-                    self.AGENT_NAME, deal_id, doc.id, len(doc_clauses),
-                )
+            # ── 5. Persist results (main thread, input order) ──────── #
+            from app.models.clause_finding import ClauseFinding, ClauseType
 
-                # ── 6. CCNL filtering + compliance analysis ────────── #
-                if is_ccnl:
-                    # CCNL documents: keep only the clause types that can
-                    # occasionally be M&A-relevant (non-compete, indemnification,
-                    # change-of-control, unusual termination, warranty).
-                    # Everything else (working hours, pay scales, leave, union
-                    # procedures, CCNL recitals) is discarded without an LLM call.
-                    doc_clauses = self._filter_ccnl_document_clauses(doc_clauses, db)
-                    # Run the dedicated CCNL compliance check for the 6 risk
-                    # categories (wrong CCNL, classification, compensation,
-                    # contributions, working time, termination procedures).
-                    compliance_findings = self._analyze_ccnl_compliance(
-                        doc.id, doc.filename, text, deal_id, db
+            for (doc, _), analysis in zip(to_analyse, analyses):
+                doc_clauses: list = []
+                for p in analysis["clauses"]:
+                    finding = ClauseFinding(
+                        document_id=doc.id,
+                        clause_type=ClauseType(p["clause_type"]),
+                        title=p["title"],
+                        content=p["content"],
+                        page_number=p["page_number"],
+                        confidence=p["confidence"],
+                        relevance_score=p["relevance_score"],
+                        relevance_reason=p["relevance_reason"],
                     )
-                    all_agent_findings.extend(compliance_findings)
-                else:
-                    # Non-CCNL documents: remove individual clauses that merely
-                    # cite CCNL provisions (boilerplate applicability recitals).
-                    doc_clauses = self._remove_ccnl_clauses(doc_clauses, db)
+                    db.add(finding)
+                    doc_clauses.append(finding)
 
-                # ── 7. Relevance filtering (LLM) ─────────────────────── #
-                doc_clauses = self._classify_and_filter_clauses(
-                    doc_clauses, doc.filename, is_ccnl, db
-                )
                 all_clause_findings.extend(doc_clauses)
+
+                compliance_findings = self._persist_compliance_findings(
+                    doc, analysis["compliance"], deal_id, db
+                )
+                all_agent_findings.extend(compliance_findings)
 
                 logger.info(
                     "[%s] deal=%d doc=%d — %d relevant clause(s) kept after filtering",
@@ -366,55 +373,102 @@ class ContractAgent:
         ]
         return any(kw in haystack for kw in indicators)
 
+    # ── Per-document analysis (pure, thread-safe) ───────────────────────
+
+    def _analyze_document_payloads(
+        self,
+        document_id: int,
+        filename: str,
+        text: str,
+    ) -> dict:
+        """Full per-document analysis as pure LLM + in-memory filtering.
+
+        PURE with respect to the database — safe to run on a worker thread
+        (see packages.agents.concurrency). Returns::
+
+            {
+                "is_ccnl": bool,
+                "clauses": [payload dicts with relevance fields set],
+                "compliance": [CCNL compliance payload dicts],
+            }
+        """
+        is_ccnl = self._is_ccnl(filename, text)
+
+        clauses = self._extract_clause_payloads(document_id, text)
+        logger.info(
+            "[%s] doc=%d — extracted %d clause(s) (pre-filter)",
+            self.AGENT_NAME, document_id, len(clauses),
+        )
+
+        compliance: list[dict] = []
+        if is_ccnl:
+            # CCNL documents: keep only the clause types that can
+            # occasionally be M&A-relevant (non-compete, indemnification,
+            # change-of-control, unusual termination, warranty). Everything
+            # else (working hours, pay scales, leave, union procedures,
+            # CCNL recitals) is discarded without an LLM call.
+            kept = [
+                p for p in clauses
+                if p["clause_type"] in self._CCNL_RELEVANT_CLAUSE_TYPES
+            ]
+            if len(kept) != len(clauses):
+                logger.info(
+                    "[%s] — removed %d irrelevant clause(s) from CCNL document "
+                    "(kept %d for LLM review)",
+                    self.AGENT_NAME, len(clauses) - len(kept), len(kept),
+                )
+            clauses = kept
+            # Run the dedicated CCNL compliance check for the 6 risk
+            # categories (wrong CCNL, classification, compensation,
+            # contributions, working time, termination procedures).
+            compliance = self._ccnl_compliance_payloads(document_id, filename, text)
+        else:
+            # Non-CCNL documents: remove individual clauses that merely
+            # cite CCNL provisions (boilerplate applicability recitals).
+            clauses = self._remove_ccnl_payloads(clauses)
+
+        clauses = self._classify_relevance_payloads(clauses, filename, is_ccnl)
+
+        return {"is_ccnl": is_ccnl, "clauses": clauses, "compliance": compliance}
+
     # ── CCNL clause-level filter ────────────────────────────────────────
 
-    def _remove_ccnl_clauses(self, findings: list, db) -> list:
-        """Deterministically remove clauses whose content references CCNL.
+    def _remove_ccnl_payloads(self, payloads: list[dict]) -> list[dict]:
+        """Deterministically remove clause payloads that reference CCNL.
 
         This handles non-CCNL documents (employment agreements, service
         agreements, etc.) that contain individual clauses about CCNL
         applicability or standard collective-bargaining provisions — all of
         which are irrelevant for an M&A share acquisition.
 
-        No LLM call is made; removal is keyword-based.
+        No LLM call is made; removal is keyword-based. Pure.
         """
-        from app.models.clause_finding import ClauseFinding as CF
+        if not payloads:
+            return payloads
 
-        if not findings:
-            return findings
-
-        to_keep: list = []
-        ids_to_delete: list[int] = []
-
-        for cf in findings:
-            haystack = (cf.title + " " + cf.content[:500]).lower()
+        to_keep: list[dict] = []
+        removed = 0
+        for p in payloads:
+            haystack = (p["title"] + " " + p["content"][:500]).lower()
             if any(kw in haystack for kw in self._CCNL_CLAUSE_KEYWORDS):
-                if cf.id is not None:
-                    ids_to_delete.append(cf.id)
+                removed += 1
             else:
-                to_keep.append(cf)
+                to_keep.append(p)
 
-        if ids_to_delete:
-            db.query(CF).filter(CF.id.in_(ids_to_delete)).delete(
-                synchronize_session=False
-            )
-            db.flush()
+        if removed:
             logger.info(
                 "[%s] — removed %d CCNL-referencing clause(s)",
-                self.AGENT_NAME, len(ids_to_delete),
+                self.AGENT_NAME, removed,
             )
-
         return to_keep
 
-    def _analyze_ccnl_compliance(
+    def _ccnl_compliance_payloads(
         self,
         document_id: int,
         filename: str,
         text: str,
-        deal_id: int,
-        db,
-    ) -> list:
-        """Run the CCNL compliance check on a CCNL document.
+    ) -> list[dict]:
+        """Run the CCNL compliance check on a CCNL document. Pure.
 
         Checks for six specific risk categories that ARE relevant for M&A
         due diligence even in CCNL documents:
@@ -425,10 +479,10 @@ class ContractAgent:
           5. working_time      — overtime limits, irregular shifts
           6. termination       — disciplinary procedures, notice periods
 
-        Creates ``AgentFinding`` rows (category = "ccnl_compliance") for any
-        issues found.  Returns the new finding objects (may be empty list).
+        PURE with respect to the database — safe to run on a worker thread.
+        Returns payload dicts; persistence happens separately in
+        :meth:`_persist_compliance_findings`.
         """
-        from app.models.agent_finding import AgentFinding
         from app.models.red_flag import Severity
         from packages.prompts.deal_prompts import CCNL_COMPLIANCE_PROMPT
 
@@ -456,28 +510,40 @@ class ContractAgent:
             )
             return []
 
-        findings: list = []
         if not isinstance(items, list):
             return []
 
+        payloads: list[dict] = []
         for item in items:
-            category = str(item.get("category", "ccnl_compliance"))[:100]
-            title = str(item.get("title", "CCNL compliance issue"))[:500]
-            description = str(item.get("description", ""))[:1000]
-            severity_raw = item.get("severity", "low")
-            severity = _SEVERITY_MAP.get(str(severity_raw).lower(), Severity.low)
-            confidence = item.get("confidence")
+            payloads.append({
+                "category": str(item.get("category", "ccnl_compliance"))[:100],
+                "title": str(item.get("title", "CCNL compliance issue"))[:500],
+                "description": str(item.get("description", ""))[:1000],
+                "severity": _SEVERITY_MAP.get(
+                    str(item.get("severity", "low")).lower(), Severity.low
+                ),
+                "confidence": item.get("confidence"),
+            })
+        return payloads
 
+    def _persist_compliance_findings(
+        self, doc, payloads: list[dict], deal_id: int, db: Session
+    ) -> list:
+        """Create one ``AgentFinding`` per compliance payload. Main-thread only."""
+        from app.models.agent_finding import AgentFinding
+
+        findings: list = []
+        for p in payloads:
             af = AgentFinding(
                 deal_id=deal_id,
-                document_id=document_id,
+                document_id=doc.id,
                 agent_name=self.AGENT_NAME,
                 category="ccnl_compliance",
-                title=title,
-                description=description,
-                severity=severity,
-                confidence=confidence,
-                structured_payload_json={"ccnl_category": category},
+                title=p["title"],
+                description=p["description"],
+                severity=p["severity"],
+                confidence=p["confidence"],
+                structured_payload_json={"ccnl_category": p["category"]},
             )
             db.add(af)
             findings.append(af)
@@ -486,79 +552,42 @@ class ContractAgent:
             db.flush()
             logger.info(
                 "[%s] deal=%d doc=%d '%s' — %d CCNL compliance finding(s)",
-                self.AGENT_NAME, deal_id, document_id, filename, len(findings),
+                self.AGENT_NAME, deal_id, doc.id, doc.filename, len(findings),
             )
 
         return findings
 
-    def _filter_ccnl_document_clauses(self, findings: list, db) -> list:
-        """For a CCNL document, discard clause types that are never M&A-relevant.
-
-        Keeps only the types listed in ``_CCNL_RELEVANT_CLAUSE_TYPES``
-        (non_compete, indemnification, change_of_control, termination, warranty).
-        All other types (pay scales, working hours, leave, union procedures,
-        etc.) are deleted immediately without an LLM call.
-        """
-        from app.models.clause_finding import ClauseFinding as CF
-
-        if not findings:
-            return findings
-
-        to_keep: list = []
-        ids_to_delete: list[int] = []
-
-        for cf in findings:
-            if cf.clause_type.value in self._CCNL_RELEVANT_CLAUSE_TYPES:
-                to_keep.append(cf)
-            else:
-                if cf.id is not None:
-                    ids_to_delete.append(cf.id)
-
-        if ids_to_delete:
-            db.query(CF).filter(CF.id.in_(ids_to_delete)).delete(
-                synchronize_session=False
-            )
-            db.flush()
-            logger.info(
-                "[%s] — removed %d irrelevant clause(s) from CCNL document "
-                "(kept %d for LLM review)",
-                self.AGENT_NAME, len(ids_to_delete), len(to_keep),
-            )
-
-        return to_keep
-
     # ── Relevance classification & filtering ────────────────────────────
 
-    def _classify_and_filter_clauses(
+    def _classify_relevance_payloads(
         self,
-        findings: list,
+        payloads: list[dict],
         filename: str,
         is_ccnl: bool,
-        db,
-    ) -> list:
-        """Classify each ClauseFinding for M&A relevance; keep only high/medium.
+    ) -> list[dict]:
+        """Classify each clause payload for M&A relevance; keep only high/medium.
 
         The LLM is called once per document with all clauses in a single batch.
-        Low-relevance findings are deleted from the DB. High/medium findings have
-        their ``relevance_score`` and ``relevance_reason`` fields set.
+        Kept payloads get ``relevance_score`` and ``relevance_reason`` keys;
+        low-relevance payloads are dropped.
 
-        If classification fails for any reason, all clauses are retained (fail-open).
+        If classification fails for any reason, all clauses are retained
+        (fail-open). PURE — safe to run on a worker thread.
         """
-        from app.models.clause_finding import ClauseFinding as CF
         from packages.prompts.deal_prompts import CLAUSE_RELEVANCE_PROMPT
 
-        if not findings:
-            return findings
+        if not payloads:
+            return payloads
 
         # Build compact input — use a content preview to save tokens.
         clauses_input = [
             {
                 "clause_index": i,
-                "clause_type": cf.clause_type.value,
-                "title": cf.title,
-                "content_preview": cf.content[:300],
+                "clause_type": p["clause_type"],
+                "title": p["title"],
+                "content_preview": p["content"][:300],
             }
-            for i, cf in enumerate(findings)
+            for i, p in enumerate(payloads)
         ]
 
         prompt = CLAUSE_RELEVANCE_PROMPT.format(
@@ -575,11 +604,10 @@ class ContractAgent:
                 "[%s] doc='%s' — relevance classification failed (%s); keeping all clauses",
                 self.AGENT_NAME, filename, exc,
             )
-            for cf in findings:
-                cf.relevance_score = "high"
-                cf.relevance_reason = "Relevance classification unavailable (kept by default)"
-            db.flush()
-            return findings
+            for p in payloads:
+                p["relevance_score"] = "high"
+                p["relevance_reason"] = "Relevance classification unavailable (kept by default)"
+            return payloads
 
         # Build index → (relevance, reason) map from LLM response.
         relevance_map: dict[int, tuple[str, str]] = {}
@@ -592,52 +620,46 @@ class ContractAgent:
                         rel = "medium"
                     relevance_map[idx] = (rel, str(item.get("reason", ""))[:500])
 
-        to_keep: list = []
-        ids_to_delete: list[int] = []
-
-        for i, cf in enumerate(findings):
+        to_keep: list[dict] = []
+        removed = 0
+        for i, p in enumerate(payloads):
             relevance, reason = relevance_map.get(i, ("low", ""))
             if relevance in ("high", "medium"):
-                # Set attributes ONLY on rows we keep to avoid StaleDataError
-                # when SQLAlchemy tries to flush attribute changes on deleted rows.
-                cf.relevance_score = relevance
-                cf.relevance_reason = reason
-                to_keep.append(cf)
+                p["relevance_score"] = relevance
+                p["relevance_reason"] = reason
+                to_keep.append(p)
             else:
-                if cf.id is not None:
-                    ids_to_delete.append(cf.id)
+                removed += 1
 
-        if ids_to_delete:
-            db.query(CF).filter(CF.id.in_(ids_to_delete)).delete(synchronize_session=False)
+        if removed:
             logger.info(
                 "[%s] doc='%s' — removed %d low-relevance clause(s), kept %d",
-                self.AGENT_NAME, filename, len(ids_to_delete), len(to_keep),
+                self.AGENT_NAME, filename, removed, len(to_keep),
             )
-
-        db.flush()
         return to_keep
 
     # ── Extraction helper ───────────────────────────────────────────────
 
-    def _extract_clauses(
+    def _extract_clause_payloads(
         self,
         document_id: int,
         text: str,
-        db: Session,
-    ) -> list:
-        """Send full document text to the LLM in batches and persist ClauseFinding rows.
+    ) -> list[dict]:
+        """Send full document text to the LLM in batches; return clause payloads.
 
         Uses the same batch-splitting logic as ``DealAnalysisAgent`` so that
         long contracts are fully analysed rather than silently truncated at
         8 000 characters.
 
-        Returns the list of newly created (flushed) ``ClauseFinding`` objects.
+        PURE with respect to the database — safe to run on a worker thread.
+        Returns dicts with keys ``clause_type``/``title``/``content``/
+        ``page_number``/``confidence``; ``ClauseFinding`` rows are created
+        later, on the main thread, only for payloads that survive filtering.
         """
-        from app.models.clause_finding import ClauseFinding, ClauseType
         from packages.prompts.deal_prompts import CLAUSE_EXTRACTION_PROMPT
 
         batches = DealAnalysisAgent._split_into_batches(text, DealAnalysisAgent._BATCH_CHARS)
-        findings: list = []
+        payloads: list[dict] = []
 
         for batch_idx, batch_text in enumerate(batches):
             prompt = CLAUSE_EXTRACTION_PROMPT.format(
@@ -685,19 +707,15 @@ class ContractAgent:
                 clause_type_str = item.get("clause_type", "other")
                 if clause_type_str not in _VALID_CLAUSE_TYPES:
                     clause_type_str = "other"
-                finding = ClauseFinding(
-                    document_id=document_id,
-                    clause_type=ClauseType(clause_type_str),
-                    title=str(item.get("title", ""))[:500],
-                    content=content,
-                    page_number=item.get("page_number"),
-                    confidence=confidence,
-                )
-                db.add(finding)
-                findings.append(finding)
+                payloads.append({
+                    "clause_type": clause_type_str,
+                    "title": str(item.get("title", ""))[:500],
+                    "content": content,
+                    "page_number": item.get("page_number"),
+                    "confidence": confidence,
+                })
 
-        db.flush()
-        return findings
+        return payloads
 
 
 # ── Module-level convenience function ──────────────────────────────────────

@@ -91,6 +91,7 @@ Diligenx/
 │   │   ├── red_flag_aggregator.py        # Stage 5: produces RedFlag + OpenQuestion
 │   │   ├── report_agent.py               # Stage 6: Markdown report → Report row
 │   │   ├── deal_qa_agent.py              # RAG Q&A over deal documents
+│   │   ├── concurrency.py                # run_llm_tasks() — bounded parallel fan-out for per-doc LLM calls
 │   │   ├── scoring_service.py            # compute_risk_score(deal_id)
 │   │   ├── legal_rules.py                # CCNL / legal heuristics
 │   │   └── deal_agent.py                 # legacy single-shot agent (kept for back-compat)
@@ -210,6 +211,7 @@ python -m pytest ../../tests -q   # 573 passed
 - MIME types allowed: `application/pdf`, `text/plain`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`
 - **Durable jobs**: when `REDIS_URL` is set, `/analyze` and `/upload` enqueue jobs to an Arq pool (managed via FastAPI lifespan); a separate worker process consumes them (`arq app.worker.WorkerSettings`). When unset, jobs run in-process via FastAPI `BackgroundTasks` — same behaviour as before. Enqueue failures fall back transparently.
 - **Anthropic prompt caching**: every LLM prompt is sent with `cache_control={"type":"ephemeral"}` so the idempotent `/analyze` re-runs hit Anthropic's cache (~90% input-cost reduction within the 5-minute TTL).
+- **Parallel LLM fan-out**: per-document LLM work inside each pipeline stage (routing, contract, corporate, corporate-intro) runs on a bounded thread pool via `packages/agents/concurrency.run_llm_tasks` (`LLM_MAX_CONCURRENCY`, default 4). Worker functions are pure (LLM + parse only — no `Session` access); persistence happens on the caller's thread in input order. Contract analysis now inserts only the clauses that survive filtering (no insert-then-delete churn).
 
 - **Postgres Row-Level Security (RLS)** — defense-in-depth on top of the application-level filters. Migration `012` enables RLS + `FORCE` + tenant-isolation policies on every workspace/deal/document-scoped table (incl. `company_profiles`). The auth dependency and every fresh `SessionLocal` (HTTP request, BackgroundTask, Arq worker, SSE stream) bind the tenant via `set_tenant_context(db, user_id)`, which writes the `app.current_user_id` GUC. A pool `checkin` event clears the GUC when a connection is returned. SQLite (test env) and superuser Postgres connections are no-ops — see "Enforcing RLS in production" below.
 
@@ -258,4 +260,5 @@ Enforcement tests live in `tests/test_rls_isolation.py` (opt-in: set `RLS_TEST_D
 | `EMBEDDING_DIMENSION` | `1536` | Vector dimension |
 | `ANTHROPIC_API_KEY` | _(empty)_ | For real LLM calls; omit for FakeLLMProvider |
 | `ANALYSIS_MODEL` | `claude-sonnet-4-6` | Claude model for the analysis pipeline |
+| `LLM_MAX_CONCURRENCY` | `4` | Max parallel per-document LLM calls within an analysis stage (`1` = sequential) |
 | `REDIS_URL` | _(empty)_ | If set, `/analyze` and `/upload` enqueue jobs to Arq instead of FastAPI BackgroundTasks. Run a worker alongside the API: `arq app.worker.WorkerSettings`. Format: `redis://default:<pw>@host:port` or `rediss://...` (TLS, recommended on Upstash). |
