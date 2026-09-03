@@ -393,7 +393,7 @@ class TestAnalyzeRoute:
         expected = {
             "intake", "document_router", "contract_analysis",
             "corporate_governance", "corporate_intro_extraction",
-            "red_flag_aggregation", "report_generation",
+            "tax_analysis", "red_flag_aggregation", "report_generation",
         }
         assert stage_names == expected
 

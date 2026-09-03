@@ -35,9 +35,9 @@ logger = logging.getLogger(__name__)
 # in Italian reports; introduction, appendix and table headers are localized.
 
 _AREA_ORDER_KEYS = [
-    "corporate", "indebtedness", "real_estate", "employees",
+    "corporate", "indebtedness", "financial", "real_estate", "employees",
     "suppliers_customers", "insurance", "litigation", "ip_it",
-    "data_protection", "other",
+    "data_protection", "tax", "other",
 ]
 
 _AREA_TITLES: dict[str, dict[str, str]] = {
@@ -51,6 +51,8 @@ _AREA_TITLES: dict[str, dict[str, str]] = {
         "litigation": "Litigation",
         "ip_it": "IP / IT",
         "data_protection": "Data Protection",
+        "financial": "Financial Matters",
+        "tax": "Tax",
         "other": "Other Matters",
     },
     "it": {
@@ -63,6 +65,8 @@ _AREA_TITLES: dict[str, dict[str, str]] = {
         "litigation": "Contenzioso",
         "ip_it": "IP / IT",
         "data_protection": "Protezione dei Dati",
+        "financial": "Materia Finanziaria",
+        "tax": "Fiscale",
         "other": "Altri Aspetti",
     },
 }
@@ -127,7 +131,7 @@ The review covered the following areas, based on the documents available:
 
 {areas_text}
 
-Financial, tax, accounting, technical, environmental and regulatory matters are outside the scope of this review.
+Financial and tax matters are covered on a documentary, red-flag basis only, limited to the documents made available; this Report does not substitute a full financial or tax due diligence by the client's accounting and tax advisors. Accounting, technical, environmental and regulatory matters are outside the scope of this review.
 
 ### Limitations
 This Report is based on the following assumptions:
@@ -149,7 +153,7 @@ La revisione ha riguardato le seguenti aree, sulla base dei documenti disponibil
 
 {areas_text}
 
-Restano esclusi dall'ambito della revisione gli aspetti finanziari, fiscali, contabili, tecnici, ambientali e regolamentari.
+Gli aspetti finanziari e fiscali sono trattati su base esclusivamente documentale e di tipo red flag, nei limiti dei documenti messi a disposizione; il presente Report non sostituisce una due diligence finanziaria o fiscale completa a cura dei consulenti contabili e fiscali del cliente. Restano esclusi dall'ambito della revisione gli aspetti contabili, tecnici, ambientali e regolamentari.
 
 ### Limitazioni
 Il presente Report si basa sulle seguenti assunzioni:

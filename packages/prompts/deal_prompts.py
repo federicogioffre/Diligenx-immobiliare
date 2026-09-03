@@ -30,7 +30,9 @@ CLASSIFY the following document into exactly one type:
 - agreement: A formal but lighter arrangement (NDA, MOU, LOI, term sheet, etc.)
 - legal: Other legal document (court filing, regulation, policy, etc.)
 - invoice: A financial billing document
-- report: A research, financial, or audit report
+- financial_statement: Financial statements or annexes (bilancio, situazione patrimoniale, nota integrativa, relazione del revisore / auditor's report, relazione sulla gestione)
+- tax: A tax document (dichiarazione dei redditi / tax return, avviso di accertamento, cartella di pagamento, F24, rateizzazione, interpello / tax ruling, DURC/DURF, transfer pricing documentation)
+- report: A research or other advisory report
 - other: Any document that does not fit the above categories
 
 File name: {filename}
@@ -85,7 +87,7 @@ For each red flag provide:
 - risk: the impact it could have on the transaction or the target (max 250 characters)
 - recommendation: the remedial action (condition precedent, Sellers' R&W in the SPA, special indemnity, specialist verification, post-closing fix) (max 250 characters)
 - severity: one of [low, medium, high]
-- area: one of [corporate, indebtedness, real_estate, employees, suppliers_customers, insurance, litigation, ip_it, data_protection, other]
+- area: one of [corporate, indebtedness, real_estate, employees, suppliers_customers, insurance, litigation, ip_it, data_protection, financial, tax, other]
 - category: free-text fine-grained label (e.g., "liability", "termination", "payment", "ip", "compliance")
 - confidence: confidence score between 0.0 and 1.0
 - source_document_id: always null
@@ -227,12 +229,14 @@ Every red_flag entry follows the structure of a professional red-flag report:
      • "Upon completion of the Transaction, [adopt the Modello 231 / carry out a privacy assessment / renegotiate the clause]."
 
 SEVERITY CALIBRATION (3-level scale — there is no "critical"):
-  high   — affects transfer validity or completion: unreleased pledges on the target's shares; missing share certificates; pre-emption/tag-along/drag-along rights not waived; material unexplained debt exposures; litigation with material quantified exposure; total absence of GDPR/privacy documentation.
-  medium — needs action but has a standard remedy: change-of-control consent requirements in loans, leases or key customer contracts ("although unlikely…"); missing corporate minutes; Modello 231 absence with aggravating factors; missing employment agreements; non-compliant contract templates; unverified settlement payments.
+  high   — affects transfer validity or completion: unreleased pledges on the target's shares; missing share certificates; pre-emption/tag-along/drag-along rights not waived; material unexplained debt exposures; litigation with material quantified exposure; total absence of GDPR/privacy documentation; notified tax assessments (avvisi di accertamento) or tax-collection notices (cartelle) with material quantified exposure; evidence of unpaid taxes or social security contributions; auditor's report with a qualified/adverse opinion or a going-concern emphasis.
+  medium — needs action but has a standard remedy: change-of-control consent requirements in loans, leases or key customer contracts ("although unlikely…"); missing corporate minutes; Modello 231 absence with aggravating factors; missing employment agreements; non-compliant contract templates; unverified settlement payments; ongoing tax instalment plans (rateizzazioni); tax credits offset or transferred that require specialist verification; carried-forward tax losses whose survival after the change of control must be verified; financial covenants that the Transaction could breach.
   low    — worth recording, limited economic impact: null-and-void clauses with modest exposure (e.g. ISTAT indexation above the legal cap); missing policy copies; unregistered trademarks; unverified domain ownership; generic insurance adequacy.
 
 AREA — assign each finding to exactly one report section:
-  corporate | indebtedness | real_estate | employees | suppliers_customers | insurance | litigation | ip_it | data_protection | other
+  corporate | indebtedness | real_estate | employees | suppliers_customers | insurance | litigation | ip_it | data_protection | financial | tax | other
+  • tax — tax assessments, tax litigation, instalment plans, tax credits, tax regimes, transfer pricing, withholding / contractor liability (DURF).
+  • financial — financial-statement matters: auditor qualifications, going concern, losses relevant under artt. 2446/2447 or 2482-bis/ter c.c., covenant breaches, related-party exposures. Loan/security terms stay under "indebtedness".
 
 {language_instruction}
 
@@ -259,7 +263,7 @@ For each item, provide:
   • red_flag: high or medium (low risks are observations)
   • observation: low or medium
   • information_request: low
-- area: one of [corporate, indebtedness, real_estate, employees, suppliers_customers, insurance, litigation, ip_it, data_protection, other]
+- area: one of [corporate, indebtedness, real_estate, employees, suppliers_customers, insurance, litigation, ip_it, data_protection, financial, tax, other]
 - category: free-text fine-grained label, e.g. "transfer_restriction", "change_of_control", "pledge", "missing_document"
 - confidence: 0.0–1.0
 - source_document_id: integer document ID or null
@@ -269,7 +273,8 @@ EXAMPLES of correctly structured red_flag entries (synthetic — illustrate form
 [
   {{"finding_type": "red_flag", "title": "Pledge over the Target's shares", "issue": "A pledge over shares representing 81% of the corporate capital of the Target exists in favour of a lender, securing bond payment obligations (Bond Subscription Agreement, art. 10).", "risk": "If the secured debt is not repaid before closing, the Purchaser acquires shares that remain encumbered by the pledge.", "recommendation": "As a condition precedent to Closing, the lender should release the pledge.", "severity": "high", "area": "corporate", "category": "pledge", "confidence": 0.92, "source_document_id": 3, "source_page": 10}},
   {{"finding_type": "red_flag", "title": "Change-of-control clause in loan agreement", "issue": "Article 5 of the loan agreement provides that the lender may terminate in case of any event negatively affecting the financial or corporate situation of the company.", "risk": "Although unlikely, after the Transaction the lender may claim the change of control qualifies and accelerate repayment.", "recommendation": "As a condition precedent to Closing, obtain the lender's consent to the Transaction.", "severity": "medium", "area": "indebtedness", "category": "change_of_control", "confidence": 0.85, "source_document_id": 7, "source_page": 5}},
-  {{"finding_type": "red_flag", "title": "Rent indexation above legal cap", "issue": "The lease agreement provides annual rent indexation at 100% of the ISTAT variation, while the maximum allowed under Italian law is 75%.", "risk": "The company may pay, or may have paid, amounts not due under applicable law.", "recommendation": "Insert specific Sellers' representations and warranties in the SPA; renegotiate the clause.", "severity": "low", "area": "real_estate", "category": "void_clause", "confidence": 0.80, "source_document_id": 12, "source_page": null}}
+  {{"finding_type": "red_flag", "title": "Rent indexation above legal cap", "issue": "The lease agreement provides annual rent indexation at 100% of the ISTAT variation, while the maximum allowed under Italian law is 75%.", "risk": "The company may pay, or may have paid, amounts not due under applicable law.", "recommendation": "Insert specific Sellers' representations and warranties in the SPA; renegotiate the clause.", "severity": "low", "area": "real_estate", "category": "void_clause", "confidence": 0.80, "source_document_id": 12, "source_page": null}},
+  {{"finding_type": "red_flag", "title": "Notified tax assessment for FY2022", "issue": "An avviso di accertamento notified by the Italian Revenue Agency for FY2022 claims Euro 240,000 in additional IRES, penalties and interest; the appeal is pending before the first-instance tax court.", "risk": "If the assessment is upheld, the target bears the assessed amount plus litigation costs; further fiscal years may be audited on the same grounds.", "recommendation": "Insert a special indemnity provision in the SPA covering the assessed exposure; prior to the Transaction, verify the exposure with a tax specialist.", "severity": "high", "area": "tax", "category": "tax_assessment", "confidence": 0.90, "source_document_id": 15, "source_page": null}}
 ]
 
 Priority order: check all PRIORITY RISKS first, then apply SAFE HARBOUR before raising anything else.
@@ -362,6 +367,45 @@ Return ONLY a JSON array — one entry per clause, in the same order, with no om
 [{{"clause_index": 0, "relevance": "high", "reason": "<one concise sentence>"}}]
 
 Allowed relevance values: "high", "medium", "low"
+"""
+
+TAX_ANALYSIS_PROMPT = """You are a senior Italian tax specialist supporting an M&A legal due diligence.
+
+ANALYZE TAX MATTERS in the document below and extract findings relevant to a share acquisition of an Italian target.
+
+CRITICAL RULES:
+1. Report ONLY facts EXPLICITLY present in the document text — cite the specific figure, deed, protocol number or fiscal year where available.
+2. DO NOT speculate about exposures not evidenced in the text, and do NOT restate general Italian tax law.
+3. The mere existence of ordinary, timely-paid taxes (IRES, IRAP, IVA, withholding) is NOT a finding. Report deviations: assessments, litigation, instalment plans, missed payments, special regimes, credits, loss carry-forwards.
+4. If the document contains no tax-relevant content, return an empty array.
+
+For each finding, provide:
+- finding_type: one of [tax_assessment, tax_litigation, tax_debt, tax_credit, tax_regime, tax_losses, transfer_pricing, tax_compliance, other_tax]
+  * tax_assessment  — avviso di accertamento, processo verbale di constatazione (PVC), avviso bonario, questionnaires from the Revenue Agency
+  * tax_litigation  — pending or settled proceedings before tax courts (Corti di Giustizia Tributaria), acquiescenza, adesione, conciliazione
+  * tax_debt        — cartelle di pagamento, rateizzazioni in corso, ravvedimento operoso, unpaid or deferred taxes and social contributions
+  * tax_credit      — tax credits claimed, offset (compensati) or transferred (ceduti): R&D, Industria 4.0, superbonus/ecobonus and other building bonuses
+  * tax_regime      — special regimes and elections: consolidato fiscale, IVA di gruppo, patent box, interpelli / rulings, regime premiale
+  * tax_losses      — carried-forward tax losses, ACE surpluses, interest carry-forwards whose survival after the change of control must be verified (artt. 84 and 172-173 TUIR)
+  * transfer_pricing — intercompany transactions, TP documentation (masterfile / documentazione nazionale), cost-sharing agreements
+  * tax_compliance  — DURC / DURF irregularities, withholding obligations in procurement chains (art. 17-bis D.Lgs. 241/1997), missing or late filings
+  * other_tax       — any other tax-relevant fact that does not fit the above
+- title: concise label (max 100 characters)
+- description: the finding with the document evidence, quoting figures and references verbatim where possible (max 400 characters)
+- severity:
+  * low    — informational: regime elections without current exposure, credits regularly used, closed matters with no residual liability
+  * medium — requires verification or has a quantified but remediable exposure: ongoing rateizzazioni, credits offset or transferred pending verification, loss carry-forwards subject to change-of-control limits
+  * high   — material exposure: notified assessments or cartelle with material amounts, pending tax litigation, evidence of unpaid taxes or contributions, DURF/withholding irregularities in force
+- confidence: extraction confidence between 0.0 and 1.0
+
+Document: {filename}
+Document text:
+{text}
+
+Return ONLY a JSON array (no markdown fences, no explanation):
+[{{"finding_type": "...", "title": "...", "description": "...", "severity": "...", "confidence": 0.0}}, ...]
+
+If no tax findings are present, return an empty array: []
 """
 
 DEAL_QA_PROMPT = """You are a deal analysis assistant. ANSWER THE QUESTION below using ONLY the context chunks provided.

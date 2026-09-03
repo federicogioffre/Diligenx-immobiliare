@@ -36,7 +36,7 @@ _VALID_SEVERITIES = {"low", "medium", "high", "critical"}
 _VALID_DD_AREAS = {
     "corporate", "indebtedness", "real_estate", "employees",
     "suppliers_customers", "insurance", "litigation", "ip_it",
-    "data_protection", "other",
+    "data_protection", "financial", "tax", "other",
 }
 
 
@@ -293,6 +293,41 @@ class FakeLLMProvider(LLMProvider):
             return json.dumps([
                 {"clause_index": idx, "relevance": "high", "reason": "Relevant for M&A due diligence."}
                 for idx in indices
+            ])
+        if "ANALYZE TAX MATTERS" in p:
+            return json.dumps([
+                {
+                    "finding_type": "tax_assessment",
+                    "title": "Notified tax assessment for FY2022",
+                    "description": (
+                        "Avviso di accertamento notified for FY2022 claiming "
+                        "Euro 240.000 in additional IRES, penalties and interest; "
+                        "appeal pending before the first-instance tax court."
+                    ),
+                    "severity": "high",
+                    "confidence": 0.90,
+                },
+                {
+                    "finding_type": "tax_debt",
+                    "title": "Ongoing instalment plan with the collection agency",
+                    "description": (
+                        "A 72-instalment payment plan (rateizzazione) with "
+                        "Agenzia delle Entrate-Riscossione is in progress for "
+                        "Euro 85.000 of assessed VAT."
+                    ),
+                    "severity": "medium",
+                    "confidence": 0.85,
+                },
+                {
+                    "finding_type": "tax_regime",
+                    "title": "Patent box election in force",
+                    "description": (
+                        "The company elected the patent box regime for the "
+                        "2021-2025 period; no current exposure evidenced."
+                    ),
+                    "severity": "low",
+                    "confidence": 0.80,
+                },
             ])
         if "CORPORATE GOVERNANCE" in p:
             return json.dumps([

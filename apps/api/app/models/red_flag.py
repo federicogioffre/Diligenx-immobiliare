@@ -39,6 +39,8 @@ class DueDiligenceArea(str, enum.Enum):
     litigation = "litigation"
     ip_it = "ip_it"                            # IP / IT
     data_protection = "data_protection"        # GDPR / privacy
+    financial = "financial"                    # Financial statements / covenants
+    tax = "tax"                                # Tax matters (documentary review)
     other = "other"
 
 

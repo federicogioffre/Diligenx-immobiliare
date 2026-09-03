@@ -102,6 +102,8 @@ export type DueDiligenceArea =
   | 'litigation'
   | 'ip_it'
   | 'data_protection'
+  | 'financial'
+  | 'tax'
   | 'other'
 
 export interface RedFlagRead {
