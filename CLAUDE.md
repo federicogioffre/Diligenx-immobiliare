@@ -13,7 +13,7 @@
 - **Env:** `.env` via `pydantic-settings`
 - **Frontend:** Next.js 15 (App Router, TypeScript) — login + dashboard + insights + deals UI, server-side auth via cookie
 - **Frontend tests:** Playwright smoke suite (3 tests) in `apps/web/tests/e2e/`
-- **Tests:** pytest + FastAPI TestClient (SQLite), **798 passing**
+- **Tests:** pytest + FastAPI TestClient (SQLite), **802 passing**
 
 ## Project Root
 ```
@@ -111,7 +111,7 @@ Diligenx/
 │       └── vector_store.py               # cosine similarity over DocumentChunk.embedding
 │
 ├── infra/, scripts/, docker-compose.yml, railway.toml
-├── tests/                                # 798 passing
+├── tests/                                # 802 passing
 └── CLAUDE.md                             # ← this file
 ```
 
@@ -201,7 +201,7 @@ pnpm install && pnpm dev      # http://localhost:3000
 
 ```bash
 cd apps/api
-python -m pytest ../../tests -q   # 798 passed
+python -m pytest ../../tests -q   # 802 passed
 ```
 
 ## Key Design Decisions
@@ -236,7 +236,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT USAGE, SELECT ON SEQUENCES TO diligenx_app;
 ```
 
-Then on Railway, change `DATABASE_URL` on the API service to use `diligenx_app` instead of `postgres`. Migrations should still run as `postgres` (the app role lacks DDL privileges) — either from a one-off shell or by keeping a separate `MIGRATIONS_DATABASE_URL`.
+Then on Railway, change `DATABASE_URL` on the API service to use `diligenx_app` instead of `postgres`, and set `MIGRATIONS_DATABASE_URL` to the original `postgres` connection string: the container start command runs `alembic upgrade head` before uvicorn, and `alembic/env.py` migrates `MIGRATIONS_DATABASE_URL` when set (falling back to `DATABASE_URL`), so the app role never needs DDL privileges.
 
 To verify RLS is active in production, run from the API container:
 ```sql
@@ -251,6 +251,7 @@ Enforcement tests live in `tests/test_rls_isolation.py` (opt-in: set `RLS_TEST_D
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/diligenx` | Database connection |
+| `MIGRATIONS_DATABASE_URL` | _(empty)_ | Optional DDL-capable URL used only by Alembic (`alembic/env.py`); falls back to `DATABASE_URL`. Set it to the `postgres` owner when `DATABASE_URL` uses the RLS role `diligenx_app` |
 | `SECRET_KEY` | `change-me-in-production` | JWT signing key (startup guard refuses the default in production) |
 | `AUTH_COOKIE_SECURE` | `true` | Secure attribute on auth cookies; set `false` only for local http dev |
 | `ALLOWED_ORIGINS` | `["http://localhost:3000"]` | CORS origins |
