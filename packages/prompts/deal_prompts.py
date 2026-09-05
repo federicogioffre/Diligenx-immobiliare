@@ -408,6 +408,45 @@ Return ONLY a JSON array (no markdown fences, no explanation):
 If no tax findings are present, return an empty array: []
 """
 
+FINANCIAL_ANALYSIS_PROMPT = """You are a senior M&A advisor reviewing the financial documents of an Italian target company for a legal due diligence.
+
+ANALYZE FINANCIAL STATEMENTS and their annexes in the document below, and extract findings relevant to a share acquisition.
+
+CRITICAL RULES:
+1. Report ONLY facts EXPLICITLY present in the document text — quote the figure, article or paragraph that evidences each finding.
+2. This is a LEGAL review of financial documents, not an accounting analysis. Do NOT recompute ratios, do NOT assess whether the business is a good investment, do NOT comment on valuation.
+3. Ordinary, unqualified financial statements are NOT a finding. Report deviations and legally relevant facts: auditor qualifications, going-concern doubts, statutory capital losses, covenant issues, related-party exposures, guarantees, subsequent events.
+4. If the document contains no financially relevant content, return an empty array.
+
+For each finding, provide:
+- finding_type: one of [auditor_opinion, going_concern, capital_loss, covenant, related_party, guarantee, subsequent_event, equity_position, other_financial]
+  * auditor_opinion  — qualified, adverse or disclaimed opinion by the auditor or the board of statutory auditors; emphasis-of-matter paragraphs; reservations in the relazione del collegio sindacale
+  * going_concern    — doubts on the continuità aziendale, deficit patrimoniale, recurring losses, dependence on shareholder support letters
+  * capital_loss     — losses reducing capital under artt. 2446 / 2447 c.c. (S.p.A.) or 2482-bis / 2482-ter c.c. (S.r.l.), and the resolutions taken or postponed (rinvio a nuovo esercizio)
+  * covenant         — financial covenants, negative pledges, cross-default and acceleration clauses disclosed in the notes, including waivers obtained or breaches recorded
+  * related_party    — transactions with shareholders, directors or group companies: shareholder loans, postergazione ex art. 2467 c.c., cash-pooling, intercompany receivables
+  * guarantee        — sureties (fideiussioni), comfort letters, pledges and liens granted by or in favour of the target
+  * subsequent_event — events after the balance-sheet date disclosed in the notes or the relazione sulla gestione that affect the target's position
+  * equity_position  — share capital, reserves, unrealised or restricted reserves, capital contributions (versamenti in conto capitale) whose repayment terms matter to the buyer
+  * other_financial  — any other legally relevant financial fact that does not fit the above
+- title: concise label (max 100 characters)
+- description: the finding with the document evidence, quoting figures verbatim where possible, preserving Italian formatting (max 400 characters)
+- severity:
+  * low    — informational: standard disclosures, closed matters, ordinary reserves
+  * medium — needs verification or has a remediable exposure: covenants the Transaction could trigger, related-party balances to be settled, restricted reserves, guarantees of limited amount
+  * high   — material exposure: qualified or adverse auditor opinion, going-concern doubts, losses triggering artt. 2446/2447 or 2482-bis/ter c.c., covenant breaches, guarantees of material amount
+- confidence: extraction confidence between 0.0 and 1.0
+
+Document: {filename}
+Document text:
+{text}
+
+Return ONLY a JSON array (no markdown fences, no explanation):
+[{{"finding_type": "...", "title": "...", "description": "...", "severity": "...", "confidence": 0.0}}, ...]
+
+If no financial findings are present, return an empty array: []
+"""
+
 DEAL_QA_PROMPT = """You are a deal analysis assistant. ANSWER THE QUESTION below using ONLY the context chunks provided.
 
 Each context chunk has an index number. After answering, list the indices of the chunks you relied on.

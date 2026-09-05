@@ -684,6 +684,7 @@ _PIPELINE_STAGES = [
     "corporate_governance",
     "corporate_intro_extraction",
     "tax_analysis",
+    "financial_analysis",
     "red_flag_aggregation",
     "report_generation",
 ]

@@ -294,6 +294,41 @@ class FakeLLMProvider(LLMProvider):
                 {"clause_index": idx, "relevance": "high", "reason": "Relevant for M&A due diligence."}
                 for idx in indices
             ])
+        if "ANALYZE FINANCIAL STATEMENTS" in p:
+            return json.dumps([
+                {
+                    "finding_type": "auditor_opinion",
+                    "title": "Qualified opinion on the FY2024 statements",
+                    "description": (
+                        "The auditor issued a qualified opinion (giudizio con "
+                        "rilievi) on the receivables' recoverability for "
+                        "Euro 320.000."
+                    ),
+                    "severity": "high",
+                    "confidence": 0.88,
+                },
+                {
+                    "finding_type": "covenant",
+                    "title": "Financial covenant on the term loan",
+                    "description": (
+                        "The notes disclose a net-debt-to-EBITDA covenant of "
+                        "3.5x on the term loan, tested semi-annually."
+                    ),
+                    "severity": "medium",
+                    "confidence": 0.84,
+                },
+                {
+                    "finding_type": "equity_position",
+                    "title": "Capital contribution reserve",
+                    "description": (
+                        "A versamento in conto capitale of Euro 150.000 is "
+                        "recorded among the reserves; no repayment terms are "
+                        "stated."
+                    ),
+                    "severity": "low",
+                    "confidence": 0.79,
+                },
+            ])
         if "ANALYZE TAX MATTERS" in p:
             return json.dumps([
                 {
