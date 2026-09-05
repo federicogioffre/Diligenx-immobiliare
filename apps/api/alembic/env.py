@@ -14,8 +14,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Override sqlalchemy.url from settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Override sqlalchemy.url from settings. MIGRATIONS_DATABASE_URL wins when
+# set (DDL-capable role for RLS deployments); otherwise DATABASE_URL.
+config.set_main_option("sqlalchemy.url", settings.migrations_database_url)
 
 target_metadata = Base.metadata
 

@@ -20,6 +20,11 @@ class Settings(BaseSettings):
 
     # Database — default to PostgreSQL
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/diligenx"
+    # Optional separate URL for Alembic. Needed once the app connects as the
+    # non-superuser RLS role (diligenx_app), which lacks DDL privileges: point
+    # this at the `postgres` owner so `alembic upgrade head` in the container
+    # start command keeps working. Empty → migrations use DATABASE_URL.
+    MIGRATIONS_DATABASE_URL: str = ""
 
     # Auth
     SECRET_KEY: str = "change-me-in-production"
@@ -88,6 +93,11 @@ class Settings(BaseSettings):
     # Public URL of the frontend, used to build links in outbound email
     # (password reset). No trailing slash.
     FRONTEND_URL: str = "https://www.diligenx.it"
+
+    @property
+    def migrations_database_url(self) -> str:
+        """URL Alembic should migrate: MIGRATIONS_DATABASE_URL, else DATABASE_URL."""
+        return self.MIGRATIONS_DATABASE_URL or self.DATABASE_URL
 
 
 settings = Settings()
