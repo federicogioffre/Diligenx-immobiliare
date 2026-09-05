@@ -18,6 +18,13 @@ Pipeline stages:
 4. **Corporate governance analysis** — analyses governance documents
    (articles of association, bylaws, shareholder agreements, etc.) via
    :class:`~packages.agents.corporate_agent.CorporateAgent`.
+4c. **Tax documentary review** — analyses tax documents (accertamenti,
+   cartelle, rateizzazioni, crediti d'imposta, …) via
+   :class:`~packages.agents.tax_agent.TaxAgent`.
+4d. **Financial documentary review** — analyses financial statements and
+   their annexes (auditor qualifications, going concern, statutory capital
+   losses, covenants, related parties, …) via
+   :class:`~packages.agents.financial_agent.FinancialAgent`.
 5. **Red-flag aggregation** — reviews all findings across the deal and
    produces ``RedFlag`` rows plus ``OpenQuestion`` entries for items
    requiring human follow-up.
@@ -53,6 +60,8 @@ AGENT_ROUTER = "document_router"
 AGENT_SPECIALIST = "contract_analysis"   # == ContractAgent.AGENT_NAME
 AGENT_CORPORATE = "corporate_governance"  # == CorporateAgent.AGENT_NAME
 AGENT_CORPORATE_INTRO = "corporate_intro_extraction"  # == CorporateIntroAgent.AGENT_NAME
+AGENT_TAX = "tax_analysis"  # == TaxAgent.AGENT_NAME
+AGENT_FINANCIAL = "financial_analysis"  # == FinancialAgent.AGENT_NAME
 AGENT_RED_FLAG = "red_flag_aggregation"
 AGENT_REPORT = "report_generation"
 
@@ -66,6 +75,8 @@ _STAGE_AGENT_NAMES = {
     "specialist_analysis": AGENT_SPECIALIST,
     "corporate_analysis": AGENT_CORPORATE,
     "corporate_intro_extraction": AGENT_CORPORATE_INTRO,
+    "tax_analysis": AGENT_TAX,
+    "financial_analysis": AGENT_FINANCIAL,
     "red_flag_aggregation": AGENT_RED_FLAG,
     "report_generation": AGENT_REPORT,
 }
@@ -504,6 +515,81 @@ def _stage_corporate_intro_extraction(
         return {"error": str(exc)}
 
 
+# ── Stage 4c: Tax documentary review ──────────────────────────────────────
+
+def _stage_tax_analysis(
+    deal_id: int,
+    db: Session,
+    llm: LLMProvider,
+    classifications: list[dict],
+) -> dict:
+    """Delegate the tax documentary review to :class:`TaxAgent`.
+
+    Documents the routing stage classified as ``tax`` are passed as
+    ``routed_document_ids``; the agent unions them with its own keyword
+    auto-detection. Self-contained AgentRun + idempotency
+    (``agent_name = "tax_analysis"``).
+    """
+    from packages.agents.tax_agent import TaxAgent
+
+    logger.info("[%s] deal=%d — starting tax documentary review", AGENT_TAX, deal_id)
+
+    routed_tax_ids: set[int] = {
+        c["document_id"]
+        for c in classifications
+        if c.get("document_type") == "tax"
+    }
+
+    try:
+        return TaxAgent(provider=llm).run(
+            deal_id, db, routed_document_ids=routed_tax_ids,
+        )
+    except Exception as exc:
+        logger.exception(
+            "[%s] deal=%d — TaxAgent failed", AGENT_TAX, deal_id
+        )
+        return {"error": str(exc)}
+
+
+# ── Stage 4d: Financial documentary review ────────────────────────────────
+
+def _stage_financial_analysis(
+    deal_id: int,
+    db: Session,
+    llm: LLMProvider,
+    classifications: list[dict],
+) -> dict:
+    """Delegate the financial documentary review to :class:`FinancialAgent`.
+
+    Documents the routing stage classified as ``financial_statement`` are
+    passed as ``routed_document_ids``; the agent unions them with its own
+    keyword auto-detection. Self-contained AgentRun + idempotency
+    (``agent_name = "financial_analysis"``).
+    """
+    from packages.agents.financial_agent import FinancialAgent
+
+    logger.info(
+        "[%s] deal=%d — starting financial documentary review",
+        AGENT_FINANCIAL, deal_id,
+    )
+
+    routed_financial_ids: set[int] = {
+        c["document_id"]
+        for c in classifications
+        if c.get("document_type") == "financial_statement"
+    }
+
+    try:
+        return FinancialAgent(provider=llm).run(
+            deal_id, db, routed_document_ids=routed_financial_ids,
+        )
+    except Exception as exc:
+        logger.exception(
+            "[%s] deal=%d — FinancialAgent failed", AGENT_FINANCIAL, deal_id
+        )
+        return {"error": str(exc)}
+
+
 # ── Stage 5: Red-flag aggregation ─────────────────────────────────────────
 
 def _stage_red_flag_aggregation(
@@ -581,6 +667,9 @@ def run_deal_analysis_pipeline(
                 "document_routing": {...},
                 "specialist_analysis": {...},
                 "corporate_analysis": {...},
+                "corporate_intro_extraction": {...},
+                "tax_analysis": {...},
+                "financial_analysis": {...},
                 "red_flag_aggregation": {...},
                 "report_generation": {...},
             },
@@ -639,6 +728,18 @@ def run_deal_analysis_pipeline(
     stages["corporate_intro_extraction"] = _execute_stage(
         db, deal_id, "corporate_intro_extraction",
         lambda: _stage_corporate_intro_extraction(deal_id, db, llm),
+    )
+
+    # Stage 4c — Tax documentary review
+    stages["tax_analysis"] = _execute_stage(
+        db, deal_id, "tax_analysis",
+        lambda: _stage_tax_analysis(deal_id, db, llm, classifications),
+    )
+
+    # Stage 4d — Financial documentary review
+    stages["financial_analysis"] = _execute_stage(
+        db, deal_id, "financial_analysis",
+        lambda: _stage_financial_analysis(deal_id, db, llm, classifications),
     )
 
     # ── Stage 5: Red-flag aggregation ──────────────────────────────────

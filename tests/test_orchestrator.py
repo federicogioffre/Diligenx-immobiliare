@@ -31,6 +31,8 @@ from packages.agents.orchestrator import (
     AGENT_SPECIALIST,
     AGENT_CORPORATE,
     AGENT_CORPORATE_INTRO,
+    AGENT_TAX,
+    AGENT_FINANCIAL,
     AGENT_RED_FLAG,
     AGENT_REPORT,
 )
@@ -43,13 +45,15 @@ _ALL_STAGES = {
     "specialist_analysis",
     "corporate_analysis",
     "corporate_intro_extraction",
+    "tax_analysis",
+    "financial_analysis",
     "red_flag_aggregation",
     "report_generation",
 }
 
 _ALL_AGENT_NAMES = {
     AGENT_INTAKE, AGENT_ROUTER, AGENT_SPECIALIST,
-    AGENT_CORPORATE, AGENT_CORPORATE_INTRO,
+    AGENT_CORPORATE, AGENT_CORPORATE_INTRO, AGENT_TAX, AGENT_FINANCIAL,
     AGENT_RED_FLAG, AGENT_REPORT,
 }
 
@@ -140,12 +144,12 @@ class TestPipelineStructure:
 
 class TestAgentRunRecords:
 
-    def test_exactly_seven_agent_runs_created(self, db, test_deal, processed_doc):
+    def test_exactly_nine_agent_runs_created(self, db, test_deal, processed_doc):
         run_deal_analysis_pipeline(test_deal.id, db)
         runs = db.query(AgentRun).filter(AgentRun.deal_id == test_deal.id).all()
-        assert len(runs) == 7
+        assert len(runs) == 9
 
-    def test_all_seven_agent_names_present(self, db, test_deal, processed_doc):
+    def test_all_nine_agent_names_present(self, db, test_deal, processed_doc):
         run_deal_analysis_pipeline(test_deal.id, db)
         names = {
             r.agent_name

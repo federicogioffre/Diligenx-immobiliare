@@ -97,6 +97,17 @@ SAFE_HARBOR: list[dict] = [
         ),
     },
     {
+        "id": "ordinary_tax_position",
+        "title": "Ordinary, timely-paid taxes",
+        "description": (
+            "The mere existence of ordinary tax obligations (IRES, IRAP, IVA, "
+            "withholding taxes) that appear regularly declared and paid is NOT "
+            "a red flag.  Flag only deviations: notified assessments, pending "
+            "tax litigation, instalment plans, missed or deferred payments, "
+            "credits requiring verification, or special regimes with exposure."
+        ),
+    },
+    {
         "id": "employment_ccnl",
         "title": "CCNL applicability (Contratto Collettivo Nazionale di Lavoro)",
         "description": (
@@ -165,6 +176,41 @@ PRIORITY: list[dict] = [
             "post-closing corporate actions that are part of the acquirer's integration "
             "plan (merger, capital increase, change of business purpose, listing).  "
             "Note whether the liquidation value formula could be punitive."
+        ),
+    },
+    {
+        "id": "tax_assessments_litigation",
+        "title": "Notified tax assessments and pending tax litigation",
+        "severity_floor": "high",
+        "description": (
+            "ALWAYS flag: avvisi di accertamento or cartelle di pagamento "
+            "notified to the target, pending proceedings before the tax courts, "
+            "PVC (processi verbali di constatazione), and any evidence of unpaid "
+            "or deferred taxes or social security contributions.  Quantify the "
+            "exposure where the documents state it."
+        ),
+    },
+    {
+        "id": "tax_credits_and_losses",
+        "title": "Tax credits used or transferred; carried-forward tax losses",
+        "severity_floor": "medium",
+        "description": (
+            "ALWAYS flag: tax credits offset (compensati) or transferred (ceduti) "
+            "— including building bonuses (superbonus), R&D and Industria 4.0 "
+            "credits — whose validity has not been verified; and carried-forward "
+            "tax losses or ACE surpluses whose survival after the change of "
+            "control must be verified under artt. 84 and 172-173 TUIR."
+        ),
+    },
+    {
+        "id": "going_concern_financials",
+        "title": "Auditor qualifications and going-concern doubts",
+        "severity_floor": "high",
+        "description": (
+            "ALWAYS flag: a qualified, adverse or disclaimed auditor's opinion, "
+            "going-concern emphasis paragraphs, losses triggering artt. 2446/2447 "
+            "or 2482-bis/ter c.c., and covenant breaches or waivers evidenced in "
+            "the financial statements or their annexes."
         ),
     },
     {

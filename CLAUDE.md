@@ -13,7 +13,7 @@
 - **Env:** `.env` via `pydantic-settings`
 - **Frontend:** Next.js 15 (App Router, TypeScript) — login + dashboard + insights + deals UI, server-side auth via cookie
 - **Frontend tests:** Playwright smoke suite (3 tests) in `apps/web/tests/e2e/`
-- **Tests:** pytest + FastAPI TestClient (SQLite), **600 passing**
+- **Tests:** pytest + FastAPI TestClient (SQLite), **798 passing**
 
 ## Project Root
 ```
@@ -40,7 +40,7 @@ Diligenx/
 │   │   │   ├── document.py               # Document + DocumentStatus(pending|processing|processed|failed) + language + raw_text
 │   │   │   ├── document_chunk.py         # DocumentChunk + VectorType (pgvector on PG, JSON on SQLite) + EMBEDDING_DIM=1536
 │   │   │   ├── clause_finding.py         # ClauseFinding + ClauseType enum
-│   │   │   ├── red_flag.py               # RedFlag (issue/risk/recommendation triple) + Severity(low|medium|high) + DueDiligenceArea (9 standard DD report sections) + source_document_id/source_page citation
+│   │   │   ├── red_flag.py               # RedFlag (issue/risk/recommendation triple) + Severity(low|medium|high) + DueDiligenceArea (11 standard DD report sections, incl. tax + financial) + source_document_id/source_page citation
 │   │   │   ├── report.py                 # Report + ReportType + ReportStatus enums
 │   │   │   ├── agent_run.py              # AgentRun (one row per pipeline stage execution)
 │   │   │   ├── agent_finding.py          # AgentFinding (intermediate per-doc findings, e.g. routing)
@@ -84,10 +84,13 @@ Diligenx/
 │   ├── agents/                           # ★ Multi-agent analysis pipeline (fully wired)
 │   │   ├── base.py                       # BaseAgent ABC
 │   │   ├── deal_analysis_agent.py        # LLMProvider ABC + AnthropicLLMProvider + FakeLLMProvider, grounding check
-│   │   ├── orchestrator.py               # ★ run_deal_analysis_pipeline() — 6 stages, AgentRun tracking
+│   │   ├── orchestrator.py               # ★ run_deal_analysis_pipeline() — 9 stages, AgentRun tracking
 │   │   ├── intake_agent.py               # Stage 1: validates deal, records MissingDocument
 │   │   ├── contract_agent.py             # Stage 3: extracts ClauseFinding via grounded LLM
 │   │   ├── corporate_agent.py            # Stage 4: corporate governance analysis
+│   │   ├── corporate_intro_agent.py      # Stage 4b: CompanyProfile extraction (visure/atti/statuti)
+│   │   ├── tax_agent.py                  # Stage 4c: tax documentary review (LLM + deterministic keyword heuristics)
+│   │   ├── financial_agent.py            # Stage 4d: financial documentary review (LLM + deterministic keyword heuristics)
 │   │   ├── red_flag_aggregator.py        # Stage 5: produces RedFlag + OpenQuestion
 │   │   ├── report_agent.py               # Stage 6: Markdown report → Report row
 │   │   ├── deal_qa_agent.py              # RAG Q&A over deal documents
@@ -108,7 +111,7 @@ Diligenx/
 │       └── vector_store.py               # cosine similarity over DocumentChunk.embedding
 │
 ├── infra/, scripts/, docker-compose.yml, railway.toml
-├── tests/                                # 573 passing
+├── tests/                                # 798 passing
 └── CLAUDE.md                             # ← this file
 ```
 
@@ -162,6 +165,8 @@ Triggered async by `POST /deals/{id}/analyze`. Each stage gets its own `AgentRun
 3. **Contract analysis** (`ContractAgent`) — extract clauses → `ClauseFinding` (with grounding check + min confidence).
 4. **Corporate governance** (`CorporateAgent`) — bylaws / shareholder agreement insights.
 4b. **Corporate intro extraction** (`CorporateIntroAgent`) — extracts the Corporate Introductory Information for each target company (visure / atti / statuti) → `CompanyProfile` rows. Auto-detects corporate-looking docs via filename + first-1500-chars keyword match.
+4c. **Tax documentary review** (`TaxAgent`) — analyses tax documents (avvisi di accertamento, cartelle, rateizzazioni, crediti d'imposta, regimi speciali, TP, DURF) selected by keyword auto-detection ∪ routing classification (`document_type=tax`). LLM findings + deterministic keyword heuristics as a floor (a notified accertamento can never be silently dropped) → `AgentFinding` rows (`agent_name=tax_analysis`) that flow into stage 5 with `area=tax`. Documentary review only — the report boilerplate states it does not substitute a full tax/financial DD by the client's advisors.
+4d. **Financial documentary review** (`FinancialAgent`) — analyses financial statements and their annexes (bilanci, note integrative, relazioni sulla gestione / del collegio sindacale / della società di revisione) selected by keyword auto-detection ∪ routing classification (`document_type=financial_statement`). LLM findings (auditor_opinion, going_concern, capital_loss, covenant, related_party, guarantee, subsequent_event, equity_position) + deterministic keyword heuristics as a floor (a going-concern paragraph or an art. 2446/2482-bis c.c. loss can never be silently dropped; article numbers match only with an `art.` prefix or `c.c.` suffix, so amounts in the accounts don't false-positive) → `AgentFinding` rows (`agent_name=financial_analysis`) that flow into stage 5 with `area=financial`. A **legal** review of financial documents, not an accounting analysis: no ratios, no valuation.
 5. **Red-flag aggregation** — produce `RedFlag` rows (Issue/Risk/Recommendation triple, severity low|medium|high, DD area, `source_document_id` + validated `source_page` pinpoint citation) + `OpenQuestion` items for high-severity flags. A cited `source_page` is kept only if it matches a real page of that document's ClauseFindings (guards against hallucinated citations).
 6. **Report generation** (`report_agent.generate_due_diligence_report`) — bilingual (IT/EN — explicit `deal.report_language` or majority language of processed documents, fallback EN; LLM prose follows, boilerplate localized faithfully to studio practice: title/Executive Summary/Key Findings stay English) deterministic template (Introduction / Corporate Introductory Information from `CompanyProfile` / Executive Summary via LLM / Key Findings tabellari per DD area / Observations / Information Requests / Appendix Documents); stored as Markdown in `Report` table.
 
@@ -196,7 +201,7 @@ pnpm install && pnpm dev      # http://localhost:3000
 
 ```bash
 cd apps/api
-python -m pytest ../../tests -q   # 573 passed
+python -m pytest ../../tests -q   # 798 passed
 ```
 
 ## Key Design Decisions

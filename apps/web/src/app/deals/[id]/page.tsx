@@ -38,11 +38,14 @@ const STAGE_LABELS: Record<string, string> = {
   document_router: 'Classificazione documenti',
   contract_analysis: 'Analisi contratti',
   corporate_governance: 'Governance societaria',
+  corporate_intro_extraction: 'Informazioni societarie',
+  tax_analysis: 'Analisi fiscale',
+  financial_analysis: 'Analisi finanziaria',
   red_flag_aggregation: 'Aggregazione red flag',
   report_generation: 'Generazione report',
 }
 
-const TOTAL_STAGES = 6
+const TOTAL_STAGES = 9
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
