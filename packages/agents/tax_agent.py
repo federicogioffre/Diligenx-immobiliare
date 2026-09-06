@@ -59,7 +59,12 @@ Deterministic heuristics
 tax red flags: when a heuristic keyword appears in the document text and
 the LLM produced no finding of that type for the document, a floor
 finding is written (``structured_payload_json.source = "heuristic"``),
-so a notified assessment can never be silently dropped.
+so a notified assessment can never be silently dropped. Each entry
+carries its own defensibility grade — an omitted payment of a tax shown
+as due is ``actual``, an interpretative position is not — and an optional
+note appended to the finding, used to carry the consequence a keyword
+implies (for instance that tax offences also engage the company's own
+liability under D.Lgs. 231/2001).
 
 Idempotency
 -----------
@@ -67,7 +72,9 @@ Re-running for the same deal deletes this agent's previous ``AgentRun``
 and ``AgentFinding`` rows before writing fresh results.
 """
 import logging
+import re
 from datetime import date, datetime, timezone
+from typing import NamedTuple
 
 from sqlalchemy.orm import Session
 
@@ -149,83 +156,406 @@ _MIN_FISCAL_YEAR = 1990
 # case-insensitive against the normalised filename (underscores / hyphens
 # replaced with spaces) and the first 1 500 chars of raw_text.
 _TAX_DOC_KEYWORDS = [
-    # Italian
+    # ── Returns and periodic filings, current ────────────────────────────
     "dichiarazione dei redditi",
     "modello redditi",
+    "redditi sc",
+    "dichiarazione irap",
+    "dichiarazione iva",
+    "liquidazione periodica iva",
+    "esterometro",
+    "intrastat",
+    "modello 770",
+    "certificazione unica",
+    "modello f24",
+    "quadro rs",
+    "dichiarazione integrativa",
+    # ── Returns and filings that no longer exist ─────────────────────────
+    # Kept because a data room still holds the old years: a finding about a
+    # closed period is a finding. They must never be cited as a current
+    # obligation, which is why the rules registry returns nothing for them
+    # after their repeal.
     "modello unico",
+    "spesometro",
+    "comunicazione dati iva",
+    # ── Acts of the authority ────────────────────────────────────────────
     "avviso di accertamento",
     "avviso bonario",
+    "avviso di liquidazione",
+    "atto di contestazione",
+    "atto di irrogazione",
     "processo verbale di constatazione",
+    "invito al contraddittorio",
+    "schema di atto",
+    "comunicazione di irregolarità",
+    "agenzia delle entrate",
+    "agenzia delle dogane",
+    # ── Collection ───────────────────────────────────────────────────────
+    "agenzia entrate riscossione",
     "cartella di pagamento",
     "cartella esattoriale",
-    "agenzia delle entrate",
-    "agenzia entrate riscossione",
+    "intimazione di pagamento",
+    "estratto di ruolo",
     "rateizzazione",
+    "definizione agevolata",
+    "rottamazione",
     "ravvedimento operoso",
+    "carichi pendenti",
+    # ── Litigation ───────────────────────────────────────────────────────
+    "contenzioso tributario",
+    "giustizia tributaria",
+    "commissione tributaria",
+    "accertamento con adesione",
+    # ── Regimes, credits and attributes ──────────────────────────────────
     "consolidato fiscale",
     "iva di gruppo",
+    "gruppo iva",
     "patent box",
     "interpello",
     "credito d'imposta",
     "crediti d'imposta",
-    "transfer pricing",
-    "contenzioso tributario",
-    "giustizia tributaria",
-    "commissione tributaria",
+    "riversamento spontaneo",
+    "superbonus",
+    "sconto in fattura",
+    "perdite fiscali",
+    "riallineamento",
     "imposta sostitutiva",
-    "certificazione unica",
-    "modello 770",
-    "modello f24",
+    "transfer pricing",
+    "prezzi di trasferimento",
+    "documentazione nazionale",
     "durf",
-    # English
+    "accise",
+    # ── English ──────────────────────────────────────────────────────────
     "tax return",
     "tax assessment",
     "tax ruling",
     "tax litigation",
     "tax settlement",
+    "tax due diligence",
     "vat return",
     "withholding tax",
+    "customs duties",
 ]
 
-# Deterministic red-flag floor: (keyword, finding_type, title, severity).
-# Matched case-insensitively against the FULL document text. A floor
-# finding is written only when the LLM produced no finding of the same
-# type for that document.
-_TAX_HEURISTICS: list[tuple[str, str, str, str]] = [
-    (
+# Data rooms number their files ("7.2.4 Redditi SC 2023"), and the leading
+# index carries no signal. Stripped before matching so numbering does not
+# push the real name past the comparison.
+_VDR_NUMBERING = re.compile(r"^[\d]+(?:[.\-_][\d]+)*[.\-_)\s]+")
+
+# Tax offences also engage the entity's own liability, which a share deal
+# inherits together with the company. Kept in one place so the four
+# offence keywords below cannot drift apart.
+_TAX_CRIME_NOTE = (
+    "Tax offences of this kind also engage the company's own liability "
+    "under D.Lgs. 231/2001; verify whether an organisational model and a "
+    "supervisory body are in place."
+)
+
+
+class TaxHeuristic(NamedTuple):
+    """One deterministic floor: a keyword that must never be dropped."""
+
+    keyword: str
+    finding_type: str
+    title: str
+    defensibility: str
+    note: str | None = None
+
+
+# Deterministic red-flag floor, matched case-insensitively against the FULL
+# document text. A floor finding is written only when the LLM produced no
+# finding of the same type for that document, and at most one per type — so
+# this is a safety net for the highest-signal facts, not a topic index.
+#
+# Keywords are chosen to be unambiguous in running Italian text: a bare
+# "ricorso" or "isa" would fire on ordinary prose, so the phrases below carry
+# enough context to identify the act they name.
+_TAX_HEURISTICS: list[TaxHeuristic] = [
+    # ── Acts notified by the authority ───────────────────────────────────
+    TaxHeuristic(
         "avviso di accertamento",
         "tax_assessment",
         "Tax assessment referenced in the document",
         "high",
     ),
-    (
+    TaxHeuristic(
         "processo verbale di constatazione",
         "tax_assessment",
         "Tax audit report (PVC) referenced in the document",
         "high",
     ),
-    (
+    TaxHeuristic(
+        "avviso di liquidazione",
+        "tax_assessment",
+        "Notice of liquidation referenced in the document",
+        "high",
+    ),
+    TaxHeuristic(
+        "atto di contestazione",
+        "tax_assessment",
+        "Notice of contestation of penalties referenced in the document",
+        "high",
+    ),
+    TaxHeuristic(
+        "atto di irrogazione",
+        "tax_assessment",
+        "Notice imposing penalties referenced in the document",
+        "high",
+    ),
+    TaxHeuristic(
+        "invito al contraddittorio",
+        "tax_assessment",
+        "Invitation to the preliminary cross-examination referenced",
+        "medium",
+    ),
+    TaxHeuristic(
+        "verifica fiscale",
+        "tax_assessment",
+        "Tax inspection referenced in the document",
+        "medium",
+    ),
+    # ── Collection ───────────────────────────────────────────────────────
+    TaxHeuristic(
         "cartella di pagamento",
         "tax_debt",
         "Tax-collection notice (cartella) referenced in the document",
         "high",
     ),
-    (
+    TaxHeuristic(
         "cartella esattoriale",
         "tax_debt",
         "Tax-collection notice (cartella) referenced in the document",
         "high",
     ),
-    (
+    TaxHeuristic(
+        "intimazione di pagamento",
+        "tax_debt",
+        "Demand for payment referenced in the document",
+        "high",
+    ),
+    TaxHeuristic(
+        "iscrizione a ruolo",
+        "tax_debt",
+        "Entry in the tax roll referenced in the document",
+        "high",
+    ),
+    TaxHeuristic(
+        "omesso versamento",
+        "tax_debt",
+        "Omitted payment of a tax shown as due",
+        # A tax shown as due in a filed return and not paid leaves nothing
+        # to argue about: it is an actual liability, not an interpretation.
+        "actual",
+    ),
+    TaxHeuristic(
+        "definizione agevolata",
+        "tax_debt",
+        "Settlement scheme for collection debts referenced",
+        "medium",
+        note=(
+            "Verify which debts were included, whether the instalments are "
+            "current, and what revives on default."
+        ),
+    ),
+    TaxHeuristic(
+        "rottamazione",
+        "tax_debt",
+        "Settlement scheme for collection debts referenced",
+        "medium",
+    ),
+    TaxHeuristic(
         "rateizzazione",
         "tax_debt",
         "Tax instalment plan referenced in the document",
         "medium",
     ),
-    (
+    # ── Litigation ───────────────────────────────────────────────────────
+    # Every assessment notice ends with the standard instruction that an
+    # appeal to the tax court may be lodged within sixty days. A bare
+    # "corte di giustizia tributaria" or "commissione tributaria" therefore
+    # fires on the boilerplate of documents where no proceedings exist, so
+    # the keywords below require evidence of an actual dispute.
+    TaxHeuristic(
+        "contenzioso tributario",
+        "tax_litigation",
+        "Tax litigation referenced in the document",
+        "high",
+    ),
+    TaxHeuristic(
+        "ricorso pendente",
+        "tax_litigation",
+        "Pending tax appeal referenced in the document",
+        "high",
+    ),
+    TaxHeuristic(
+        "ricorso presentato",
+        "tax_litigation",
+        "Tax appeal lodged, referenced in the document",
+        "high",
+    ),
+    TaxHeuristic(
+        "sentenza della corte di giustizia tributaria",
+        "tax_litigation",
+        "Judgment of the tax court referenced in the document",
+        "high",
+    ),
+    TaxHeuristic(
+        "sentenza della commissione tributaria",
+        "tax_litigation",
+        "Judgment of the tax court referenced in the document",
+        "high",
+    ),
+    TaxHeuristic(
+        "accertamento con adesione",
+        "tax_litigation",
+        "Settlement with the authority referenced in the document",
+        "medium",
+    ),
+    TaxHeuristic(
+        "conciliazione giudiziale",
+        "tax_litigation",
+        "Judicial settlement referenced in the document",
+        "medium",
+    ),
+    # ── Credits: the area that did not exist a decade ago ────────────────
+    TaxHeuristic(
+        "riversamento spontaneo",
+        "tax_credit",
+        "Voluntary repayment of a contested tax credit referenced",
+        "high",
+    ),
+    TaxHeuristic(
+        "crediti inesistenti",
+        "tax_credit",
+        "Non-existent tax credits referenced in the document",
+        "high",
+    ),
+    TaxHeuristic(
+        "credito inesistente",
+        "tax_credit",
+        "Non-existent tax credit referenced in the document",
+        "high",
+    ),
+    TaxHeuristic(
+        "crediti non spettanti",
+        "tax_credit",
+        "Tax credits claimed without entitlement referenced",
+        "high",
+    ),
+    TaxHeuristic(
+        "sconto in fattura",
+        "tax_credit",
+        "Invoice discount on a building bonus referenced",
+        "medium",
+        note=(
+            "Purchased or assigned building-bonus credits carry the "
+            "assignee's joint liability; verify the supporting file."
+        ),
+    ),
+    TaxHeuristic(
+        "cessione del credito d'imposta",
+        "tax_credit",
+        "Assignment of a tax credit referenced in the document",
+        "medium",
+    ),
+    # ── Attributes at risk on a change of control ────────────────────────
+    TaxHeuristic(
+        "perdite fiscali riportabili",
+        "tax_losses",
+        "Carried-forward tax losses referenced in the document",
+        "medium",
+        note=(
+            "Survival after the change of control must be verified against "
+            "the vitality tests."
+        ),
+    ),
+    # ── Cross-border ─────────────────────────────────────────────────────
+    TaxHeuristic(
+        "prezzi di trasferimento",
+        "transfer_pricing",
+        "Transfer pricing referenced in the document",
+        "medium",
+    ),
+    TaxHeuristic(
+        "documentazione nazionale",
+        "transfer_pricing",
+        "Transfer pricing documentation referenced in the document",
+        "medium",
+    ),
+    TaxHeuristic(
+        "paesi a fiscalità privilegiata",
+        "transfer_pricing",
+        "Costs towards privileged-tax jurisdictions referenced",
+        "medium",
+    ),
+    # ── Compliance ───────────────────────────────────────────────────────
+    TaxHeuristic(
+        "dichiarazione integrativa",
+        "tax_compliance",
+        "Amended tax return referenced in the document",
+        "medium",
+        note=(
+            "An amended return reopens the assessment term for the items "
+            "amended."
+        ),
+    ),
+    TaxHeuristic(
         "ravvedimento operoso",
         "tax_compliance",
         "Voluntary correction (ravvedimento) referenced in the document",
+        "medium",
+    ),
+    # Tax offences also engage the company's own liability under the
+    # corporate criminal-liability regime, which a share deal inherits.
+    TaxHeuristic(
+        "fatture per operazioni inesistenti",
+        "tax_compliance",
+        "Invoices for non-existent transactions referenced",
+        "actual",
+        note=_TAX_CRIME_NOTE,
+    ),
+    TaxHeuristic(
+        "dichiarazione fraudolenta",
+        "tax_compliance",
+        "Fraudulent return referenced in the document",
+        "actual",
+        note=_TAX_CRIME_NOTE,
+    ),
+    TaxHeuristic(
+        "occultamento delle scritture",
+        "tax_compliance",
+        "Concealment of accounting records referenced",
+        "actual",
+        note=_TAX_CRIME_NOTE,
+    ),
+    TaxHeuristic(
+        "sottrazione fraudolenta al pagamento",
+        "tax_compliance",
+        "Fraudulent evasion of payment referenced",
+        "actual",
+        note=_TAX_CRIME_NOTE,
+    ),
+    # ── Everything else worth never dropping ─────────────────────────────
+    TaxHeuristic(
+        "hold harmless",
+        "other_tax",
+        "Agreement shifting tax liabilities referenced in the document",
+        "high",
+        note=(
+            "A side agreement assuming a third party's tax liabilities "
+            "survives the transaction; verify its scope and termination."
+        ),
+    ),
+    TaxHeuristic(
+        "manleva fiscale",
+        "other_tax",
+        "Agreement shifting tax liabilities referenced in the document",
+        "high",
+    ),
+    TaxHeuristic(
+        "fondo rischi fiscali",
+        "other_tax",
+        "Provision for tax risks recognised in the accounts",
         "medium",
     ),
 ]
@@ -584,7 +914,7 @@ class TaxAgent:
         * the first 1 500 characters of ``raw_text`` (lower-case)
         """
         normalised_filename = (
-            doc.filename.lower()
+            _VDR_NUMBERING.sub("", doc.filename.lower())
             .replace("_", " ")
             .replace("-", " ")
         )
@@ -678,33 +1008,39 @@ class TaxAgent:
         seen_types: set[str] = set()
 
         payloads: list[dict] = []
-        for keyword, finding_type, title, severity in _TAX_HEURISTICS:
-            if finding_type in covered_types or finding_type in seen_types:
+        for h in _TAX_HEURISTICS:
+            if h.finding_type in covered_types or h.finding_type in seen_types:
                 continue
-            if keyword in lowered:
-                payloads.append({
-                    "finding_type": finding_type,
-                    "tax_kind": "altro",
-                    "title": title,
-                    "description": (
-                        f'The document mentions "{keyword}". The exposure was '
-                        "not extracted by the analysis and must be verified "
-                        "with a tax specialist."
-                    ),
-                    # A keyword match evidences the fact, not how well the
-                    # position could be defended, so the floor keeps the
-                    # severity assigned to the keyword and mirrors it here.
-                    "defensibility": severity,
-                    "severity": severity,
-                    "legal_basis": None,
-                    "fiscal_years": [],
-                    "assessment_periods": [],
-                    "amount_eur": None,
-                    "mitigating_factors": [],
-                    "confidence": _HEURISTIC_CONFIDENCE,
-                    "source": "heuristic",
-                })
-                seen_types.add(finding_type)
+            if h.keyword not in lowered:
+                continue
+
+            description = (
+                f'The document mentions "{h.keyword}". The exposure was '
+                "not extracted by the analysis and must be verified with a "
+                "tax specialist."
+            )
+            if h.note:
+                description = f"{description} {h.note}"
+
+            payloads.append({
+                "finding_type": h.finding_type,
+                "tax_kind": "altro",
+                "title": h.title,
+                "description": description[:400],
+                # The keyword evidences the fact, not the amount: a floor
+                # finding therefore never carries a figure, and its grade is
+                # the one assigned to the keyword.
+                "defensibility": h.defensibility,
+                "severity": _DEFENSIBILITY_TO_SEVERITY[h.defensibility],
+                "legal_basis": None,
+                "fiscal_years": [],
+                "assessment_periods": [],
+                "amount_eur": None,
+                "mitigating_factors": [],
+                "confidence": _HEURISTIC_CONFIDENCE,
+                "source": "heuristic",
+            })
+            seen_types.add(h.finding_type)
         return payloads
 
     def _persist_findings(

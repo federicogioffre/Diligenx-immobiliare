@@ -385,7 +385,7 @@ For each finding, provide:
   * tax_assessment  — avviso di accertamento, processo verbale di constatazione (PVC), avviso bonario, avviso di liquidazione, atto di contestazione, questionnaires and invitations from the Revenue Agency
   * tax_litigation  — pending or settled proceedings before the tax courts, acquiescenza, adesione, conciliazione
   * tax_debt        — cartelle di pagamento, intimazioni, rateizzazioni in corso, ravvedimento operoso, unpaid or deferred taxes and social contributions
-  * tax_credit      — tax credits claimed, offset (compensati) or transferred (ceduti): R&D, Industria/Transizione 4.0-5.0, building bonuses; also credits reversed following an assessment
+  * tax_credit      — tax credits, distinguishing those the target GENERATED from those it PURCHASED or received by assignment: R&D, Industria/Transizione 4.0-5.0, building bonuses (superbonus, sconto in fattura). Say whether each credit was offset in F24, certified, or subject to riversamento spontaneo, and whether an assessment has reversed it
   * tax_regime      — special regimes and elections: consolidato fiscale, IVA di gruppo, patent box, interpelli / rulings, and transactions whose regime matters (trasformazione, conferimento, fusione, scissione, riallineamento)
   * tax_losses      — carried-forward tax losses, ACE surpluses and interest carry-forwards whose survival after the change of control must be verified
   * transfer_pricing — cross-border intercompany transactions and their documentation; costs towards non-cooperative jurisdictions
@@ -404,6 +404,16 @@ For each finding, provide:
   * low    — a position that would be challenged only on an aggressive approach, and is defensible
 - mitigating_factors: array of short strings, from this vocabulary where applicable, otherwise free text (empty array if none): "time_barred", "deductible_in_future_periods", "reverses_in_following_period", "dta_recognisable", "return_still_amendable", "covered_by_guarantee", "covered_by_insurance", "already_paid", "instalment_plan_in_force", "settled_with_authority", "merely_formal_violation"
 - confidence: extraction confidence between 0.0 and 1.0
+
+POSITIONS THAT RECUR IN OWNER-MANAGED ITALIAN TARGETS — look for these specifically, they are the most common findings and are easy to miss:
+- inventory valued by management judgement or adjusted at year end for tax purposes (a year's closing inventory is the next year's opening one, so an adjustment reverses; a QUANTITATIVE difference also raises a VAT presumption of sale)
+- maintenance expenses deducted as ordinary when they extended an asset's useful life and should have been capitalised
+- directors' fees deducted without a shareholders' resolution authorising them, or deducted in a year other than the one of payment
+- remuneration of directors or employees disproportionate to the size of the business
+- transactions with related parties resident in Italy — rents, services, purchases from entities of the same owner. There is NO domestic transfer-pricing rule in Italy: report the position only where the document itself indicates the conditions are not at market value, and frame it as an economic-inconsistency challenge
+- a shareholder's waiver of a loan or its conversion into equity, and whether the sworn self-declaration of the receivable's tax basis is on file
+- changes of legal form, and whether reserves formed before the change are disclosed as such
+- sector-study or ISA reliability positions — these are AUDIT-RISK indicators, not exposures: never assign them an amount
 
 Document: {filename}
 Document text:

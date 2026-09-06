@@ -987,3 +987,151 @@ class TestPayloadFields:
         assert payload["amount_source"] == "not_stated"
         assert payload["fiscal_years"] == []
         assert payload["assessment_periods"] == []
+
+
+# ── Expanded heuristics and document selection ─────────────────────────────
+
+
+class _SilentLLM(LLMProvider):
+    """Produces nothing, so only the deterministic floor can fire."""
+
+    def complete(self, prompt: str, max_tokens: int = 4096) -> str:
+        return "[]"
+
+
+def _floor_findings(db: Session, deal: Deal, text: str) -> list[AgentFinding]:
+    doc = _make_doc(db, deal, raw_text=text)
+    set_llm_provider(_SilentLLM())
+    TaxAgent().run(deal.id, db, document_ids={doc.id})
+    return _agent_findings(db, deal)
+
+
+class TestHeuristicCoverage:
+    """The floor catches the acts a tax review must never miss."""
+
+    @pytest.mark.parametrize(
+        "text,finding_type",
+        [
+            ("Ricevuto avviso di liquidazione n. 123", "tax_assessment"),
+            ("Notificato atto di contestazione delle sanzioni", "tax_assessment"),
+            ("È in corso una verifica fiscale presso la sede", "tax_assessment"),
+            ("Notificata intimazione di pagamento", "tax_debt"),
+            ("Si è proceduto a iscrizione a ruolo", "tax_debt"),
+            ("Adesione alla definizione agevolata dei carichi", "tax_debt"),
+            ("È pendente un contenzioso tributario di primo grado", "tax_litigation"),
+            ("Ricorso presentato avverso l'atto impositivo", "tax_litigation"),
+            ("Effettuato riversamento spontaneo del credito R&S", "tax_credit"),
+            ("Contestati crediti inesistenti utilizzati in compensazione", "tax_credit"),
+            ("Acquistati crediti con sconto in fattura", "tax_credit"),
+            ("Perdite fiscali riportabili per Euro 300.000", "tax_losses"),
+            ("Documentazione nazionale in materia di prezzi di trasferimento", "transfer_pricing"),
+            ("Presentata dichiarazione integrativa a favore", "tax_compliance"),
+            ("Sottoscritta manleva fiscale con il cedente", "other_tax"),
+            ("Iscritto un fondo rischi fiscali in bilancio", "other_tax"),
+        ],
+    )
+    def test_keyword_produces_a_floor_finding(
+        self, db: Session, test_deal: Deal, text: str, finding_type: str
+    ):
+        findings = _floor_findings(db, test_deal, text)
+        assert [f.category for f in findings] == [finding_type]
+        assert findings[0].structured_payload_json["source"] == "heuristic"
+
+    def test_omitted_payment_is_an_actual_liability(
+        self, db: Session, test_deal: Deal
+    ):
+        """A tax shown as due and not paid leaves nothing to argue about."""
+        findings = _floor_findings(
+            db, test_deal, "Rilevato omesso versamento dell'IVA per Euro 40.000"
+        )
+        payload = findings[0].structured_payload_json
+        assert payload["defensibility"] == "actual"
+        assert findings[0].severity == Severity.high
+
+    def test_appeal_boilerplate_does_not_raise_litigation(
+        self, db: Session, test_deal: Deal
+    ):
+        """Every assessment notice names the tax court in its footer.
+
+        Treating that as evidence of a pending dispute would flag litigation
+        on every notice in the data room.
+        """
+        findings = _floor_findings(db, test_deal, _TAX_ASSESSMENT_DOC)
+        categories = {f.category for f in findings}
+        assert "tax_assessment" in categories
+        assert "tax_litigation" not in categories
+
+    def test_tax_offences_flag_the_entity_liability(
+        self, db: Session, test_deal: Deal
+    ):
+        """A tax crime travels with the company in a share deal."""
+        findings = _floor_findings(
+            db,
+            test_deal,
+            "Contestato l'utilizzo di fatture per operazioni inesistenti",
+        )
+        payload = findings[0].structured_payload_json
+        assert payload["defensibility"] == "actual"
+        assert "231/2001" in findings[0].description
+
+    def test_one_floor_per_finding_type(self, db: Session, test_deal: Deal):
+        """Several keywords of the same type still produce a single floor."""
+        findings = _floor_findings(
+            db,
+            test_deal,
+            "Notificato avviso di accertamento, poi avviso di liquidazione "
+            "e infine atto di contestazione.",
+        )
+        assert [f.category for f in findings] == ["tax_assessment"]
+
+    def test_floor_never_carries_an_amount(self, db: Session, test_deal: Deal):
+        """A keyword evidences the fact, not the exposure."""
+        findings = _floor_findings(
+            db, test_deal, "Cartella di pagamento per Euro 1.250.000"
+        )
+        assert findings[0].structured_payload_json["amount_eur"] is None
+
+
+class TestDocumentSelection:
+    """Auto-detection keeps up with filings that came and went."""
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "liquidazione_periodica_iva_Q3.pdf",
+            "esterometro_2024.pdf",
+            "estratto_di_ruolo.pdf",
+            "riversamento_spontaneo_credito_RS.pdf",
+            "certificato_carichi_pendenti.pdf",
+            "redditi_sc_2023.pdf",
+        ],
+    )
+    def test_modern_filings_are_detected(
+        self, db: Session, test_deal: Deal, filename: str
+    ):
+        doc = _make_doc(db, test_deal, filename=filename, raw_text=_NON_TAX_DOC)
+        result = TaxAgent().run(test_deal.id, db)
+        assert result["documents_analyzed"] == 1
+        assert result["findings_by_document"][0]["document_id"] == doc.id
+
+    def test_repealed_filings_still_select_the_document(
+        self, db: Session, test_deal: Deal
+    ):
+        """Old years live in data rooms; a closed period is still a finding."""
+        _make_doc(db, test_deal, filename="spesometro_2016.pdf", raw_text=_NON_TAX_DOC)
+        assert TaxAgent().run(test_deal.id, db)["documents_analyzed"] == 1
+
+    def test_data_room_numbering_is_ignored(self, db: Session, test_deal: Deal):
+        """"7.2.4 Redditi SC 2023" must read as "Redditi SC 2023"."""
+        _make_doc(
+            db, test_deal, filename="7.2.4 redditi sc 2023.pdf", raw_text=_NON_TAX_DOC
+        )
+        assert TaxAgent().run(test_deal.id, db)["documents_analyzed"] == 1
+
+    def test_unrelated_document_is_still_skipped(
+        self, db: Session, test_deal: Deal
+    ):
+        _make_doc(
+            db, test_deal, filename="service_agreement.pdf", raw_text=_NON_TAX_DOC
+        )
+        assert TaxAgent().run(test_deal.id, db)["documents_analyzed"] == 0
