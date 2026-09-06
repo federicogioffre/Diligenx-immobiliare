@@ -214,7 +214,7 @@ class TestFinancialFindingExtraction:
         FinancialAgent().run(test_deal.id, db, document_ids={doc.id})
         # FakeLLMProvider returns 3 findings; the sample statements contain
         # no heuristic keyword, so no floor row is added.
-        assert len(_agent_findings(db, test_deal)) == 3
+        assert len(_agent_findings(db, test_deal)) == 4
 
     def test_finding_agent_name(self, db: Session, test_deal: Deal):
         doc = _make_doc(db, test_deal)
@@ -233,7 +233,12 @@ class TestFinancialFindingExtraction:
         doc = _make_doc(db, test_deal)
         FinancialAgent().run(test_deal.id, db, document_ids={doc.id})
         categories = {f.category for f in _agent_findings(db, test_deal)}
-        assert categories == {"auditor_opinion", "covenant", "equity_position"}
+        assert categories == {
+            "auditor_opinion",
+            "covenant",
+            "debt_like_item",
+            "equity_position",
+        }
 
     def test_finding_severities(self, db: Session, test_deal: Deal):
         doc = _make_doc(db, test_deal)
@@ -447,7 +452,7 @@ class TestHeuristicFloor:
             raw_text=_GOING_CONCERN_DOC,
         )
         result = FinancialAgent().run(test_deal.id, db, document_ids={doc.id})
-        assert result["agent_findings_count"] == 4
+        assert result["agent_findings_count"] == 5
         assert result["heuristic_findings_count"] == 1
         categories = {f.category for f in _agent_findings(db, test_deal)}
         assert "going_concern" in categories
@@ -485,12 +490,12 @@ class TestReturnValue:
         result = FinancialAgent().run(test_deal.id, db, document_ids={doc.id})
         assert result["deal_id"] == test_deal.id
         assert result["documents_analyzed"] == 1
-        assert result["agent_findings_count"] == 3
+        assert result["agent_findings_count"] == 4
 
     def test_findings_by_severity_counts(self, db: Session, test_deal: Deal):
         doc = _make_doc(db, test_deal)
         result = FinancialAgent().run(test_deal.id, db, document_ids={doc.id})
-        assert result["findings_by_severity"] == {"low": 1, "medium": 1, "high": 1}
+        assert result["findings_by_severity"] == {"low": 1, "medium": 1, "high": 2}
 
     def test_findings_by_finding_type_counts(self, db: Session, test_deal: Deal):
         doc = _make_doc(db, test_deal)
@@ -509,7 +514,7 @@ class TestReturnValue:
         entry = result["findings_by_document"][0]
         assert entry["document_id"] == doc.id
         assert entry["filename"] == doc.filename
-        assert entry["finding_count"] == 3
+        assert entry["finding_count"] == 4
 
     def test_empty_doc_list_returns_zero_counts(self, db: Session, test_deal: Deal):
         result = FinancialAgent().run(test_deal.id, db, document_ids=set())
@@ -604,7 +609,7 @@ class TestIdempotency:
         agent = FinancialAgent()
         agent.run(test_deal.id, db, document_ids={doc.id})
         agent.run(test_deal.id, db, document_ids={doc.id})
-        assert len(_agent_findings(db, test_deal)) == 3  # not 6
+        assert len(_agent_findings(db, test_deal)) == 4  # not 8
 
     def test_previous_agent_findings_cleared(self, db: Session, test_deal: Deal):
         doc = _make_doc(db, test_deal, raw_text=_NON_FINANCIAL_DOC)
@@ -615,7 +620,7 @@ class TestIdempotency:
         FinancialAgent(provider=FakeLLMProvider()).run(
             test_deal.id, db, document_ids={doc.id}
         )
-        assert len(_agent_findings(db, test_deal)) == 3  # exactly 3, not 1 + 3
+        assert len(_agent_findings(db, test_deal)) == 4  # exactly 4, not 1 + 4
 
     def test_previous_agent_run_deleted(self, db: Session, test_deal: Deal):
         doc = _make_doc(db, test_deal)
@@ -752,7 +757,7 @@ class TestEdgeCases:
         doc = _make_doc(db, test_deal)
         result = run_financial_analysis(test_deal.id, db, document_ids={doc.id})
         assert result["deal_id"] == test_deal.id
-        assert result["agent_findings_count"] == 3
+        assert result["agent_findings_count"] == 4
 
     def test_run_financial_analysis_uses_supplied_provider(
         self, db: Session, test_deal: Deal
@@ -785,7 +790,7 @@ class TestPipelineIntegration:
         # The bilancio is auto-detected by keywords even though the fake
         # router classifies everything as "contract".
         assert stage["documents_analyzed"] == 1
-        assert stage["agent_findings_count"] == 3
+        assert stage["agent_findings_count"] == 4
 
     def test_financial_findings_reach_the_aggregator_context(
         self, db: Session, test_deal: Deal
@@ -803,3 +808,204 @@ class TestPipelineIntegration:
 
         context = agg._build_context_text([], agent_findings, doc_map)
         assert "auditor_opinion" in context
+
+
+# ── Findings that a purely accounting reading would lose ───────────────────
+
+
+class _SilentFinancialLLM(LLMProvider):
+    """Produces nothing, so only the deterministic floor can fire."""
+
+    def complete(self, prompt: str, max_tokens: int = 4096) -> str:
+        return "[]"
+
+
+def _fin_floor(db: Session, deal: Deal, text: str) -> list[AgentFinding]:
+    doc = _make_doc(db, deal, raw_text=text)
+    set_llm_provider(_SilentFinancialLLM())
+    FinancialAgent().run(deal.id, db, document_ids={doc.id})
+    return _agent_findings(db, deal)
+
+
+def _fin_single(db: Session, deal: Deal, **overrides) -> AgentFinding:
+    """Run the agent against a stub returning exactly one finding."""
+    item = {
+        "finding_type": "covenant",
+        "title": "Covenant",
+        "description": "A covenant is disclosed.",
+        "severity": "medium",
+        "confidence": 0.8,
+    }
+    item.update(overrides)
+
+    class _Stub(LLMProvider):
+        def complete(self, prompt: str, max_tokens: int = 4096) -> str:
+            if "ANALYZE FINANCIAL STATEMENTS" in prompt.upper():
+                return json.dumps([item])
+            return "[]"
+
+    doc = _make_doc(db, deal, raw_text="Bilancio d'esercizio al 31 dicembre.")
+    set_llm_provider(_Stub())
+    FinancialAgent().run(deal.id, db, document_ids={doc.id})
+    return _agent_findings(db, deal)[0]
+
+
+class TestNewFindingTypes:
+    """The shapes every real financial due-diligence report produces."""
+
+    @pytest.mark.parametrize(
+        "text,finding_type",
+        [
+            ("Debiti tributari scaduti per Euro 300.000", "debt_like_item"),
+            ("Debiti previdenziali scaduti verso l'INPS", "debt_like_item"),
+            ("Ferie non godute maturate e non liquidate", "debt_like_item"),
+            ("Cessione di crediti in factoring pro solvendo", "debt_like_item"),
+            ("Fatture da emettere per Euro 450.000", "receivables_at_risk"),
+            ("Crediti scaduti da oltre dodici mesi", "receivables_at_risk"),
+            ("Ricevuto un contributo a fondo perduto", "public_funding"),
+            ("Acceso un finanziamento agevolato regionale", "public_funding"),
+        ],
+    )
+    def test_floor_covers_the_new_types(
+        self, db: Session, test_deal: Deal, text: str, finding_type: str
+    ):
+        findings = _fin_floor(db, test_deal, text)
+        assert [f.category for f in findings] == [finding_type]
+
+    def test_new_types_survive_validation(self, db: Session, test_deal: Deal):
+        """A model emitting one of the new types must not be coerced away."""
+        for finding_type in (
+            "debt_like_item",
+            "receivables_at_risk",
+            "accounting_irregularity",
+            "concentration",
+            "public_funding",
+            "prior_deal_claim",
+            "information_limitation",
+        ):
+            finding = _fin_single(db, test_deal, finding_type=finding_type)
+            assert finding.category == finding_type
+
+    def test_unknown_type_still_coerced(self, db: Session, test_deal: Deal):
+        finding = _fin_single(db, test_deal, finding_type="vibes")
+        assert finding.category == "other_financial"
+
+
+class TestPublicDebtBridgeToCrisisCode:
+    """Overdue public debts are a crisis signal, not only a price item."""
+
+    def test_overdue_tax_debt_flags_the_reporting_duty(
+        self, db: Session, test_deal: Deal
+    ):
+        findings = _fin_floor(
+            db, test_deal, "Risultano debiti tributari scaduti per Euro 500.000"
+        )
+        assert findings[0].severity == Severity.high
+        assert "25-novies" in findings[0].description
+
+    def test_ordinary_grant_carries_no_such_note(
+        self, db: Session, test_deal: Deal
+    ):
+        findings = _fin_floor(db, test_deal, "Ricevuti contributi pubblici")
+        assert "25-novies" not in findings[0].description
+
+
+class TestLegallyRelevantHeuristics:
+    """Facts a legal reader must catch even when the accounts pass over them."""
+
+    def test_negative_equity_is_raised_as_a_legal_event(
+        self, db: Session, test_deal: Deal
+    ):
+        findings = _fin_floor(
+            db, test_deal, "La società presenta un patrimonio netto negativo"
+        )
+        assert findings[0].category == "going_concern"
+        assert findings[0].severity == Severity.high
+        assert "2484" in findings[0].description
+
+    def test_deferred_pandemic_losses_are_raised(
+        self, db: Session, test_deal: Deal
+    ):
+        findings = _fin_floor(
+            db, test_deal, "Le perdite sospese sono rinviate a nuovo"
+        )
+        assert findings[0].category == "capital_loss"
+        assert findings[0].severity == Severity.high
+
+    def test_change_of_control_clause_is_high(self, db: Session, test_deal: Deal):
+        findings = _fin_floor(
+            db,
+            test_deal,
+            "Il contratto di finanziamento prevede una clausola di change of "
+            "control",
+        )
+        assert findings[0].category == "covenant"
+        assert findings[0].severity == Severity.high
+
+    def test_unaudited_is_only_informational(self, db: Session, test_deal: Deal):
+        """Below the statutory thresholds no audit was required."""
+        findings = _fin_floor(
+            db, test_deal, "Il bilancio non è sottoposto a revisione legale"
+        )
+        assert findings[0].category == "auditor_opinion"
+        assert findings[0].severity == Severity.low
+        assert "2477" in findings[0].description
+
+    def test_dissolution_cause_matches_only_with_the_article_prefix(
+        self, db: Session, test_deal: Deal
+    ):
+        """A bare number in the accounts must not read as an article."""
+        findings = _fin_floor(
+            db, test_deal, "Ricavi delle vendite per Euro 2484 migliaia"
+        )
+        assert findings == []
+
+
+class TestFinancialPayload:
+    """Amounts, counterparties and the two covenant booleans."""
+
+    def test_amount_stated_by_document_is_kept(self, db: Session, test_deal: Deal):
+        finding = _fin_single(db, test_deal, amount_eur=120000)
+        payload = finding.structured_payload_json
+        assert payload["amount_eur"] == 120000
+        assert payload["amount_source"] == "document"
+
+    def test_missing_amount_is_marked_not_stated(
+        self, db: Session, test_deal: Deal
+    ):
+        finding = _fin_single(db, test_deal)
+        payload = finding.structured_payload_json
+        assert payload["amount_eur"] is None
+        assert payload["amount_source"] == "not_stated"
+
+    @pytest.mark.parametrize("bad", ["circa 120k", -1, True, {}])
+    def test_unusable_amount_becomes_no_amount(
+        self, db: Session, test_deal: Deal, bad
+    ):
+        finding = _fin_single(db, test_deal, amount_eur=bad)
+        assert finding.structured_payload_json["amount_eur"] is None
+
+    def test_counterparty_is_kept(self, db: Session, test_deal: Deal):
+        finding = _fin_single(db, test_deal, counterparty="Banca Alfa")
+        assert finding.structured_payload_json["counterparty"] == "Banca Alfa"
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [(True, True), (False, False), ("yes", True), ("no", False), ("", None), (None, None)],
+    )
+    def test_covenant_flags_are_tri_state(
+        self, db: Session, test_deal: Deal, raw, expected
+    ):
+        """"Not stated" must stay distinct from "stated as false"."""
+        finding = _fin_single(db, test_deal, change_of_control_clause=raw)
+        payload = finding.structured_payload_json
+        assert payload["change_of_control_clause"] is expected
+
+    def test_floor_findings_carry_no_figures(self, db: Session, test_deal: Deal):
+        findings = _fin_floor(
+            db, test_deal, "Fideiussione rilasciata per Euro 1.000.000"
+        )
+        payload = findings[0].structured_payload_json
+        assert payload["amount_eur"] is None
+        assert payload["amount_source"] == "not_stated"
+        assert payload["change_of_control_clause"] is None

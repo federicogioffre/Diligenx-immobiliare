@@ -432,34 +432,50 @@ ANALYZE FINANCIAL STATEMENTS and their annexes in the document below, and extrac
 CRITICAL RULES:
 1. Report ONLY facts EXPLICITLY present in the document text — quote the figure, article or paragraph that evidences each finding.
 2. This is a LEGAL review of financial documents, not an accounting analysis. Do NOT recompute ratios, do NOT assess whether the business is a good investment, do NOT comment on valuation.
-3. Ordinary, unqualified financial statements are NOT a finding. Report deviations and legally relevant facts: auditor qualifications, going-concern doubts, statutory capital losses, covenant issues, related-party exposures, guarantees, subsequent events.
-4. If the document contains no financially relevant content, return an empty array.
+3. **Never estimate a figure.** Report an amount only where the document states it; otherwise set it to null. An omitted figure is correct, an invented one is not.
+4. Ordinary, unqualified financial statements are NOT a finding. Report deviations and legally relevant facts.
+5. If the document contains no financially relevant content, return an empty array.
 
 For each finding, provide:
-- finding_type: one of [auditor_opinion, going_concern, capital_loss, covenant, related_party, guarantee, subsequent_event, equity_position, other_financial]
-  * auditor_opinion  — qualified, adverse or disclaimed opinion by the auditor or the board of statutory auditors; emphasis-of-matter paragraphs; reservations in the relazione del collegio sindacale
-  * going_concern    — doubts on the continuità aziendale, deficit patrimoniale, recurring losses, dependence on shareholder support letters
-  * capital_loss     — losses reducing capital under artt. 2446 / 2447 c.c. (S.p.A.) or 2482-bis / 2482-ter c.c. (S.r.l.), and the resolutions taken or postponed (rinvio a nuovo esercizio)
-  * covenant         — financial covenants, negative pledges, cross-default and acceleration clauses disclosed in the notes, including waivers obtained or breaches recorded
-  * related_party    — transactions with shareholders, directors or group companies: shareholder loans, postergazione ex art. 2467 c.c., cash-pooling, intercompany receivables
-  * guarantee        — sureties (fideiussioni), comfort letters, pledges and liens granted by or in favour of the target
-  * subsequent_event — events after the balance-sheet date disclosed in the notes or the relazione sulla gestione that affect the target's position
-  * equity_position  — share capital, reserves, unrealised or restricted reserves, capital contributions (versamenti in conto capitale) whose repayment terms matter to the buyer
+- finding_type: one of [auditor_opinion, going_concern, capital_loss, covenant, related_party, guarantee, subsequent_event, equity_position, debt_like_item, receivables_at_risk, accounting_irregularity, concentration, public_funding, prior_deal_claim, information_limitation, other_financial]
+  * auditor_opinion  — qualified, adverse or disclaimed opinion by the auditor or the board of statutory auditors; emphasis-of-matter paragraphs; also the ABSENCE of an audit where one was required (check the thresholds for appointing a control body under art. 2477 c.c. before treating "unaudited" as a finding)
+  * going_concern    — doubts on the continuità aziendale, deficit patrimoniale, negative net equity, recurring losses, dependence on shareholder support letters, composizione negoziata or insolvency procedures
+  * capital_loss     — losses reducing capital under artt. 2446 / 2447 c.c. (S.p.A.) or 2482-bis / 2482-ter c.c. (S.r.l.), the dissolution cause under art. 2484 c.c., losses deferred under the pandemic regime, and the resolutions taken or postponed
+  * covenant         — financial covenants, negative pledges, cross-default and change-of-control clauses disclosed in the notes or in the financing schedules, including waivers obtained and breaches recorded
+  * related_party    — transactions with shareholders, directors or group companies: shareholder loans, postergazione ex art. 2467 c.c., cash pooling, intercompany balances, rents paid to entities of the same owner
+  * guarantee        — sureties (fideiussioni), comfort letters, counter-guarantees, surety insurance policies, pledges and liens granted BY the target or IN ITS INTEREST by its shareholders. Record who granted it, in whose favour, for what amount and purpose, and whether anyone is obliged to replace or release it at closing
+  * subsequent_event — events after the balance-sheet date disclosed in the notes or the management report
+  * equity_position  — share capital, reserves, restricted reserves, capital contributions, and receivables from shareholders for contributions still due
+  * debt_like_item   — liabilities that behave as financing and that a buyer will want in the net debt: overdue tax and social-security liabilities and the penalties and interest on them; trade payables overdue beyond the agreed terms; accrued financial charges; leasing; factoring with recourse; cash that is not really available (deposits pledged or frozen by disputes, sums to be returned to customers); accrued untaken holiday; agents' leaving indemnity; transaction costs and bonuses payable at closing
+  * receivables_at_risk — receivables long overdue or in dispute, revenue accrued but never invoiced ("fatture da emettere"), and the absence of a bad-debt provision where one is plainly needed
+  * accounting_irregularity — facts that undermine the reliability of the accounts: revenue recognised on invoices that will not be issued, accruals never reversed, regular manual entries, unreconciled differences, books still open, systems not integrated, interim figures prepared for the transaction and not approved by the board
+  * concentration    — dependence on a few customers or suppliers, or on a contract not yet signed
+  * public_funding   — grants and subsidised financing, with the conditions attached and any clawback the transaction could trigger
+  * prior_deal_claim — warranty or indemnity positions under the target's OWN earlier acquisitions: claims running against former shareholders, and guarantees they gave that cover a current exposure. Note that the company usually remains primarily liable and the indemnity is only a recourse
+  * information_limitation — the document itself records that something was not provided, not reconciled, not discussed with management, still in draft, or not approved. These are findings, not boilerplate
   * other_financial  — any other legally relevant financial fact that does not fit the above
 - title: concise label (max 100 characters)
 - description: the finding with the document evidence, quoting figures verbatim where possible, preserving Italian formatting (max 400 characters)
+- amount_eur: the amount in euro if the DOCUMENT states it, otherwise null. Never a computed or estimated figure.
+- counterparty: the bank, guarantor, customer, supplier or related party the finding concerns, if the document names one; otherwise null.
+- change_of_control_clause: for a covenant finding, true or false if the document says whether the agreement has one; otherwise null.
+- financial_covenant: for a covenant finding, true or false if the document says whether financial covenants apply; otherwise null.
 - severity:
-  * low    — informational: standard disclosures, closed matters, ordinary reserves
-  * medium — needs verification or has a remediable exposure: covenants the Transaction could trigger, related-party balances to be settled, restricted reserves, guarantees of limited amount
-  * high   — material exposure: qualified or adverse auditor opinion, going-concern doubts, losses triggering artt. 2446/2447 or 2482-bis/ter c.c., covenant breaches, guarantees of material amount
+  * low    — informational: standard disclosures, closed matters, ordinary reserves, an unaudited micro-company below the statutory thresholds
+  * medium — needs verification or has a remediable exposure: covenants the Transaction could trigger, related-party balances to be settled, restricted reserves, guarantees of limited amount, receivables at risk, revenue-recognition anomalies, customer concentration, grants with conditions
+  * high   — material exposure: qualified or adverse auditor opinion, going-concern doubts, negative net equity, losses triggering artt. 2446/2447 or 2482-bis/ter c.c., covenant breaches, change-of-control clauses in financing agreements, overdue tax or social-security liabilities, guarantees of material amount
 - confidence: extraction confidence between 0.0 and 1.0
+
+TWO RULES THAT ARE EASY TO GET WRONG:
+- Employees' leaving entitlement (TFR) is NOT uniformly debt-like. Since the 2007 reform it depends on the entity: where the company had more than 50 employees in 2006 the balance runs off and is debt-like in nature; below that threshold it keeps accruing internally and is a rolling, non-cash liability whose treatment is debatable. Within a group the answer can differ company by company, so state which case the document supports rather than assuming.
+- Negative net equity is a legal event before it is an accounting one. Where the document shows equity below zero or below the legal minimum, raise it even if the document itself passes over it without comment.
 
 Document: {filename}
 Document text:
 {text}
 
 Return ONLY a JSON array (no markdown fences, no explanation):
-[{{"finding_type": "...", "title": "...", "description": "...", "severity": "...", "confidence": 0.0}}, ...]
+[{{"finding_type": "...", "title": "...", "description": "...", "amount_eur": null, "counterparty": null, "change_of_control_clause": null, "financial_covenant": null, "severity": "...", "confidence": 0.0}}, ...]
 
 If no financial findings are present, return an empty array: []
 """

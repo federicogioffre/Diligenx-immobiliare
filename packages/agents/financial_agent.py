@@ -30,9 +30,29 @@ vice versa.
 Finding types
 -------------
 ``finding_type`` is stored in ``AgentFinding.category`` and must be one of
-``_VALID_FINDING_TYPES`` (auditor_opinion, going_concern, capital_loss,
-covenant, related_party, guarantee, subsequent_event, equity_position,
-other_financial).
+``_VALID_FINDING_TYPES``. Alongside the statutory shapes (auditor_opinion,
+going_concern, capital_loss, covenant, related_party, guarantee,
+subsequent_event, equity_position) it covers the shapes every real
+financial due-diligence report produces and that a purely accounting
+reading of the statements would lose: ``debt_like_item`` (liabilities that
+behave as financing — overdue tax and social-security debts, overdue
+payables, leasing, factoring with recourse, cash that is not really
+available, untaken holiday), ``receivables_at_risk``,
+``accounting_irregularity``, ``concentration``, ``public_funding``,
+``prior_deal_claim`` (warranty positions under the target's own earlier
+acquisitions) and ``information_limitation`` — what the document itself
+records as not provided, not reconciled or still in draft, which in the
+reference reports is roughly a fifth of their content.
+
+Amounts
+-------
+``amount_eur`` is populated only where the document states a figure, and
+``amount_source`` records which case applies. The agent never estimates:
+pricing an item belongs to the client's advisers. Covenant findings also
+carry ``change_of_control_clause`` and ``financial_covenant`` as
+tri-state flags, because those two booleans are the whole legal
+deliverable of a financing review and "not stated" must stay distinct
+from "stated as false".
 
 Deterministic heuristics
 ------------------------
@@ -40,7 +60,13 @@ Deterministic heuristics
 Italian red flags: when a heuristic keyword appears in the document text
 and the LLM produced no finding of that type, a floor finding is written
 (``structured_payload_json.source = "heuristic"``), so a going-concern
-paragraph or an art. 2446 c.c. loss can never be silently dropped.
+paragraph or an art. 2446 c.c. loss can never be silently dropped. Each
+entry may carry a note appended to the finding, used where a keyword has
+a legal consequence the accounts do not state: negative equity points at
+the dissolution cause, overdue tax and social-security debts oblige the
+qualified public creditors to report the company under the business
+crisis code, and "unaudited" is only a finding where an audit was
+required in the first place.
 
 Idempotency
 -----------
@@ -49,6 +75,7 @@ and ``AgentFinding`` rows before writing fresh results.
 """
 import logging
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 from sqlalchemy.orm import Session
 
@@ -74,6 +101,15 @@ _VALID_FINDING_TYPES = frozenset({
     "guarantee",
     "subsequent_event",
     "equity_position",
+    # Shapes that recur in every real financial due-diligence report and
+    # that a purely accounting reading of the statements would lose.
+    "debt_like_item",
+    "receivables_at_risk",
+    "accounting_irregularity",
+    "concentration",
+    "public_funding",
+    "prior_deal_claim",
+    "information_limitation",
     "other_financial",
 })
 
@@ -112,118 +148,409 @@ _FINANCIAL_DOC_KEYWORDS = [
     "going concern",
 ]
 
-# Deterministic red-flag floor: (keyword, finding_type, title, severity).
-# Matched case-insensitively against the FULL document text. A floor
-# finding is written only when the LLM produced no finding of the same
-# type for that document, and at most one floor per finding_type.
-_FINANCIAL_HEURISTICS: list[tuple[str, str, str, str]] = [
-    (
+class FinancialHeuristic(NamedTuple):
+    """One deterministic floor: a keyword that must never be dropped."""
+
+    keyword: str
+    finding_type: str
+    title: str
+    severity: str
+    note: str | None = None
+
+
+# Overdue tax and social-security debts are not only a price item: past
+# set thresholds they oblige the revenue agency, the collection agent and
+# the social-security institution to report the debtor under the business
+# crisis code. Carried on the keywords that surface them.
+_UNAUDITED_NOTE = (
+    "Only a finding where an audit was required: check the thresholds for "
+    "appointing a control body under art. 2477 c.c."
+)
+
+_PUBLIC_CREDITOR_NOTE = (
+    "Overdue tax and social-security debts above the statutory thresholds "
+    "oblige the qualified public creditors to report the company under "
+    "art. 25-novies of the business crisis code; verify whether any "
+    "report has been served."
+)
+
+# Deterministic red-flag floor, matched case-insensitively against the FULL
+# document text. A floor finding is written only when the LLM produced no
+# finding of the same type for that document, and at most one per type.
+#
+# Article numbers are matched with their "art." prefix or "c.c." suffix: a
+# bare "2446" would collide with amounts printed in the accounts.
+_FINANCIAL_HEURISTICS: list[FinancialHeuristic] = [
+    # ── Going concern and the crisis regime ──────────────────────────────
+    FinancialHeuristic(
         "continuità aziendale",
         "going_concern",
         "Going concern referenced in the document",
         "high",
     ),
-    (
+    FinancialHeuristic(
         "going concern",
         "going_concern",
         "Going concern referenced in the document",
         "high",
     ),
-    (
+    FinancialHeuristic(
+        "patrimonio netto negativo",
+        "going_concern",
+        "Negative net equity referenced in the document",
+        "high",
+        note=(
+            "Negative equity is a legal event before it is an accounting "
+            "one: check artt. 2446-2447 or 2482-bis-2482-ter c.c. and the "
+            "dissolution cause under art. 2484 c.c."
+        ),
+    ),
+    FinancialHeuristic(
+        "deficit patrimoniale",
+        "going_concern",
+        "Equity deficit referenced in the document",
+        "high",
+    ),
+    FinancialHeuristic(
+        "composizione negoziata",
+        "going_concern",
+        "Negotiated crisis composition referenced in the document",
+        "high",
+    ),
+    FinancialHeuristic(
+        "concordato preventivo",
+        "going_concern",
+        "Composition with creditors referenced in the document",
+        "high",
+    ),
+    FinancialHeuristic(
+        "material uncertainty",
+        "going_concern",
+        "Material uncertainty on going concern referenced",
+        "high",
+    ),
+    # ── Auditor's opinion ────────────────────────────────────────────────
+    FinancialHeuristic(
         "giudizio con rilievi",
         "auditor_opinion",
         "Qualified audit opinion referenced in the document",
         "high",
     ),
-    (
+    FinancialHeuristic(
         "giudizio negativo",
         "auditor_opinion",
         "Adverse audit opinion referenced in the document",
         "high",
     ),
-    (
+    FinancialHeuristic(
         "impossibilità di esprimere un giudizio",
         "auditor_opinion",
         "Disclaimer of audit opinion referenced in the document",
         "high",
     ),
-    (
+    FinancialHeuristic(
         "richiamo di informativa",
         "auditor_opinion",
         "Emphasis-of-matter paragraph referenced in the document",
         "medium",
     ),
-    # Article numbers are matched with their "art." prefix or "c.c." suffix:
-    # a bare "2446" would collide with amounts printed in the statements.
-    (
+    # Wording varies across sets of accounts ("non sottoposto", "non è
+    # sottoposto", "non assoggettato"), so all three forms are matched.
+    FinancialHeuristic(
+        "non sottoposto a revisione",
+        "auditor_opinion",
+        "Financial statements not audited",
+        "low",
+        note=_UNAUDITED_NOTE,
+    ),
+    FinancialHeuristic(
+        "non è sottoposto a revisione",
+        "auditor_opinion",
+        "Financial statements not audited",
+        "low",
+        note=_UNAUDITED_NOTE,
+    ),
+    FinancialHeuristic(
+        "non assoggettato a revisione",
+        "auditor_opinion",
+        "Financial statements not audited",
+        "low",
+        note=_UNAUDITED_NOTE,
+    ),
+    FinancialHeuristic(
+        "unaudited",
+        "auditor_opinion",
+        "Financial statements not audited",
+        "low",
+    ),
+    # ── Capital losses ───────────────────────────────────────────────────
+    FinancialHeuristic(
         "art. 2446",
         "capital_loss",
         "Loss reducing capital (art. 2446 c.c.) referenced in the document",
         "high",
     ),
-    (
+    FinancialHeuristic(
         "2446 c.c.",
         "capital_loss",
         "Loss reducing capital (art. 2446 c.c.) referenced in the document",
         "high",
     ),
-    (
+    FinancialHeuristic(
         "art. 2447",
         "capital_loss",
         "Loss below legal minimum (art. 2447 c.c.) referenced in the document",
         "high",
     ),
-    (
+    FinancialHeuristic(
         "2447 c.c.",
         "capital_loss",
         "Loss below legal minimum (art. 2447 c.c.) referenced in the document",
         "high",
     ),
-    (
+    FinancialHeuristic(
         "2482-bis",
         "capital_loss",
         "Loss reducing capital (art. 2482-bis c.c.) referenced in the document",
         "high",
     ),
-    (
+    FinancialHeuristic(
         "2482-ter",
         "capital_loss",
         "Loss below legal minimum (art. 2482-ter c.c.) referenced in the document",
         "high",
     ),
-    (
+    FinancialHeuristic(
+        "art. 2484",
+        "capital_loss",
+        "Dissolution cause (art. 2484 c.c.) referenced in the document",
+        "high",
+    ),
+    FinancialHeuristic(
+        "perdite sospese",
+        "capital_loss",
+        "Losses deferred under the emergency regime referenced",
+        "high",
+        note=(
+            "Losses postponed under the pandemic regime fall due at the "
+            "fifth following financial year; verify the deadline and the "
+            "note disclosure."
+        ),
+    ),
+    # ── Financing ────────────────────────────────────────────────────────
+    FinancialHeuristic(
         "covenant",
         "covenant",
         "Financial covenant referenced in the document",
         "medium",
     ),
-    (
+    FinancialHeuristic(
+        "cross default",
+        "covenant",
+        "Cross-default clause referenced in the document",
+        "medium",
+    ),
+    FinancialHeuristic(
+        "negative pledge",
+        "covenant",
+        "Negative pledge referenced in the document",
+        "medium",
+    ),
+    FinancialHeuristic(
+        "change of control",
+        "covenant",
+        "Change-of-control clause in a financing agreement",
+        "high",
+        note=(
+            "A change-of-control clause in a financing agreement can be "
+            "triggered by the transaction itself; check whether consent or "
+            "a waiver is required before closing."
+        ),
+    ),
+    # ── Guarantees ───────────────────────────────────────────────────────
+    FinancialHeuristic(
         "fideiussione",
         "guarantee",
         "Surety (fideiussione) referenced in the document",
         "medium",
     ),
-    (
+    FinancialHeuristic(
+        "lettera di patronage",
+        "guarantee",
+        "Comfort letter referenced in the document",
+        "medium",
+    ),
+    FinancialHeuristic(
+        "controgaranzia",
+        "guarantee",
+        "Counter-guarantee referenced in the document",
+        "medium",
+    ),
+    FinancialHeuristic(
+        "polizza fideiussoria",
+        "guarantee",
+        "Surety insurance policy referenced in the document",
+        "medium",
+    ),
+    # ── Related parties ──────────────────────────────────────────────────
+    FinancialHeuristic(
         "art. 2467",
         "related_party",
         "Shareholder-loan subordination (art. 2467 c.c.) referenced in the document",
         "medium",
     ),
-    (
+    FinancialHeuristic(
         "2467 c.c.",
         "related_party",
         "Shareholder-loan subordination (art. 2467 c.c.) referenced in the document",
         "medium",
     ),
-    (
+    FinancialHeuristic(
         "postergazione",
         "related_party",
         "Shareholder-loan subordination (postergazione) referenced in the document",
         "medium",
     ),
+    FinancialHeuristic(
+        "finanziamento soci",
+        "related_party",
+        "Shareholder loan referenced in the document",
+        "medium",
+    ),
+    FinancialHeuristic(
+        "cash pooling",
+        "related_party",
+        "Cash pooling arrangement referenced in the document",
+        "medium",
+    ),
+    # ── Debt-like items ──────────────────────────────────────────────────
+    # Every financial due-diligence report in the reference set converges
+    # on the same list, twelve years apart.
+    FinancialHeuristic(
+        "debiti tributari scaduti",
+        "debt_like_item",
+        "Overdue tax liabilities treated as debt-like",
+        "high",
+        note=_PUBLIC_CREDITOR_NOTE,
+    ),
+    FinancialHeuristic(
+        "debiti previdenziali scaduti",
+        "debt_like_item",
+        "Overdue social-security liabilities treated as debt-like",
+        "high",
+        note=_PUBLIC_CREDITOR_NOTE,
+    ),
+    FinancialHeuristic(
+        "debiti contributivi scaduti",
+        "debt_like_item",
+        "Overdue social-security liabilities treated as debt-like",
+        "high",
+        note=_PUBLIC_CREDITOR_NOTE,
+    ),
+    FinancialHeuristic(
+        "ferie non godute",
+        "debt_like_item",
+        "Accrued untaken holiday treated as debt-like",
+        "medium",
+        note=(
+            "Holiday accrued beyond the statutory carry-over period must "
+            "be paid out."
+        ),
+    ),
+    FinancialHeuristic(
+        "indennità di fine rapporto agenti",
+        "debt_like_item",
+        "Agents' leaving indemnity treated as debt-like",
+        "medium",
+    ),
+    FinancialHeuristic(
+        "factoring pro solvendo",
+        "debt_like_item",
+        "Receivables factored with recourse treated as debt-like",
+        "medium",
+    ),
+    # ── Receivables ──────────────────────────────────────────────────────
+    FinancialHeuristic(
+        "fatture da emettere",
+        "receivables_at_risk",
+        "Accrued revenue not yet invoiced",
+        "medium",
+        note=(
+            "Check how long the accrual has been carried and whether the "
+            "invoices will in fact be issued."
+        ),
+    ),
+    FinancialHeuristic(
+        "crediti scaduti",
+        "receivables_at_risk",
+        "Overdue trade receivables referenced in the document",
+        "medium",
+    ),
+    FinancialHeuristic(
+        "fondo svalutazione crediti",
+        "receivables_at_risk",
+        "Bad-debt provision referenced in the document",
+        "low",
+        note="Verify whether the provision covers the overdue positions.",
+    ),
+    # ── Grants ───────────────────────────────────────────────────────────
+    FinancialHeuristic(
+        "contributo a fondo perduto",
+        "public_funding",
+        "Public grant referenced in the document",
+        "medium",
+        note=(
+            "Verify the conditions attached and any clawback triggered by "
+            "the transaction."
+        ),
+    ),
+    FinancialHeuristic(
+        "contributi pubblici",
+        "public_funding",
+        "Public grants referenced in the document",
+        "medium",
+    ),
+    FinancialHeuristic(
+        "finanziamento agevolato",
+        "public_funding",
+        "Subsidised financing referenced in the document",
+        "medium",
+    ),
 ]
 
 _HEURISTIC_CONFIDENCE = 0.60
+
+
+# ── Payload normalisation ────────────────────────────────────────────────────
+
+
+def _normalize_amount(item: dict) -> float | None:
+    """Return the euro amount the document states, or None.
+
+    The agent never estimates a figure, so an unusable value becomes no
+    value rather than a coerced one.
+    """
+    raw = item.get("amount_eur")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        amount = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return amount if amount >= 0 else None
+
+
+def _normalize_flag(raw: object) -> bool | None:
+    """Return a tri-state flag: True, False, or None for "not stated"."""
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in {"true", "yes", "y", "si", "sì"}:
+            return True
+        if lowered in {"false", "no", "n"}:
+            return False
+    return None
 
 
 # ── Agent ────────────────────────────────────────────────────────────────────
@@ -521,17 +848,34 @@ class FinancialAgent:
 
         payloads: list[dict] = []
         for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+
             finding_type = item.get("finding_type", "other_financial")
             if finding_type not in _VALID_FINDING_TYPES:
                 finding_type = "other_financial"
 
             severity_str = _normalize_severity(str(item.get("severity", "")).lower())
 
+            counterparty = item.get("counterparty")
+            counterparty = str(counterparty)[:200] if counterparty else None
+
             payloads.append({
                 "finding_type": finding_type,
                 "title": str(item.get("title", ""))[:100],
                 "description": str(item.get("description", ""))[:400],
                 "severity": severity_str,
+                "amount_eur": _normalize_amount(item),
+                "counterparty": counterparty,
+                # Only meaningful on a covenant finding; the two booleans
+                # are the whole legal deliverable of a financing review, so
+                # they travel as fields rather than buried in prose.
+                "change_of_control_clause": _normalize_flag(
+                    item.get("change_of_control_clause")
+                ),
+                "financial_covenant": _normalize_flag(
+                    item.get("financial_covenant")
+                ),
                 "confidence": item.get("confidence"),
                 "source": "llm",
             })
@@ -551,23 +895,34 @@ class FinancialAgent:
         seen_types: set[str] = set()
 
         payloads: list[dict] = []
-        for keyword, finding_type, title, severity in _FINANCIAL_HEURISTICS:
-            if finding_type in covered_types or finding_type in seen_types:
+        for h in _FINANCIAL_HEURISTICS:
+            if h.finding_type in covered_types or h.finding_type in seen_types:
                 continue
-            if keyword in lowered:
-                payloads.append({
-                    "finding_type": finding_type,
-                    "title": title,
-                    "description": (
-                        f'The document mentions "{keyword}". The matter was '
-                        "not extracted by the analysis and must be verified "
-                        "against the financial statements and their annexes."
-                    ),
-                    "severity": severity,
-                    "confidence": _HEURISTIC_CONFIDENCE,
-                    "source": "heuristic",
-                })
-                seen_types.add(finding_type)
+            if h.keyword not in lowered:
+                continue
+
+            description = (
+                f'The document mentions "{h.keyword}". The matter was not '
+                "extracted by the analysis and must be verified against the "
+                "underlying documents."
+            )
+            if h.note:
+                description = f"{description} {h.note}"
+
+            payloads.append({
+                "finding_type": h.finding_type,
+                "title": h.title,
+                "description": description[:400],
+                "severity": h.severity,
+                # A keyword evidences the fact, not the figure.
+                "amount_eur": None,
+                "counterparty": None,
+                "change_of_control_clause": None,
+                "financial_covenant": None,
+                "confidence": _HEURISTIC_CONFIDENCE,
+                "source": "heuristic",
+            })
+            seen_types.add(h.finding_type)
         return payloads
 
     def _persist_findings(
@@ -593,6 +948,16 @@ class FinancialAgent:
                     "document_id": doc.id,
                     "filename": doc.filename,
                     "source": p["source"],
+                    "amount_eur": p.get("amount_eur"),
+                    # Distinguishes "the document states no figure" from
+                    # "nobody looked": pricing an item is the client's
+                    # advisers' job, never the pipeline's.
+                    "amount_source": (
+                        "document" if p.get("amount_eur") is not None else "not_stated"
+                    ),
+                    "counterparty": p.get("counterparty"),
+                    "change_of_control_clause": p.get("change_of_control_clause"),
+                    "financial_covenant": p.get("financial_covenant"),
                 },
             )
             db.add(finding)

@@ -298,37 +298,65 @@ class FakeLLMProvider(LLMProvider):
             return json.dumps([
                 {
                     "finding_type": "auditor_opinion",
-                    "title": "Qualified opinion on the FY2024 statements",
+                    "title": "Qualified opinion on the FY2023 financial statements",
                     "description": (
-                        "The auditor issued a qualified opinion (giudizio con "
-                        "rilievi) on the receivables' recoverability for "
-                        "Euro 320.000."
+                        "The auditors issued a qualified opinion on the FY2023 "
+                        "financial statements over the recoverability of "
+                        "receivables from related parties."
                     ),
+                    "amount_eur": None,
+                    "counterparty": None,
+                    "change_of_control_clause": None,
+                    "financial_covenant": None,
                     "severity": "high",
                     "confidence": 0.88,
                 },
                 {
                     "finding_type": "covenant",
-                    "title": "Financial covenant on the term loan",
+                    "title": "Financial covenants on the term loan",
                     "description": (
-                        "The notes disclose a net-debt-to-EBITDA covenant of "
-                        "3.5x on the term loan, tested semi-annually."
+                        "The notes disclose a net debt / EBITDA covenant on the "
+                        "term loan, tested semi-annually, with a change-of-control "
+                        "event of default."
                     ),
+                    "amount_eur": None,
+                    "counterparty": "Bank",
+                    "change_of_control_clause": True,
+                    "financial_covenant": True,
                     "severity": "medium",
                     "confidence": 0.84,
+                },
+                {
+                    "finding_type": "debt_like_item",
+                    "title": "Overdue VAT payables",
+                    "description": (
+                        "VAT payables of Euro 120.000 relating to prior periods "
+                        "were still unpaid at the balance-sheet date."
+                    ),
+                    "amount_eur": 120000,
+                    "counterparty": None,
+                    "change_of_control_clause": None,
+                    "financial_covenant": None,
+                    "severity": "high",
+                    "confidence": 0.86,
                 },
                 {
                     "finding_type": "equity_position",
                     "title": "Capital contribution reserve",
                     "description": (
-                        "A versamento in conto capitale of Euro 150.000 is "
-                        "recorded among the reserves; no repayment terms are "
-                        "stated."
+                        "A versamento in conto capitale of Euro 250.000 is "
+                        "recorded among the reserves; repayment terms are not "
+                        "specified in the notes."
                     ),
+                    "amount_eur": 250000,
+                    "counterparty": None,
+                    "change_of_control_clause": None,
+                    "financial_covenant": None,
                     "severity": "low",
                     "confidence": 0.79,
                 },
             ])
+
         if "ANALYZE TAX MATTERS" in p:
             return json.dumps([
                 {
