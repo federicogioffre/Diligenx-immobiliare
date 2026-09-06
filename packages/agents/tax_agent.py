@@ -27,7 +27,31 @@ Finding types
 ``finding_type`` is stored in ``AgentFinding.category`` and must be one of
 ``_VALID_FINDING_TYPES`` (tax_assessment, tax_litigation, tax_debt,
 tax_credit, tax_regime, tax_losses, transfer_pricing, tax_compliance,
-other_tax).
+other_tax). Which tax the finding concerns travels separately in
+``tax_kind``, so that "an assessment" and "a VAT assessment" do not need
+two taxonomies.
+
+Defensibility, not probability
+------------------------------
+Each finding carries a ``defensibility`` grade — ``actual``, ``high``,
+``medium`` or ``low`` — answering *how would this position hold up if the
+authority challenged it*. That is the scale real tax advisers use, and it
+is deliberately **not** a probability of being audited: neither they nor
+this pipeline can estimate that, so nothing in the output implies it.
+``actual`` covers omissions with no possible defence and always maps to
+severity ``high``; ``severity`` is derived from the grade in code rather
+than asked of the model.
+
+Amounts and the law
+-------------------
+The agent never computes taxes, penalties or interest: rates have been
+amended repeatedly and depend on the fiscal year and on the procedure
+followed. ``amount_eur`` is populated only when the document itself states
+a figure, and ``amount_source`` records which case applies. Statutory
+references are resolved for the fiscal years of the finding through
+:mod:`packages.agents.tax_rules_registry`, which also computes when the
+authority's power to assess each year expires — a mitigation the model has
+no way of working out on its own.
 
 Deterministic heuristics
 ------------------------
@@ -43,7 +67,7 @@ Re-running for the same deal deletes this agent's previous ``AgentRun``
 and ``AgentFinding`` rows before writing fresh results.
 """
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -53,6 +77,7 @@ from packages.agents.deal_analysis_agent import (
     _safe_json,
     _normalize_severity,
 )
+from packages.agents import tax_rules_registry as _rules
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +96,54 @@ _VALID_FINDING_TYPES = frozenset({
     "tax_compliance",
     "other_tax",
 })
+
+# Which tax the finding concerns. Stored in the payload, not in the
+# finding_type, so that "an assessment" and "a VAT assessment" do not need
+# two taxonomies.
+_VALID_TAX_KINDS = frozenset({
+    "ires",
+    "irap",
+    "iva",
+    "ritenute",
+    "registro",
+    "imu",
+    "dogane_accise",
+    "contributi",
+    "altro",
+})
+
+# How the position would hold up *if challenged* — the scale real tax
+# advisers use. It is not a probability of being audited: neither a tax
+# report nor this pipeline can estimate that, so nothing here implies it.
+# ``actual`` sits above the three graded tiers: an omission with no
+# possible defence is a different kind of exposure, not a worse one.
+_VALID_DEFENSIBILITY = ("actual", "high", "medium", "low")
+
+_DEFENSIBILITY_TO_SEVERITY = {
+    "actual": "high",   # no defence available — never downgraded
+    "high": "high",
+    "medium": "medium",
+    "low": "low",
+}
+
+# Recognised mitigation tags. Free-text values survive too; this list is
+# what the prompt asks for and what the report can group on.
+_MITIGATION_VOCABULARY = frozenset({
+    "time_barred",
+    "deductible_in_future_periods",
+    "reverses_in_following_period",
+    "dta_recognisable",
+    "return_still_amendable",
+    "covered_by_guarantee",
+    "covered_by_insurance",
+    "already_paid",
+    "instalment_plan_in_force",
+    "settled_with_authority",
+    "merely_formal_violation",
+})
+
+# Guards against a model emitting a page number or an amount as a year.
+_MIN_FISCAL_YEAR = 1990
 
 # Keywords used to recognise tax documents automatically. Matching is
 # case-insensitive against the normalised filename (underscores / hyphens
@@ -160,6 +233,102 @@ _TAX_HEURISTICS: list[tuple[str, str, str, str]] = [
 _HEURISTIC_CONFIDENCE = 0.60
 
 
+# ── Payload normalisation ────────────────────────────────────────────────────
+
+
+def _normalize_defensibility(item: dict) -> str:
+    """Return one of :data:`_VALID_DEFENSIBILITY` for an LLM item.
+
+    Falls back to the legacy ``severity`` key when the model (or a stub
+    provider) does not emit ``defensibility``, so older callers keep
+    working: a severity of ``high`` reads as a position that would be hard
+    to defend, which is the same judgement expressed the old way.
+    """
+    raw = str(item.get("defensibility", "")).strip().lower()
+    if raw in _VALID_DEFENSIBILITY:
+        return raw
+
+    legacy = item.get("severity")
+    if legacy is not None:
+        mapped = _normalize_severity(str(legacy).lower())
+        if mapped in _DEFENSIBILITY_TO_SEVERITY:
+            return mapped
+
+    return "medium"
+
+
+def _normalize_tax_kind(item: dict) -> str:
+    raw = str(item.get("tax_kind", "")).strip().lower()
+    return raw if raw in _VALID_TAX_KINDS else "altro"
+
+
+def _normalize_fiscal_years(item: dict) -> list[int]:
+    """Return a sorted, de-duplicated list of plausible fiscal years."""
+    raw = item.get("fiscal_years")
+    if not isinstance(raw, (list, tuple)):
+        return []
+
+    ceiling = date.today().year + 1
+    years: set[int] = set()
+    for value in raw:
+        try:
+            year = int(value)
+        except (TypeError, ValueError):
+            continue
+        if _MIN_FISCAL_YEAR <= year <= ceiling:
+            years.add(year)
+    return sorted(years)[:12]
+
+
+def _normalize_amount(item: dict) -> float | None:
+    """Return the euro amount the document states, or None.
+
+    A negative or non-numeric value is dropped rather than coerced: the
+    agent never invents a figure, so an unusable one becomes no figure.
+    """
+    raw = item.get("amount_eur")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        amount = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return amount if amount >= 0 else None
+
+
+def _normalize_mitigations(item: dict) -> list[str]:
+    raw = item.get("mitigating_factors")
+    if not isinstance(raw, (list, tuple)):
+        return []
+
+    seen: list[str] = []
+    for value in raw:
+        text = str(value).strip().lower().replace(" ", "_")[:60]
+        if text and text not in seen:
+            seen.append(text)
+    return seen[:8]
+
+
+def _assessment_periods(fiscal_years: list[int], as_of: date | None = None) -> list[dict]:
+    """Resolve, for each fiscal year, when the authority's power expires.
+
+    Deterministic: the model supplies the years, the registry supplies the
+    law. Each entry carries the citation so the report prints a provision
+    rather than an arithmetic the model produced.
+    """
+    today = as_of or date.today()
+    periods: list[dict] = []
+    for year in fiscal_years:
+        period = _rules.assessment_period(year)
+        periods.append({
+            "fiscal_year": year,
+            "expiry": period.expiry.isoformat(),
+            "time_barred": period.is_time_barred(today),
+            "citation": period.citation,
+        })
+    return periods
+
+
 # ── Agent ────────────────────────────────────────────────────────────────────
 
 
@@ -220,7 +389,10 @@ class TaxAgent:
                 "agent_findings_count": int,
                 "heuristic_findings_count": int,
                 "findings_by_severity": {"low": int, "medium": int, "high": int},
+                "findings_by_defensibility": {"actual": int, "high": int, ...},
                 "findings_by_finding_type": {"tax_assessment": int, ...},
+                "quantified_findings_count": int,
+                "fiscal_years_covered": [int, ...],
                 "findings_by_document": [
                     {"document_id": int, "filename": str, "finding_count": int},
                     ...
@@ -453,17 +625,40 @@ class TaxAgent:
 
         payloads: list[dict] = []
         for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+
             finding_type = item.get("finding_type", "other_tax")
             if finding_type not in _VALID_FINDING_TYPES:
                 finding_type = "other_tax"
 
-            severity_str = _normalize_severity(str(item.get("severity", "")).lower())
+            defensibility = _normalize_defensibility(item)
+            fiscal_years = _normalize_fiscal_years(item)
+            mitigations = _normalize_mitigations(item)
+
+            # A fiscal year the authority can no longer assess is a
+            # mitigation in its own right, and one the model has no way of
+            # working out. Resolve it here rather than asking for it.
+            periods = _assessment_periods(fiscal_years)
+            if periods and all(p["time_barred"] for p in periods):
+                if "time_barred" not in mitigations:
+                    mitigations.append("time_barred")
+
+            legal_basis = item.get("legal_basis")
+            legal_basis = str(legal_basis)[:200] if legal_basis else None
 
             payloads.append({
                 "finding_type": finding_type,
+                "tax_kind": _normalize_tax_kind(item),
                 "title": str(item.get("title", ""))[:100],
                 "description": str(item.get("description", ""))[:400],
-                "severity": severity_str,
+                "defensibility": defensibility,
+                "severity": _DEFENSIBILITY_TO_SEVERITY[defensibility],
+                "legal_basis": legal_basis,
+                "fiscal_years": fiscal_years,
+                "assessment_periods": periods,
+                "amount_eur": _normalize_amount(item),
+                "mitigating_factors": mitigations,
                 "confidence": item.get("confidence"),
                 "source": "llm",
             })
@@ -489,13 +684,23 @@ class TaxAgent:
             if keyword in lowered:
                 payloads.append({
                     "finding_type": finding_type,
+                    "tax_kind": "altro",
                     "title": title,
                     "description": (
                         f'The document mentions "{keyword}". The exposure was '
                         "not extracted by the analysis and must be verified "
                         "with a tax specialist."
                     ),
+                    # A keyword match evidences the fact, not how well the
+                    # position could be defended, so the floor keeps the
+                    # severity assigned to the keyword and mirrors it here.
+                    "defensibility": severity,
                     "severity": severity,
+                    "legal_basis": None,
+                    "fiscal_years": [],
+                    "assessment_periods": [],
+                    "amount_eur": None,
+                    "mitigating_factors": [],
                     "confidence": _HEURISTIC_CONFIDENCE,
                     "source": "heuristic",
                 })
@@ -522,9 +727,22 @@ class TaxAgent:
                 confidence=p["confidence"],
                 structured_payload_json={
                     "finding_type": p["finding_type"],
+                    "tax_kind": p.get("tax_kind", "altro"),
                     "document_id": doc.id,
                     "filename": doc.filename,
                     "source": p["source"],
+                    "defensibility": p.get("defensibility", "medium"),
+                    "legal_basis": p.get("legal_basis"),
+                    "fiscal_years": p.get("fiscal_years", []),
+                    "assessment_periods": p.get("assessment_periods", []),
+                    "amount_eur": p.get("amount_eur"),
+                    # Explicit, so a reader can tell "the document states no
+                    # figure" from "nobody looked". Quantification is an
+                    # information request, never an estimate.
+                    "amount_source": (
+                        "document" if p.get("amount_eur") is not None else "not_stated"
+                    ),
+                    "mitigating_factors": p.get("mitigating_factors", []),
                 },
             )
             db.add(finding)
@@ -544,6 +762,9 @@ class TaxAgent:
     ) -> dict:
         findings_by_severity: dict[str, int] = {"low": 0, "medium": 0, "high": 0}
         findings_by_finding_type: dict[str, int] = {t: 0 for t in _VALID_FINDING_TYPES}
+        findings_by_defensibility: dict[str, int] = {d: 0 for d in _VALID_DEFENSIBILITY}
+        quantified = 0
+        fiscal_years: set[int] = set()
 
         for f in all_findings:
             sev = f.severity.value if hasattr(f.severity, "value") else str(f.severity)
@@ -553,13 +774,28 @@ class TaxAgent:
             if cat in findings_by_finding_type:
                 findings_by_finding_type[cat] += 1
 
+            payload = f.structured_payload_json or {}
+            grade = payload.get("defensibility")
+            if grade in findings_by_defensibility:
+                findings_by_defensibility[grade] += 1
+            if payload.get("amount_eur") is not None:
+                quantified += 1
+            for year in payload.get("fiscal_years") or []:
+                fiscal_years.add(year)
+
         return {
             "deal_id": deal_id,
             "documents_analyzed": len(findings_by_document),
             "agent_findings_count": len(all_findings),
             "heuristic_findings_count": heuristic_count,
             "findings_by_severity": findings_by_severity,
+            "findings_by_defensibility": findings_by_defensibility,
             "findings_by_finding_type": findings_by_finding_type,
+            # How many findings carry a figure the document itself stated.
+            # The rest are deliberately unquantified: pricing them is the
+            # client's tax advisers' job, not the pipeline's.
+            "quantified_findings_count": quantified,
+            "fiscal_years_covered": sorted(fiscal_years),
             "findings_by_document": findings_by_document,
         }
 

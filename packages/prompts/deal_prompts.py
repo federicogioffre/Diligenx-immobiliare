@@ -376,26 +376,33 @@ ANALYZE TAX MATTERS in the document below and extract findings relevant to a sha
 CRITICAL RULES:
 1. Report ONLY facts EXPLICITLY present in the document text — cite the specific figure, deed, protocol number or fiscal year where available.
 2. DO NOT speculate about exposures not evidenced in the text, and do NOT restate general Italian tax law.
-3. The mere existence of ordinary, timely-paid taxes (IRES, IRAP, IVA, withholding) is NOT a finding. Report deviations: assessments, litigation, instalment plans, missed payments, special regimes, credits, loss carry-forwards.
-4. If the document contains no tax-relevant content, return an empty array.
+3. **NEVER compute taxes, penalties or interest.** Penalty rates, interest rates and reduction fractions have been amended repeatedly and depend on the fiscal year and on the procedure followed. Report an amount ONLY when the document itself states it. If the document states no amount, set the amount to null — an omitted figure is correct, an invented one is not.
+4. The mere existence of ordinary, timely-paid taxes (IRES, IRAP, IVA, withholding) is NOT a finding. Report deviations: assessments, litigation, instalment plans, missed payments, special regimes, credits, loss carry-forwards, and positions that a tax audit could challenge.
+5. If the document contains no tax-relevant content, return an empty array.
 
 For each finding, provide:
 - finding_type: one of [tax_assessment, tax_litigation, tax_debt, tax_credit, tax_regime, tax_losses, transfer_pricing, tax_compliance, other_tax]
-  * tax_assessment  — avviso di accertamento, processo verbale di constatazione (PVC), avviso bonario, questionnaires from the Revenue Agency
-  * tax_litigation  — pending or settled proceedings before tax courts (Corti di Giustizia Tributaria), acquiescenza, adesione, conciliazione
-  * tax_debt        — cartelle di pagamento, rateizzazioni in corso, ravvedimento operoso, unpaid or deferred taxes and social contributions
-  * tax_credit      — tax credits claimed, offset (compensati) or transferred (ceduti): R&D, Industria 4.0, superbonus/ecobonus and other building bonuses
-  * tax_regime      — special regimes and elections: consolidato fiscale, IVA di gruppo, patent box, interpelli / rulings, regime premiale
-  * tax_losses      — carried-forward tax losses, ACE surpluses, interest carry-forwards whose survival after the change of control must be verified (artt. 84 and 172-173 TUIR)
-  * transfer_pricing — intercompany transactions, TP documentation (masterfile / documentazione nazionale), cost-sharing agreements
-  * tax_compliance  — DURC / DURF irregularities, withholding obligations in procurement chains (art. 17-bis D.Lgs. 241/1997), missing or late filings
+  * tax_assessment  — avviso di accertamento, processo verbale di constatazione (PVC), avviso bonario, avviso di liquidazione, atto di contestazione, questionnaires and invitations from the Revenue Agency
+  * tax_litigation  — pending or settled proceedings before the tax courts, acquiescenza, adesione, conciliazione
+  * tax_debt        — cartelle di pagamento, intimazioni, rateizzazioni in corso, ravvedimento operoso, unpaid or deferred taxes and social contributions
+  * tax_credit      — tax credits claimed, offset (compensati) or transferred (ceduti): R&D, Industria/Transizione 4.0-5.0, building bonuses; also credits reversed following an assessment
+  * tax_regime      — special regimes and elections: consolidato fiscale, IVA di gruppo, patent box, interpelli / rulings, and transactions whose regime matters (trasformazione, conferimento, fusione, scissione, riallineamento)
+  * tax_losses      — carried-forward tax losses, ACE surpluses and interest carry-forwards whose survival after the change of control must be verified
+  * transfer_pricing — cross-border intercompany transactions and their documentation; costs towards non-cooperative jurisdictions
+  * tax_compliance  — filings and formalities: missing, late or amended returns, irregular data, DURF/withholding obligations in procurement chains, ISA scores and sector-study positions
   * other_tax       — any other tax-relevant fact that does not fit the above
+- tax_kind: which tax the finding concerns — one of [ires, irap, iva, ritenute, registro, imu, dogane_accise, contributi, altro]
 - title: concise label (max 100 characters)
 - description: the finding with the document evidence, quoting figures and references verbatim where possible (max 400 characters)
-- severity:
-  * low    — informational: regime elections without current exposure, credits regularly used, closed matters with no residual liability
-  * medium — requires verification or has a quantified but remediable exposure: ongoing rateizzazioni, credits offset or transferred pending verification, loss carry-forwards subject to change-of-control limits
-  * high   — material exposure: notified assessments or cartelle with material amounts, pending tax litigation, evidence of unpaid taxes or contributions, DURF/withholding irregularities in force
+- legal_basis: the statutory provision the DOCUMENT cites, verbatim (e.g. "art. 110 TUIR"), or null if the document cites none. Do not supply a provision the document does not mention.
+- fiscal_years: array of the fiscal years the finding concerns, as integers (e.g. [2021, 2022]); empty array if the document does not say.
+- amount_eur: the exposure in euro if the DOCUMENT states it, otherwise null. Never a computed or estimated figure.
+- defensibility: how the position would hold up IF the tax authority challenged it. This is NOT the likelihood of being audited — never estimate that.
+  * actual — errors, omissions or insufficient payments that automatically produce a tax charge with no possible defence (e.g. a tax shown as due in a filed return and not paid)
+  * high   — a position most likely to give rise to litigation and difficult for the company to defend
+  * medium — a position the authority would disagree with, but which the company has a fair chance of defending
+  * low    — a position that would be challenged only on an aggressive approach, and is defensible
+- mitigating_factors: array of short strings, from this vocabulary where applicable, otherwise free text (empty array if none): "time_barred", "deductible_in_future_periods", "reverses_in_following_period", "dta_recognisable", "return_still_amendable", "covered_by_guarantee", "covered_by_insurance", "already_paid", "instalment_plan_in_force", "settled_with_authority", "merely_formal_violation"
 - confidence: extraction confidence between 0.0 and 1.0
 
 Document: {filename}
@@ -403,7 +410,7 @@ Document text:
 {text}
 
 Return ONLY a JSON array (no markdown fences, no explanation):
-[{{"finding_type": "...", "title": "...", "description": "...", "severity": "...", "confidence": 0.0}}, ...]
+[{{"finding_type": "...", "tax_kind": "...", "title": "...", "description": "...", "legal_basis": null, "fiscal_years": [], "amount_eur": null, "defensibility": "...", "mitigating_factors": [], "confidence": 0.0}}, ...]
 
 If no tax findings are present, return an empty array: []
 """

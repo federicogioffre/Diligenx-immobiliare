@@ -13,7 +13,7 @@
 - **Env:** `.env` via `pydantic-settings`
 - **Frontend:** Next.js 15 (App Router, TypeScript) — login + dashboard + insights + deals UI, server-side auth via cookie
 - **Frontend tests:** Playwright smoke suite (3 tests) in `apps/web/tests/e2e/`
-- **Tests:** pytest + FastAPI TestClient (SQLite), **802 passing**
+- **Tests:** pytest + FastAPI TestClient (SQLite), **855 passing**
 
 ## Project Root
 ```
@@ -90,6 +90,7 @@ Diligenx/
 │   │   ├── corporate_agent.py            # Stage 4: corporate governance analysis
 │   │   ├── corporate_intro_agent.py      # Stage 4b: CompanyProfile extraction (visure/atti/statuti)
 │   │   ├── tax_agent.py                  # Stage 4c: tax documentary review (LLM + deterministic keyword heuristics)
+│   │   ├── tax_rules_registry.py         # Year-indexed Italian tax rules: citations + assessment periods, no rates
 │   │   ├── financial_agent.py            # Stage 4d: financial documentary review (LLM + deterministic keyword heuristics)
 │   │   ├── red_flag_aggregator.py        # Stage 5: produces RedFlag + OpenQuestion
 │   │   ├── report_agent.py               # Stage 6: Markdown report → Report row
@@ -111,7 +112,7 @@ Diligenx/
 │       └── vector_store.py               # cosine similarity over DocumentChunk.embedding
 │
 ├── infra/, scripts/, docker-compose.yml, railway.toml
-├── tests/                                # 802 passing
+├── tests/                                # 855 passing
 └── CLAUDE.md                             # ← this file
 ```
 
@@ -165,7 +166,7 @@ Triggered async by `POST /deals/{id}/analyze`. Each stage gets its own `AgentRun
 3. **Contract analysis** (`ContractAgent`) — extract clauses → `ClauseFinding` (with grounding check + min confidence).
 4. **Corporate governance** (`CorporateAgent`) — bylaws / shareholder agreement insights.
 4b. **Corporate intro extraction** (`CorporateIntroAgent`) — extracts the Corporate Introductory Information for each target company (visure / atti / statuti) → `CompanyProfile` rows. Auto-detects corporate-looking docs via filename + first-1500-chars keyword match.
-4c. **Tax documentary review** (`TaxAgent`) — analyses tax documents (avvisi di accertamento, cartelle, rateizzazioni, crediti d'imposta, regimi speciali, TP, DURF) selected by keyword auto-detection ∪ routing classification (`document_type=tax`). LLM findings + deterministic keyword heuristics as a floor (a notified accertamento can never be silently dropped) → `AgentFinding` rows (`agent_name=tax_analysis`) that flow into stage 5 with `area=tax`. Documentary review only — the report boilerplate states it does not substitute a full tax/financial DD by the client's advisors.
+4c. **Tax documentary review** (`TaxAgent`) — analyses tax documents (avvisi di accertamento, cartelle, rateizzazioni, crediti d'imposta, regimi speciali, TP, DURF) selected by keyword auto-detection ∪ routing classification (`document_type=tax`). LLM findings + deterministic keyword heuristics as a floor (a notified accertamento can never be silently dropped) → `AgentFinding` rows (`agent_name=tax_analysis`) that flow into stage 5 with `area=tax`. Each finding carries a **`defensibility`** grade (`actual|high|medium|low` — how the position would hold up *if challenged*, the scale real tax advisers use; it is **not** a probability of being audited, which nothing in the pipeline estimates), plus `tax_kind`, `legal_basis`, `fiscal_years`, `mitigating_factors` and an `amount_eur` **only when the document itself states one**. `severity` is derived from the grade in code (`actual` → high, never downgraded). Statutory references and assessment-period expiry per fiscal year come from `tax_rules_registry`. Documentary review only — the report boilerplate states it does not substitute a full tax/financial DD by the client's advisors.
 4d. **Financial documentary review** (`FinancialAgent`) — analyses financial statements and their annexes (bilanci, note integrative, relazioni sulla gestione / del collegio sindacale / della società di revisione) selected by keyword auto-detection ∪ routing classification (`document_type=financial_statement`). LLM findings (auditor_opinion, going_concern, capital_loss, covenant, related_party, guarantee, subsequent_event, equity_position) + deterministic keyword heuristics as a floor (a going-concern paragraph or an art. 2446/2482-bis c.c. loss can never be silently dropped; article numbers match only with an `art.` prefix or `c.c.` suffix, so amounts in the accounts don't false-positive) → `AgentFinding` rows (`agent_name=financial_analysis`) that flow into stage 5 with `area=financial`. A **legal** review of financial documents, not an accounting analysis: no ratios, no valuation.
 5. **Red-flag aggregation** — produce `RedFlag` rows (Issue/Risk/Recommendation triple, severity low|medium|high, DD area, `source_document_id` + validated `source_page` pinpoint citation) + `OpenQuestion` items for high-severity flags. A cited `source_page` is kept only if it matches a real page of that document's ClauseFindings (guards against hallucinated citations).
 6. **Report generation** (`report_agent.generate_due_diligence_report`) — bilingual (IT/EN — explicit `deal.report_language` or majority language of processed documents, fallback EN; LLM prose follows, boilerplate localized faithfully to studio practice: title/Executive Summary/Key Findings stay English) deterministic template (Introduction / Corporate Introductory Information from `CompanyProfile` / Executive Summary via LLM / Key Findings tabellari per DD area / Observations / Information Requests / Appendix Documents); stored as Markdown in `Report` table.
@@ -201,7 +202,7 @@ pnpm install && pnpm dev      # http://localhost:3000
 
 ```bash
 cd apps/api
-python -m pytest ../../tests -q   # 802 passed
+python -m pytest ../../tests -q   # 855 passed
 ```
 
 ## Key Design Decisions
@@ -215,6 +216,7 @@ python -m pytest ../../tests -q   # 802 passed
 - Rate limiting via `slowapi` (5/min on `/analyze`, 30/min on `/documents/upload`, etc.) — disabled in tests via autouse fixture in `tests/conftest.py`
 - MIME types allowed: `application/pdf`, `text/plain`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`
 - **Durable jobs**: when `REDIS_URL` is set, `/analyze` and `/upload` enqueue jobs to an Arq pool (managed via FastAPI lifespan); a separate worker process consumes them (`arq app.worker.WorkerSettings`). When unset, jobs run in-process via FastAPI `BackgroundTasks` — same behaviour as before. Enqueue failures fall back transparently.
+- **Tax rules are versioned, never prompted**: `packages/agents/tax_rules_registry.py` holds Italian tax rules keyed by `rule_id` with `valid_from`/`valid_to` in **fiscal years**, a citation and a short bilingual gloss, plus `assessment_period(fiscal_year)` (four years up to FY2015, five from FY2016, longer where no return was filed) and `open_fiscal_years()`. It deliberately carries **no penalty rate, interest rate or reduction fraction** — those depend on the year *and* the procedure and have been amended repeatedly (D.Lgs. 158/2015, D.Lgs. 87/2024), so quantification is left to the client's tax advisers and the report prints a provision rather than arithmetic. `TAX_ANALYSIS_PROMPT` forbids the model from computing taxes, penalties or interest; a test asserts the registry's glosses contain no percentages or fractions.
 - **Anthropic prompt caching**: every LLM prompt is sent with `cache_control={"type":"ephemeral"}` so the idempotent `/analyze` re-runs hit Anthropic's cache (~90% input-cost reduction within the 5-minute TTL).
 - **Parallel LLM fan-out**: per-document LLM work inside each pipeline stage (routing, contract, corporate, corporate-intro) runs on a bounded thread pool via `packages/agents/concurrency.run_llm_tasks` (`LLM_MAX_CONCURRENCY`, default 4). Worker functions are pure (LLM + parse only — no `Session` access); persistence happens on the caller's thread in input order. Contract analysis now inserts only the clauses that survive filtering (no insert-then-delete churn).
 

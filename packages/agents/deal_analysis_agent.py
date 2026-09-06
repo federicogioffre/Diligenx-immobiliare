@@ -333,37 +333,53 @@ class FakeLLMProvider(LLMProvider):
             return json.dumps([
                 {
                     "finding_type": "tax_assessment",
+                    "tax_kind": "ires",
                     "title": "Notified tax assessment for FY2022",
                     "description": (
                         "Avviso di accertamento notified for FY2022 claiming "
                         "Euro 240.000 in additional IRES, penalties and interest; "
                         "appeal pending before the first-instance tax court."
                     ),
-                    "severity": "high",
+                    "legal_basis": "art. 39 D.P.R. 600/1973",
+                    "fiscal_years": [2022],
+                    "amount_eur": 240000,
+                    "defensibility": "high",
+                    "mitigating_factors": [],
                     "confidence": 0.90,
                 },
                 {
                     "finding_type": "tax_debt",
+                    "tax_kind": "iva",
                     "title": "Ongoing instalment plan with the collection agency",
                     "description": (
                         "A 72-instalment payment plan (rateizzazione) with "
                         "Agenzia delle Entrate-Riscossione is in progress for "
                         "Euro 85.000 of assessed VAT."
                     ),
-                    "severity": "medium",
+                    "legal_basis": None,
+                    "fiscal_years": [2021],
+                    "amount_eur": 85000,
+                    "defensibility": "medium",
+                    "mitigating_factors": ["instalment_plan_in_force"],
                     "confidence": 0.85,
                 },
                 {
                     "finding_type": "tax_regime",
+                    "tax_kind": "ires",
                     "title": "Patent box election in force",
                     "description": (
                         "The company elected the patent box regime for the "
                         "2021-2025 period; no current exposure evidenced."
                     ),
-                    "severity": "low",
+                    "legal_basis": None,
+                    "fiscal_years": [],
+                    "amount_eur": None,
+                    "defensibility": "low",
+                    "mitigating_factors": [],
                     "confidence": 0.80,
                 },
             ])
+
         if "CORPORATE GOVERNANCE" in p:
             return json.dumps([
                 {
