@@ -376,34 +376,51 @@ ANALYZE TAX MATTERS in the document below and extract findings relevant to a sha
 CRITICAL RULES:
 1. Report ONLY facts EXPLICITLY present in the document text — cite the specific figure, deed, protocol number or fiscal year where available.
 2. DO NOT speculate about exposures not evidenced in the text, and do NOT restate general Italian tax law.
-3. The mere existence of ordinary, timely-paid taxes (IRES, IRAP, IVA, withholding) is NOT a finding. Report deviations: assessments, litigation, instalment plans, missed payments, special regimes, credits, loss carry-forwards.
-4. If the document contains no tax-relevant content, return an empty array.
+3. **NEVER compute taxes, penalties or interest.** Penalty rates, interest rates and reduction fractions have been amended repeatedly and depend on the fiscal year and on the procedure followed. Report an amount ONLY when the document itself states it. If the document states no amount, set the amount to null — an omitted figure is correct, an invented one is not.
+4. The mere existence of ordinary, timely-paid taxes (IRES, IRAP, IVA, withholding) is NOT a finding. Report deviations: assessments, litigation, instalment plans, missed payments, special regimes, credits, loss carry-forwards, and positions that a tax audit could challenge.
+5. If the document contains no tax-relevant content, return an empty array.
 
 For each finding, provide:
 - finding_type: one of [tax_assessment, tax_litigation, tax_debt, tax_credit, tax_regime, tax_losses, transfer_pricing, tax_compliance, other_tax]
-  * tax_assessment  — avviso di accertamento, processo verbale di constatazione (PVC), avviso bonario, questionnaires from the Revenue Agency
-  * tax_litigation  — pending or settled proceedings before tax courts (Corti di Giustizia Tributaria), acquiescenza, adesione, conciliazione
-  * tax_debt        — cartelle di pagamento, rateizzazioni in corso, ravvedimento operoso, unpaid or deferred taxes and social contributions
-  * tax_credit      — tax credits claimed, offset (compensati) or transferred (ceduti): R&D, Industria 4.0, superbonus/ecobonus and other building bonuses
-  * tax_regime      — special regimes and elections: consolidato fiscale, IVA di gruppo, patent box, interpelli / rulings, regime premiale
-  * tax_losses      — carried-forward tax losses, ACE surpluses, interest carry-forwards whose survival after the change of control must be verified (artt. 84 and 172-173 TUIR)
-  * transfer_pricing — intercompany transactions, TP documentation (masterfile / documentazione nazionale), cost-sharing agreements
-  * tax_compliance  — DURC / DURF irregularities, withholding obligations in procurement chains (art. 17-bis D.Lgs. 241/1997), missing or late filings
+  * tax_assessment  — avviso di accertamento, processo verbale di constatazione (PVC), avviso bonario, avviso di liquidazione, atto di contestazione, questionnaires and invitations from the Revenue Agency
+  * tax_litigation  — pending or settled proceedings before the tax courts, acquiescenza, adesione, conciliazione
+  * tax_debt        — cartelle di pagamento, intimazioni, rateizzazioni in corso, ravvedimento operoso, unpaid or deferred taxes and social contributions
+  * tax_credit      — tax credits, distinguishing those the target GENERATED from those it PURCHASED or received by assignment: R&D, Industria/Transizione 4.0-5.0, building bonuses (superbonus, sconto in fattura). Say whether each credit was offset in F24, certified, or subject to riversamento spontaneo, and whether an assessment has reversed it
+  * tax_regime      — special regimes and elections: consolidato fiscale, IVA di gruppo, patent box, interpelli / rulings, and transactions whose regime matters (trasformazione, conferimento, fusione, scissione, riallineamento)
+  * tax_losses      — carried-forward tax losses, ACE surpluses and interest carry-forwards whose survival after the change of control must be verified
+  * transfer_pricing — cross-border intercompany transactions and their documentation; costs towards non-cooperative jurisdictions
+  * tax_compliance  — filings and formalities: missing, late or amended returns, irregular data, DURF/withholding obligations in procurement chains, ISA scores and sector-study positions
   * other_tax       — any other tax-relevant fact that does not fit the above
+- tax_kind: which tax the finding concerns — one of [ires, irap, iva, ritenute, registro, imu, dogane_accise, contributi, altro]
 - title: concise label (max 100 characters)
 - description: the finding with the document evidence, quoting figures and references verbatim where possible (max 400 characters)
-- severity:
-  * low    — informational: regime elections without current exposure, credits regularly used, closed matters with no residual liability
-  * medium — requires verification or has a quantified but remediable exposure: ongoing rateizzazioni, credits offset or transferred pending verification, loss carry-forwards subject to change-of-control limits
-  * high   — material exposure: notified assessments or cartelle with material amounts, pending tax litigation, evidence of unpaid taxes or contributions, DURF/withholding irregularities in force
+- legal_basis: the statutory provision the DOCUMENT cites, verbatim (e.g. "art. 110 TUIR"), or null if the document cites none. Do not supply a provision the document does not mention.
+- fiscal_years: array of the fiscal years the finding concerns, as integers (e.g. [2021, 2022]); empty array if the document does not say.
+- amount_eur: the exposure in euro if the DOCUMENT states it, otherwise null. Never a computed or estimated figure.
+- defensibility: how the position would hold up IF the tax authority challenged it. This is NOT the likelihood of being audited — never estimate that.
+  * actual — errors, omissions or insufficient payments that automatically produce a tax charge with no possible defence (e.g. a tax shown as due in a filed return and not paid)
+  * high   — a position most likely to give rise to litigation and difficult for the company to defend
+  * medium — a position the authority would disagree with, but which the company has a fair chance of defending
+  * low    — a position that would be challenged only on an aggressive approach, and is defensible
+- mitigating_factors: array of short strings, from this vocabulary where applicable, otherwise free text (empty array if none): "time_barred", "deductible_in_future_periods", "reverses_in_following_period", "dta_recognisable", "return_still_amendable", "covered_by_guarantee", "covered_by_insurance", "already_paid", "instalment_plan_in_force", "settled_with_authority", "merely_formal_violation"
 - confidence: extraction confidence between 0.0 and 1.0
+
+POSITIONS THAT RECUR IN OWNER-MANAGED ITALIAN TARGETS — look for these specifically, they are the most common findings and are easy to miss:
+- inventory valued by management judgement or adjusted at year end for tax purposes (a year's closing inventory is the next year's opening one, so an adjustment reverses; a QUANTITATIVE difference also raises a VAT presumption of sale)
+- maintenance expenses deducted as ordinary when they extended an asset's useful life and should have been capitalised
+- directors' fees deducted without a shareholders' resolution authorising them, or deducted in a year other than the one of payment
+- remuneration of directors or employees disproportionate to the size of the business
+- transactions with related parties resident in Italy — rents, services, purchases from entities of the same owner. There is NO domestic transfer-pricing rule in Italy: report the position only where the document itself indicates the conditions are not at market value, and frame it as an economic-inconsistency challenge
+- a shareholder's waiver of a loan or its conversion into equity, and whether the sworn self-declaration of the receivable's tax basis is on file
+- changes of legal form, and whether reserves formed before the change are disclosed as such
+- sector-study or ISA reliability positions — these are AUDIT-RISK indicators, not exposures: never assign them an amount
 
 Document: {filename}
 Document text:
 {text}
 
 Return ONLY a JSON array (no markdown fences, no explanation):
-[{{"finding_type": "...", "title": "...", "description": "...", "severity": "...", "confidence": 0.0}}, ...]
+[{{"finding_type": "...", "tax_kind": "...", "title": "...", "description": "...", "legal_basis": null, "fiscal_years": [], "amount_eur": null, "defensibility": "...", "mitigating_factors": [], "confidence": 0.0}}, ...]
 
 If no tax findings are present, return an empty array: []
 """
@@ -415,34 +432,50 @@ ANALYZE FINANCIAL STATEMENTS and their annexes in the document below, and extrac
 CRITICAL RULES:
 1. Report ONLY facts EXPLICITLY present in the document text — quote the figure, article or paragraph that evidences each finding.
 2. This is a LEGAL review of financial documents, not an accounting analysis. Do NOT recompute ratios, do NOT assess whether the business is a good investment, do NOT comment on valuation.
-3. Ordinary, unqualified financial statements are NOT a finding. Report deviations and legally relevant facts: auditor qualifications, going-concern doubts, statutory capital losses, covenant issues, related-party exposures, guarantees, subsequent events.
-4. If the document contains no financially relevant content, return an empty array.
+3. **Never estimate a figure.** Report an amount only where the document states it; otherwise set it to null. An omitted figure is correct, an invented one is not.
+4. Ordinary, unqualified financial statements are NOT a finding. Report deviations and legally relevant facts.
+5. If the document contains no financially relevant content, return an empty array.
 
 For each finding, provide:
-- finding_type: one of [auditor_opinion, going_concern, capital_loss, covenant, related_party, guarantee, subsequent_event, equity_position, other_financial]
-  * auditor_opinion  — qualified, adverse or disclaimed opinion by the auditor or the board of statutory auditors; emphasis-of-matter paragraphs; reservations in the relazione del collegio sindacale
-  * going_concern    — doubts on the continuità aziendale, deficit patrimoniale, recurring losses, dependence on shareholder support letters
-  * capital_loss     — losses reducing capital under artt. 2446 / 2447 c.c. (S.p.A.) or 2482-bis / 2482-ter c.c. (S.r.l.), and the resolutions taken or postponed (rinvio a nuovo esercizio)
-  * covenant         — financial covenants, negative pledges, cross-default and acceleration clauses disclosed in the notes, including waivers obtained or breaches recorded
-  * related_party    — transactions with shareholders, directors or group companies: shareholder loans, postergazione ex art. 2467 c.c., cash-pooling, intercompany receivables
-  * guarantee        — sureties (fideiussioni), comfort letters, pledges and liens granted by or in favour of the target
-  * subsequent_event — events after the balance-sheet date disclosed in the notes or the relazione sulla gestione that affect the target's position
-  * equity_position  — share capital, reserves, unrealised or restricted reserves, capital contributions (versamenti in conto capitale) whose repayment terms matter to the buyer
+- finding_type: one of [auditor_opinion, going_concern, capital_loss, covenant, related_party, guarantee, subsequent_event, equity_position, debt_like_item, receivables_at_risk, accounting_irregularity, concentration, public_funding, prior_deal_claim, information_limitation, other_financial]
+  * auditor_opinion  — qualified, adverse or disclaimed opinion by the auditor or the board of statutory auditors; emphasis-of-matter paragraphs; also the ABSENCE of an audit where one was required (check the thresholds for appointing a control body under art. 2477 c.c. before treating "unaudited" as a finding)
+  * going_concern    — doubts on the continuità aziendale, deficit patrimoniale, negative net equity, recurring losses, dependence on shareholder support letters, composizione negoziata or insolvency procedures
+  * capital_loss     — losses reducing capital under artt. 2446 / 2447 c.c. (S.p.A.) or 2482-bis / 2482-ter c.c. (S.r.l.), the dissolution cause under art. 2484 c.c., losses deferred under the pandemic regime, and the resolutions taken or postponed
+  * covenant         — financial covenants, negative pledges, cross-default and change-of-control clauses disclosed in the notes or in the financing schedules, including waivers obtained and breaches recorded
+  * related_party    — transactions with shareholders, directors or group companies: shareholder loans, postergazione ex art. 2467 c.c., cash pooling, intercompany balances, rents paid to entities of the same owner
+  * guarantee        — sureties (fideiussioni), comfort letters, counter-guarantees, surety insurance policies, pledges and liens granted BY the target or IN ITS INTEREST by its shareholders. Record who granted it, in whose favour, for what amount and purpose, and whether anyone is obliged to replace or release it at closing
+  * subsequent_event — events after the balance-sheet date disclosed in the notes or the management report
+  * equity_position  — share capital, reserves, restricted reserves, capital contributions, and receivables from shareholders for contributions still due
+  * debt_like_item   — liabilities that behave as financing and that a buyer will want in the net debt: overdue tax and social-security liabilities and the penalties and interest on them; trade payables overdue beyond the agreed terms; accrued financial charges; leasing; factoring with recourse; cash that is not really available (deposits pledged or frozen by disputes, sums to be returned to customers); accrued untaken holiday; agents' leaving indemnity; transaction costs and bonuses payable at closing
+  * receivables_at_risk — receivables long overdue or in dispute, revenue accrued but never invoiced ("fatture da emettere"), and the absence of a bad-debt provision where one is plainly needed
+  * accounting_irregularity — facts that undermine the reliability of the accounts: revenue recognised on invoices that will not be issued, accruals never reversed, regular manual entries, unreconciled differences, books still open, systems not integrated, interim figures prepared for the transaction and not approved by the board
+  * concentration    — dependence on a few customers or suppliers, or on a contract not yet signed
+  * public_funding   — grants and subsidised financing, with the conditions attached and any clawback the transaction could trigger
+  * prior_deal_claim — warranty or indemnity positions under the target's OWN earlier acquisitions: claims running against former shareholders, and guarantees they gave that cover a current exposure. Note that the company usually remains primarily liable and the indemnity is only a recourse
+  * information_limitation — the document itself records that something was not provided, not reconciled, not discussed with management, still in draft, or not approved. These are findings, not boilerplate
   * other_financial  — any other legally relevant financial fact that does not fit the above
 - title: concise label (max 100 characters)
 - description: the finding with the document evidence, quoting figures verbatim where possible, preserving Italian formatting (max 400 characters)
+- amount_eur: the amount in euro if the DOCUMENT states it, otherwise null. Never a computed or estimated figure.
+- counterparty: the bank, guarantor, customer, supplier or related party the finding concerns, if the document names one; otherwise null.
+- change_of_control_clause: for a covenant finding, true or false if the document says whether the agreement has one; otherwise null.
+- financial_covenant: for a covenant finding, true or false if the document says whether financial covenants apply; otherwise null.
 - severity:
-  * low    — informational: standard disclosures, closed matters, ordinary reserves
-  * medium — needs verification or has a remediable exposure: covenants the Transaction could trigger, related-party balances to be settled, restricted reserves, guarantees of limited amount
-  * high   — material exposure: qualified or adverse auditor opinion, going-concern doubts, losses triggering artt. 2446/2447 or 2482-bis/ter c.c., covenant breaches, guarantees of material amount
+  * low    — informational: standard disclosures, closed matters, ordinary reserves, an unaudited micro-company below the statutory thresholds
+  * medium — needs verification or has a remediable exposure: covenants the Transaction could trigger, related-party balances to be settled, restricted reserves, guarantees of limited amount, receivables at risk, revenue-recognition anomalies, customer concentration, grants with conditions
+  * high   — material exposure: qualified or adverse auditor opinion, going-concern doubts, negative net equity, losses triggering artt. 2446/2447 or 2482-bis/ter c.c., covenant breaches, change-of-control clauses in financing agreements, overdue tax or social-security liabilities, guarantees of material amount
 - confidence: extraction confidence between 0.0 and 1.0
+
+TWO RULES THAT ARE EASY TO GET WRONG:
+- Employees' leaving entitlement (TFR) is NOT uniformly debt-like. Since the 2007 reform it depends on the entity: where the company had more than 50 employees in 2006 the balance runs off and is debt-like in nature; below that threshold it keeps accruing internally and is a rolling, non-cash liability whose treatment is debatable. Within a group the answer can differ company by company, so state which case the document supports rather than assuming.
+- Negative net equity is a legal event before it is an accounting one. Where the document shows equity below zero or below the legal minimum, raise it even if the document itself passes over it without comment.
 
 Document: {filename}
 Document text:
 {text}
 
 Return ONLY a JSON array (no markdown fences, no explanation):
-[{{"finding_type": "...", "title": "...", "description": "...", "severity": "...", "confidence": 0.0}}, ...]
+[{{"finding_type": "...", "title": "...", "description": "...", "amount_eur": null, "counterparty": null, "change_of_control_clause": null, "financial_covenant": null, "severity": "...", "confidence": 0.0}}, ...]
 
 If no financial findings are present, return an empty array: []
 """

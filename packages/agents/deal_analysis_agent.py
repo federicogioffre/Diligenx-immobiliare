@@ -298,72 +298,116 @@ class FakeLLMProvider(LLMProvider):
             return json.dumps([
                 {
                     "finding_type": "auditor_opinion",
-                    "title": "Qualified opinion on the FY2024 statements",
+                    "title": "Qualified opinion on the FY2023 financial statements",
                     "description": (
-                        "The auditor issued a qualified opinion (giudizio con "
-                        "rilievi) on the receivables' recoverability for "
-                        "Euro 320.000."
+                        "The auditors issued a qualified opinion on the FY2023 "
+                        "financial statements over the recoverability of "
+                        "receivables from related parties."
                     ),
+                    "amount_eur": None,
+                    "counterparty": None,
+                    "change_of_control_clause": None,
+                    "financial_covenant": None,
                     "severity": "high",
                     "confidence": 0.88,
                 },
                 {
                     "finding_type": "covenant",
-                    "title": "Financial covenant on the term loan",
+                    "title": "Financial covenants on the term loan",
                     "description": (
-                        "The notes disclose a net-debt-to-EBITDA covenant of "
-                        "3.5x on the term loan, tested semi-annually."
+                        "The notes disclose a net debt / EBITDA covenant on the "
+                        "term loan, tested semi-annually, with a change-of-control "
+                        "event of default."
                     ),
+                    "amount_eur": None,
+                    "counterparty": "Bank",
+                    "change_of_control_clause": True,
+                    "financial_covenant": True,
                     "severity": "medium",
                     "confidence": 0.84,
+                },
+                {
+                    "finding_type": "debt_like_item",
+                    "title": "Overdue VAT payables",
+                    "description": (
+                        "VAT payables of Euro 120.000 relating to prior periods "
+                        "were still unpaid at the balance-sheet date."
+                    ),
+                    "amount_eur": 120000,
+                    "counterparty": None,
+                    "change_of_control_clause": None,
+                    "financial_covenant": None,
+                    "severity": "high",
+                    "confidence": 0.86,
                 },
                 {
                     "finding_type": "equity_position",
                     "title": "Capital contribution reserve",
                     "description": (
-                        "A versamento in conto capitale of Euro 150.000 is "
-                        "recorded among the reserves; no repayment terms are "
-                        "stated."
+                        "A versamento in conto capitale of Euro 250.000 is "
+                        "recorded among the reserves; repayment terms are not "
+                        "specified in the notes."
                     ),
+                    "amount_eur": 250000,
+                    "counterparty": None,
+                    "change_of_control_clause": None,
+                    "financial_covenant": None,
                     "severity": "low",
                     "confidence": 0.79,
                 },
             ])
+
         if "ANALYZE TAX MATTERS" in p:
             return json.dumps([
                 {
                     "finding_type": "tax_assessment",
+                    "tax_kind": "ires",
                     "title": "Notified tax assessment for FY2022",
                     "description": (
                         "Avviso di accertamento notified for FY2022 claiming "
                         "Euro 240.000 in additional IRES, penalties and interest; "
                         "appeal pending before the first-instance tax court."
                     ),
-                    "severity": "high",
+                    "legal_basis": "art. 39 D.P.R. 600/1973",
+                    "fiscal_years": [2022],
+                    "amount_eur": 240000,
+                    "defensibility": "high",
+                    "mitigating_factors": [],
                     "confidence": 0.90,
                 },
                 {
                     "finding_type": "tax_debt",
+                    "tax_kind": "iva",
                     "title": "Ongoing instalment plan with the collection agency",
                     "description": (
                         "A 72-instalment payment plan (rateizzazione) with "
                         "Agenzia delle Entrate-Riscossione is in progress for "
                         "Euro 85.000 of assessed VAT."
                     ),
-                    "severity": "medium",
+                    "legal_basis": None,
+                    "fiscal_years": [2021],
+                    "amount_eur": 85000,
+                    "defensibility": "medium",
+                    "mitigating_factors": ["instalment_plan_in_force"],
                     "confidence": 0.85,
                 },
                 {
                     "finding_type": "tax_regime",
+                    "tax_kind": "ires",
                     "title": "Patent box election in force",
                     "description": (
                         "The company elected the patent box regime for the "
                         "2021-2025 period; no current exposure evidenced."
                     ),
-                    "severity": "low",
+                    "legal_basis": None,
+                    "fiscal_years": [],
+                    "amount_eur": None,
+                    "defensibility": "low",
+                    "mitigating_factors": [],
                     "confidence": 0.80,
                 },
             ])
+
         if "CORPORATE GOVERNANCE" in p:
             return json.dumps([
                 {
