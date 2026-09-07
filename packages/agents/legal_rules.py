@@ -108,6 +108,31 @@ SAFE_HARBOR: list[dict] = [
         ),
     },
     {
+        "id": "audit_not_required",
+        "title": "Financial statements not audited",
+        "description": (
+            "The absence of an audit is NOT in itself a red flag. Italian law "
+            "requires a control body or an auditor in an S.r.l. only above the "
+            "thresholds of art. 2477 c.c. Flag it only where the company "
+            "exceeded them and appointed nobody, or where an auditor resigned "
+            "or was not replaced."
+        ),
+    },
+    {
+        "id": "ordinary_tfr",
+        "title": "Employees' leaving entitlement (TFR)",
+        "description": (
+            "The mere existence of a TFR provision is NOT a red flag: it is a "
+            "statutory liability every Italian employer carries. Whether it is "
+            "debt-like depends on the entity — since the 2007 reform the "
+            "balance of a company that had more than 50 employees in 2006 runs "
+            "off, while below that threshold it keeps accruing internally as a "
+            "rolling, non-cash liability. Flag only a shortfall against the "
+            "accrual, sums not paid over to the pension fund or to the social "
+            "security institution, or an unexplained increase."
+        ),
+    },
+    {
         "id": "employment_ccnl",
         "title": "CCNL applicability (Contratto Collettivo Nazionale di Lavoro)",
         "description": (
@@ -211,6 +236,96 @@ PRIORITY: list[dict] = [
             "going-concern emphasis paragraphs, losses triggering artt. 2446/2447 "
             "or 2482-bis/ter c.c., and covenant breaches or waivers evidenced in "
             "the financial statements or their annexes."
+        ),
+    },
+    {
+        "id": "overdue_public_debts",
+        "title": "Overdue tax and social-security debts",
+        "severity_floor": "high",
+        "description": (
+            "ALWAYS flag: tax and social-security liabilities left unpaid past "
+            "their due date, and the penalties and interest accruing on them. "
+            "Two consequences follow and both belong in the flag: the amounts "
+            "behave as financing and belong in the net debt, and past the "
+            "statutory thresholds they oblige the qualified public creditors "
+            "to report the company under art. 25-novies of the business crisis "
+            "code (D.Lgs. 14/2019). Check whether an instalment plan is in "
+            "force and whether any report has been served."
+        ),
+    },
+    {
+        "id": "negative_equity_dissolution",
+        "title": "Negative net equity and the dissolution cause",
+        "severity_floor": "high",
+        "description": (
+            "ALWAYS flag net equity below zero or below the legal minimum, "
+            "even where the financial documents record it without comment: it "
+            "is a legal event before it is an accounting one, engaging artt. "
+            "2446-2447 c.c. (S.p.A.) or 2482-bis / 2482-ter c.c. (S.r.l.) and "
+            "the dissolution cause under art. 2484 no. 4 c.c. Losses deferred "
+            "under the pandemic regime fall due at the fifth following "
+            "financial year — verify the deadline and the note disclosure."
+        ),
+    },
+    {
+        "id": "change_of_control_in_financing",
+        "title": "Change-of-control clauses in financing agreements",
+        "severity_floor": "high",
+        "description": (
+            "ALWAYS flag change-of-control clauses, cross-default provisions "
+            "and break-up fees in loan, bond or leasing agreements: the "
+            "Transaction itself can trigger them. State whether the lender's "
+            "consent or a waiver is needed before closing, and whether "
+            "financial covenants are tested."
+        ),
+    },
+    {
+        "id": "seller_guarantees_to_replace",
+        "title": "Guarantees given by the sellers in the target's interest",
+        "severity_floor": "medium",
+        "description": (
+            "ALWAYS flag sureties, comfort letters, counter-guarantees and "
+            "surety policies granted by the sellers or their companies in the "
+            "interest of the target — typically to banks or landlords. They do "
+            "not disappear at closing: record the amount, the beneficiary and "
+            "who must procure their release or replacement, and by when."
+        ),
+    },
+    {
+        "id": "tax_liability_side_agreements",
+        "title": "Side agreements shifting tax liabilities",
+        "severity_floor": "high",
+        "description": (
+            "ALWAYS flag hold-harmless undertakings, indemnity letters and "
+            "tax-consolidation regulations by which the target has assumed, or "
+            "may assume, a third party's tax liabilities. The exposure survives "
+            "the Transaction; consider terminating the agreement or paying the "
+            "liability as a condition precedent."
+        ),
+    },
+    {
+        "id": "prior_deal_positions",
+        "title": "Warranty positions under the target's own past acquisitions",
+        "severity_floor": "medium",
+        "description": (
+            "ALWAYS flag claims running against the former shareholders of a "
+            "company the target itself acquired, and guarantees those sellers "
+            "gave that cover a current exposure. The buyer inherits both the "
+            "claim and the dispute — and the company usually remains primarily "
+            "liable, the indemnity being only a recourse. Cite the clause of "
+            "the earlier agreement where the documents identify it."
+        ),
+    },
+    {
+        "id": "incomplete_documentation",
+        "title": "Documents not provided, not reconciled or still in draft",
+        "severity_floor": "medium",
+        "description": (
+            "ALWAYS flag what the reviewed documents themselves record as not "
+            "provided, not reconciled, not discussed with management, still in "
+            "draft or not approved by the competent body. In professional "
+            "reports this is a substantial part of the findings, and it is what "
+            "a warranty and an information request exist to cover."
         ),
     },
     {

@@ -86,6 +86,18 @@ For each red flag provide:
 - issue: what the clause says that is a concern, referencing the actual clause content (max 300 characters)
 - risk: the impact it could have on the transaction or the target (max 250 characters)
 - recommendation: the remedial action (condition precedent, Sellers' R&W in the SPA, special indemnity, specialist verification, post-closing fix) (max 250 characters)
+- remedy_type: the instrument that answers the finding — one of [indemnity, warranty, price_adjustment, earn_out, condition_precedent, pre_closing_verification, post_closing_action, information_request]. Use null rather than guessing: an untagged flag a lawyer completes is better than a wrongly tagged one.
+  * indemnity — a quantified past exposure (a notified assessment, sanctions, overdue taxes)
+  * warranty — an exposure that cannot be quantified, or one arising from documents not provided or returns not yet filed
+  * price_adjustment — a liability that behaves as financing and belongs in the net debt or in the leakage
+  * earn_out — a forward-looking risk to profitability rather than a past liability
+  * condition_precedent — something the seller must do before closing: pay a debt, obtain a consent, replace a guarantee, terminate a side agreement
+  * pre_closing_verification — a specialist check to run before signing
+  * post_closing_action — something the buyer must do after closing to regularise the position
+  * information_request — the finding is that something was not provided
+- impact: what the finding hits — one of [value, spa, other]. `value` where it moves the price, the multiple or the net debt; `spa` where a clause is needed; `other` where it is operational or informational. Null if unclear.
+- amount_eur: carry forward the amount a source finding states, if any; otherwise null. Never compute or estimate one.
+- fiscal_years: carry forward the fiscal years of a source finding, as integers; empty array if none.
 - severity: one of [low, medium, high]
 - area: one of [corporate, indebtedness, real_estate, employees, suppliers_customers, insurance, litigation, ip_it, data_protection, financial, tax, other]
 - category: free-text fine-grained label (e.g., "liability", "termination", "payment", "ip", "compliance")
@@ -274,15 +286,29 @@ EXAMPLES of correctly structured red_flag entries (synthetic — illustrate form
   {{"finding_type": "red_flag", "title": "Pledge over the Target's shares", "issue": "A pledge over shares representing 81% of the corporate capital of the Target exists in favour of a lender, securing bond payment obligations (Bond Subscription Agreement, art. 10).", "risk": "If the secured debt is not repaid before closing, the Purchaser acquires shares that remain encumbered by the pledge.", "recommendation": "As a condition precedent to Closing, the lender should release the pledge.", "severity": "high", "area": "corporate", "category": "pledge", "confidence": 0.92, "source_document_id": 3, "source_page": 10}},
   {{"finding_type": "red_flag", "title": "Change-of-control clause in loan agreement", "issue": "Article 5 of the loan agreement provides that the lender may terminate in case of any event negatively affecting the financial or corporate situation of the company.", "risk": "Although unlikely, after the Transaction the lender may claim the change of control qualifies and accelerate repayment.", "recommendation": "As a condition precedent to Closing, obtain the lender's consent to the Transaction.", "severity": "medium", "area": "indebtedness", "category": "change_of_control", "confidence": 0.85, "source_document_id": 7, "source_page": 5}},
   {{"finding_type": "red_flag", "title": "Rent indexation above legal cap", "issue": "The lease agreement provides annual rent indexation at 100% of the ISTAT variation, while the maximum allowed under Italian law is 75%.", "risk": "The company may pay, or may have paid, amounts not due under applicable law.", "recommendation": "Insert specific Sellers' representations and warranties in the SPA; renegotiate the clause.", "severity": "low", "area": "real_estate", "category": "void_clause", "confidence": 0.80, "source_document_id": 12, "source_page": null}},
-  {{"finding_type": "red_flag", "title": "Notified tax assessment for FY2022", "issue": "An avviso di accertamento notified by the Italian Revenue Agency for FY2022 claims Euro 240,000 in additional IRES, penalties and interest; the appeal is pending before the first-instance tax court.", "risk": "If the assessment is upheld, the target bears the assessed amount plus litigation costs; further fiscal years may be audited on the same grounds.", "recommendation": "Insert a special indemnity provision in the SPA covering the assessed exposure; prior to the Transaction, verify the exposure with a tax specialist.", "severity": "high", "area": "tax", "category": "tax_assessment", "confidence": 0.90, "source_document_id": 15, "source_page": null}}
+  {{"finding_type": "red_flag", "title": "Notified tax assessment for FY2022", "issue": "An avviso di accertamento notified by the Italian Revenue Agency for FY2022 claims Euro 240,000 in additional IRES, penalties and interest; the appeal is pending before the first-instance tax court.", "risk": "If the assessment is upheld, the target bears the assessed amount plus litigation costs; further fiscal years may be audited on the same grounds.", "recommendation": "Insert a specific indemnity in the SPA covering the assessed exposure, surviving until the expiry of the assessment period for FY2022 plus a grace period; prior to signing, verify the exposure with the Purchaser's tax advisers.", "remedy_type": "indemnity", "impact": "spa", "amount_eur": 240000, "fiscal_years": [2022], "severity": "high", "area": "tax", "category": "tax_assessment", "confidence": 0.90, "source_document_id": 15, "source_page": null}}
 ]
+
+CONSOLIDATING THE SPECIALISTS' FINDINGS:
+- A source finding may carry a bracketed summary of what the specialist agent already established — its defensibility grade, the amount the document stated, the fiscal years, the mitigating factors. **Use it; do not re-derive it and do not contradict it.**
+- `defensibility=actual` means an omission with no available defence, such as a tax shown as due in a filed return and not paid. **A red flag consolidating such a finding is always high severity**, whatever its amount.
+- Where mitigating factors are listed, say so in the risk text — a time-barred year, an instalment plan in force, a guarantee or an insurance policy covering the exposure all change what the buyer should ask for.
+- **One matter, one red flag.** The same fact often surfaces several times: a tax assessment can appear as an act notified to the target, as a payable in the accounts, as a provision for risks, and as a cost normalised out of the earnings. Consolidate them into a single flag and mention the mitigants on it, rather than raising the same matter four times.
+
+RECOMMENDATION PHRASING — these are the forms used in practice; prefer them to free invention:
+- "Insert a specific indemnity in the SPA covering [the exposure], surviving until the expiry of the assessment period for the relevant fiscal years plus a grace period, secured by an escrow or a holdback."
+- "Obtain a full Sellers' warranty covering [returns not yet filed / periods still open to assessment / the matters on which documentation was not provided]."
+- "Treat [the item] as a debt-like item in the net debt definition."
+- "As a condition precedent to Closing, the Seller shall [pay the outstanding liability / obtain the lender's consent / procure the release or replacement of the guarantee / terminate the side agreement]."
+- "Prior to signing, verify [the exposure] with the Purchaser's [tax / customs / employment] advisers."
+- "Upon completion, [regularise the position through a voluntary correction / appoint an auditor / adopt the organisational model]."
 
 Priority order: check all PRIORITY RISKS first, then apply SAFE HARBOUR before raising anything else.
 
 {findings_by_document}
 
 Return ONLY a JSON array (no markdown fences, no explanation):
-[{{"finding_type": "red_flag", "title": "...", "issue": "...", "risk": "...", "recommendation": "...", "severity": "high", "area": "...", "category": "...", "confidence": 0.0, "source_document_id": null, "source_page": null}}, ...]
+[{{"finding_type": "red_flag", "title": "...", "issue": "...", "risk": "...", "recommendation": "...", "remedy_type": null, "impact": null, "amount_eur": null, "fiscal_years": [], "severity": "high", "area": "...", "category": "...", "confidence": 0.0, "source_document_id": null, "source_page": null}}, ...]
 
 If no findings, return an empty array: []
 """

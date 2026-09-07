@@ -25,6 +25,13 @@ class RedFlagRead(BaseModel):
     # could attribute (and validate) one. The frontend resolves the filename
     # from source_document_id via its documents list.
     source_page: int | None
+    # remedy_type: the instrument that answers the finding (indemnity,
+    # warranty, price_adjustment, earn_out, condition_precedent, ...).
+    # impact: what it hits — value | spa | other. Both nullable: rows written
+    # before these fields existed, and degraded LLM output, carry neither.
+    remedy_type: str | None = None
+    impact: str | None = None
+    structured_payload_json: dict | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

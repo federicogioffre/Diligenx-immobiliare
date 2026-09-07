@@ -70,6 +70,171 @@ _SEVERITY_ORDER: dict[str, int] = {
 # ── Agent ─────────────────────────────────────────────────────────────────────
 
 
+# The instrument that answers a finding. This is the tag a law firm's
+# consolidated risk memo assigns to each risk: every line there ends in a
+# warranty cross-reference, "indemnity", "earn-out", or an action to take
+# before closing.
+_VALID_REMEDY_TYPES = (
+    "indemnity",
+    "warranty",
+    "price_adjustment",
+    "earn_out",
+    "condition_precedent",
+    "pre_closing_verification",
+    "post_closing_action",
+    "information_request",
+)
+
+# What the finding hits. This is the orthogonal tag a financial adviser's
+# key-findings page carries (Value / SPA / Other) — a different question
+# from which instrument answers it, and the natural filter for a client
+# asking "show me everything that has to land in the contract".
+_VALID_IMPACTS = ("value", "spa", "other")
+
+
+def _normalize_choice(raw: object, allowed: tuple[str, ...]) -> str | None:
+    """Return *raw* if it is one of *allowed*, else None.
+
+    None means "the model did not say", which stays distinct from a wrong
+    guess: a red flag tagged with the wrong remedy is worse than one left
+    untagged for a human to fill in.
+    """
+    if raw is None:
+        return None
+    value = str(raw).strip().lower().replace("-", "_").replace(" ", "_")
+    return value if value in allowed else None
+
+
+# Categories whose presence is not a matter of degree. A capital loss under
+# artt. 2446-2447 c.c. and a going-concern doubt are events with statutory
+# consequences: they are high or they are wrong.
+_NON_NEGOTIABLE_HIGH = frozenset({"capital_loss", "going_concern"})
+
+
+def _build_severity_floors(agent_findings: list) -> dict[str, str]:
+    """Minimum severity per finding category, from what the specialists found.
+
+    Two sources of a floor: a tax finding graded ``actual`` — an omission
+    with no available defence — and the categories in
+    :data:`_NON_NEGOTIABLE_HIGH`.
+
+    The floor is applied by matching the red flag's ``category`` against the
+    source finding's, so it is a **safety net, not the mechanism**: the
+    prompt already instructs the model to keep such findings high, and this
+    catches the case where it does not. It can only raise a severity, never
+    lower one, so a missed match costs nothing.
+    """
+    floors: dict[str, str] = {}
+    for af in agent_findings:
+        category = (af.category or "").strip().lower()
+        if not category:
+            continue
+        payload = af.structured_payload_json or {}
+        if payload.get("defensibility") == "actual" or category in _NON_NEGOTIABLE_HIGH:
+            floors[category] = "high"
+    return floors
+
+
+def _apply_severity_floor(severity: str, floor: str | None) -> str:
+    """Return the higher of *severity* and *floor*.
+
+    Shares :data:`_SEVERITY_ORDER` with the deduplication, so the two agree
+    on what "higher" means — including the ``critical`` the raw LLM output
+    sometimes still uses.
+    """
+    if floor is None:
+        return severity
+    if _SEVERITY_ORDER.get(floor, 0) > _SEVERITY_ORDER.get(severity, 0):
+        return floor
+    return severity
+
+
+def _flag_payload(item: dict, severity_was_floored: bool) -> dict | None:
+    """Carry the quantitative fields forward onto the red flag.
+
+    The specialist agents extract an amount and the fiscal years it relates
+    to; losing them at aggregation would mean the report can only say "a tax
+    assessment was notified" where the source document said how much and for
+    which year. Empty values are dropped so an ordinary flag stores nothing.
+    """
+    payload: dict = {}
+
+    amount = item.get("amount_eur")
+    if isinstance(amount, (int, float)) and not isinstance(amount, bool) and amount >= 0:
+        payload["amount_eur"] = float(amount)
+
+    years = item.get("fiscal_years")
+    if isinstance(years, (list, tuple)):
+        parsed = sorted({int(y) for y in years if str(y).strip().lstrip("-").isdigit()})
+        if parsed:
+            payload["fiscal_years"] = parsed
+
+    if severity_was_floored:
+        # Recorded so a reviewer can see the severity did not come from the
+        # model's judgement alone.
+        payload["severity_floored"] = True
+
+    return payload or None
+
+
+def _summarize_payload(payload: dict | None) -> str:
+    """Render the specialist agents' structured fields for the LLM context.
+
+    Only the fields that are present are emitted, so an ordinary finding
+    stays a single short line. Without this the aggregator would see the
+    tax and financial agents' prose and none of their structure — the
+    defensibility grade, the amount the document stated, the fiscal years,
+    the mitigating factors — and would have to guess what was already known.
+    """
+    if not payload:
+        return ""
+
+    bits: list[str] = []
+
+    grade = payload.get("defensibility")
+    if grade:
+        bits.append(f"defensibility={grade}")
+
+    tax_kind = payload.get("tax_kind")
+    if tax_kind and tax_kind != "altro":
+        bits.append(f"tax={tax_kind}")
+
+    amount = payload.get("amount_eur")
+    if amount is not None:
+        bits.append(f"amount_stated_by_document=EUR {amount:,.0f}")
+
+    years = payload.get("fiscal_years")
+    if years:
+        bits.append("FY " + ", ".join(str(y) for y in years))
+
+    periods = payload.get("assessment_periods") or []
+    barred = [str(pd["fiscal_year"]) for pd in periods if pd.get("time_barred")]
+    if barred:
+        bits.append("time-barred: FY " + ", ".join(barred))
+
+    mitigations = payload.get("mitigating_factors")
+    if mitigations:
+        bits.append("mitigants: " + ", ".join(mitigations))
+
+    counterparty = payload.get("counterparty")
+    if counterparty:
+        bits.append(f"counterparty={counterparty}")
+
+    if payload.get("change_of_control_clause") is True:
+        bits.append("change-of-control clause: yes")
+    if payload.get("financial_covenant") is True:
+        bits.append("financial covenant: yes")
+
+    legal_basis = payload.get("legal_basis")
+    if legal_basis:
+        bits.append(f"cited: {legal_basis}")
+
+    if payload.get("source") == "heuristic":
+        bits.append("raised by keyword floor, not extracted")
+
+    return " | ".join(bits)
+
+
 class RedFlagAggregationAgent:
     """Aggregate specialist findings into deduplicated ``RedFlag`` records.
 
@@ -209,7 +374,11 @@ class RedFlagAggregationAgent:
 
             # ── 6. Persist ────────────────────────────────────────────── #
             red_flags, open_questions = self._persist_flags_and_questions(
-                deal_id, deduped_flags, db, pages_by_doc
+                deal_id,
+                deduped_flags,
+                db,
+                pages_by_doc,
+                severity_floors=_build_severity_floors(agent_findings),
             )
 
             db.flush()
@@ -351,9 +520,11 @@ class RedFlagAggregationAgent:
                         else str(af.severity)
                     )
                     desc_snippet = (af.description or "")[:200]
+                    extra = _summarize_payload(af.structured_payload_json)
+                    extra = f"  [{extra}]" if extra else ""
                     parts.append(
                         f"  [{af.category}] {af.title}: {desc_snippet}"
-                        f"  (agent: {af.agent_name}, severity: {sev})"
+                        f"  (agent: {af.agent_name}, severity: {sev}){extra}"
                     )
 
             parts.append("")  # blank line between documents
@@ -369,9 +540,11 @@ class RedFlagAggregationAgent:
                     else str(af.severity)
                 )
                 desc_snippet = (af.description or "")[:200]
+                extra = _summarize_payload(af.structured_payload_json)
+                extra = f"  [{extra}]" if extra else ""
                 parts.append(
                     f"  [{af.category}] {af.title}: {desc_snippet}"
-                    f"  (agent: {af.agent_name}, severity: {sev})"
+                    f"  (agent: {af.agent_name}, severity: {sev}){extra}"
                 )
             parts.append("")
 
@@ -458,6 +631,7 @@ class RedFlagAggregationAgent:
         flags: list[dict],
         db: Session,
         pages_by_doc: dict[int, set[int]] | None = None,
+        severity_floors: dict[str, str] | None = None,
     ) -> tuple[list, list]:
         """Persist ``RedFlag`` rows and generate ``OpenQuestion`` for high/critical.
 
@@ -473,6 +647,7 @@ class RedFlagAggregationAgent:
         _VALID_FINDING_TYPES = {"red_flag", "observation", "information_request"}
         _MIN_FLAG_CONFIDENCE = 0.50   # drop red_flags below this threshold
         pages_by_doc = pages_by_doc or {}
+        severity_floors = severity_floors or {}
 
         red_flags: list[RedFlag] = []
         for item in flags:
@@ -506,6 +681,19 @@ class RedFlagAggregationAgent:
                 db.add(af)
             else:
                 source_doc_id = item.get("source_document_id")
+                category = str(item.get("category", "general"))[:100]
+
+                floored = _apply_severity_floor(
+                    severity_str, severity_floors.get(category.strip().lower())
+                )
+                if floored != severity_str:
+                    logger.info(
+                        "[%s] deal=%d — raised '%s' from %s to %s: the source "
+                        "finding admits no defence",
+                        self.AGENT_NAME, deal_id,
+                        item.get("title", ""), severity_str, floored,
+                    )
+
                 flag = RedFlag(
                     deal_id=deal_id,
                     title=str(item.get("title", ""))[:500],
@@ -513,14 +701,19 @@ class RedFlagAggregationAgent:
                     issue=item.get("issue") or item.get("description", ""),
                     risk=item.get("risk"),
                     recommendation=item.get("recommendation"),
-                    severity=Severity(severity_str),
+                    severity=Severity(floored),
                     area=_parse_dd_area(item.get("area")),
-                    category=str(item.get("category", "general"))[:100],
+                    category=category,
                     confidence=item.get("confidence"),
                     source_document_id=source_doc_id,
                     source_page=self._validate_source_page(
                         item.get("source_page"), source_doc_id, pages_by_doc
                     ),
+                    remedy_type=_normalize_choice(
+                        item.get("remedy_type"), _VALID_REMEDY_TYPES
+                    ),
+                    impact=_normalize_choice(item.get("impact"), _VALID_IMPACTS),
+                    structured_payload_json=_flag_payload(item, floored != severity_str),
                 )
                 db.add(flag)
                 red_flags.append(flag)
