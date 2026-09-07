@@ -131,7 +131,7 @@ The review covered the following areas, based on the documents available:
 
 {areas_text}
 
-Financial and tax matters are covered on a documentary, red-flag basis only, limited to the documents made available; this Report does not substitute a full financial or tax due diligence by the client's accounting and tax advisors. Accounting, technical, environmental and regulatory matters are outside the scope of this review.
+Financial and tax matters are covered on a documentary, red-flag basis only, limited to the documents made available; this Report does not substitute a full financial or tax due diligence by the client's accounting and tax advisors. {tax_scope_sentence} Where an exposure is quantified, the figure is the one stated in the source document: the quantification of higher taxes, penalties and interest is left to the client's tax advisors, the applicable measures depending on the fiscal year and on the procedure followed. Accounting, technical, environmental and regulatory matters are outside the scope of this review.
 
 ### Limitations
 This Report is based on the following assumptions:
@@ -153,7 +153,7 @@ La revisione ha riguardato le seguenti aree, sulla base dei documenti disponibil
 
 {areas_text}
 
-Gli aspetti finanziari e fiscali sono trattati su base esclusivamente documentale e di tipo red flag, nei limiti dei documenti messi a disposizione; il presente Report non sostituisce una due diligence finanziaria o fiscale completa a cura dei consulenti contabili e fiscali del cliente. Restano esclusi dall'ambito della revisione gli aspetti contabili, tecnici, ambientali e regolamentari.
+Gli aspetti finanziari e fiscali sono trattati su base esclusivamente documentale e di tipo red flag, nei limiti dei documenti messi a disposizione; il presente Report non sostituisce una due diligence finanziaria o fiscale completa a cura dei consulenti contabili e fiscali del cliente. {tax_scope_sentence} Ove un'esposizione sia quantificata, l'importo è quello indicato nel documento di origine: la quantificazione di maggiori imposte, sanzioni e interessi è rimessa ai consulenti fiscali del cliente, dipendendo le misure applicabili dal periodo d'imposta e dalla procedura seguita. Restano esclusi dall'ambito della revisione gli aspetti contabili, tecnici, ambientali e regolamentari.
 
 ### Limitazioni
 Il presente Report si basa sulle seguenti assunzioni:
@@ -252,10 +252,16 @@ def _render_introduction(deal_title: str, areas_reviewed: list[str], lang: str) 
         if areas_reviewed
         else _NO_AREAS_LINE[lang]
     )
+    # Computed from the rules registry rather than fixed: the assessment
+    # period moved from four years to five, so a sentence naming a number of
+    # years would already be wrong for anything filed from 2016 on.
+    from packages.agents import tax_rules_registry
+
     return _INTRO_TEMPLATES[lang].format(
         intro_heading=_L10N[lang]["intro_heading"],
         deal_title=deal_title,
         areas_text=areas_text,
+        tax_scope_sentence=tax_rules_registry.describe_scope(language=lang),
     )
 
 
@@ -275,6 +281,64 @@ def _format_source_citation(flag, doc_names: dict, lang: str) -> str:
     page_label = "p." if lang == "en" else "pag."
     inner = f"{filename}, {page_label} {page}" if page is not None else filename
     return f"({inner})"
+
+
+# The instrument each recommendation calls for, rendered at the end of the
+# recommendation cell the way a consolidated risk memo tags its lines.
+_REMEDY_LABELS: dict[str, dict[str, str]] = {
+    "en": {
+        "indemnity": "Indemnity",
+        "warranty": "Warranty",
+        "price_adjustment": "Price adjustment",
+        "earn_out": "Earn-out",
+        "condition_precedent": "Condition precedent",
+        "pre_closing_verification": "Pre-closing verification",
+        "post_closing_action": "Post-closing action",
+        "information_request": "Information request",
+    },
+    "it": {
+        "indemnity": "Indennizzo",
+        "warranty": "Dichiarazione e garanzia",
+        "price_adjustment": "Aggiustamento prezzo",
+        "earn_out": "Earn-out",
+        "condition_precedent": "Condizione sospensiva",
+        "pre_closing_verification": "Verifica pre-closing",
+        "post_closing_action": "Adempimento post-closing",
+        "information_request": "Richiesta di informazioni",
+    },
+}
+
+
+def _format_amount(amount: float, lang: str) -> str:
+    """Render an amount in the conventions of the report's language."""
+    rendered = f"{amount:,.0f}"
+    if lang == "it":
+        # Italian uses the dot as thousands separator.
+        return "Euro " + rendered.replace(",", ".")
+    return "EUR " + rendered
+
+
+def _format_figures(flag, lang: str) -> str:
+    """Render the amount and fiscal years a finding carries, if any.
+
+    Real tax and financial reports put a figure and a year on the row. The
+    amount is only ever the one the source document stated — the pipeline
+    never computes an exposure — so a row without it is correct, not
+    incomplete.
+    """
+    payload = getattr(flag, "structured_payload_json", None) or {}
+    bits: list[str] = []
+
+    amount = payload.get("amount_eur")
+    if isinstance(amount, (int, float)) and not isinstance(amount, bool):
+        bits.append(_format_amount(float(amount), lang))
+
+    years = payload.get("fiscal_years")
+    if years:
+        label = "es." if lang == "it" else "FY"
+        bits.append(f"{label} {', '.join(str(y) for y in years)}")
+
+    return f"({' · '.join(bits)})" if bits else ""
 
 
 def _render_key_findings(red_flags: list, lang: str, doc_names: dict | None = None) -> str:
@@ -322,9 +386,22 @@ def _render_key_findings(red_flags: list, lang: str, doc_names: dict | None = No
             citation = _format_source_citation(f, doc_names, lang)
             if citation:
                 issue_cell = f"{issue_cell} _{citation}_"
+            figures = _format_figures(f, lang)
+            if figures:
+                issue_cell = f"{issue_cell} **{figures}**"
+
+            recommendation_cell = f.recommendation
+            remedy = _REMEDY_LABELS[lang].get(
+                getattr(f, "remedy_type", None) or ""
+            )
+            if remedy:
+                recommendation_cell = (
+                    f"{(recommendation_cell or '').strip()} _[{remedy}]_".strip()
+                )
+
             parts.append(
                 f"| {i} | {_md_cell(issue_cell)} | {_md_cell(f.risk)} "
-                f"| {_md_cell(f.recommendation)} | {sev} |"
+                f"| {_md_cell(recommendation_cell)} | {sev} |"
             )
         parts.append("")
     return "\n".join(parts)
