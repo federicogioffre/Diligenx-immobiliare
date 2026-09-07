@@ -120,6 +120,24 @@ export interface RedFlagRead {
   confidence: number | null
   source_document_id: number | null
   source_page: number | null
+  // remedy_type: the instrument that answers the finding. impact: what it
+  // hits. Both null where the analysis did not tag the flag.
+  remedy_type:
+    | 'indemnity'
+    | 'warranty'
+    | 'price_adjustment'
+    | 'earn_out'
+    | 'condition_precedent'
+    | 'pre_closing_verification'
+    | 'post_closing_action'
+    | 'information_request'
+    | null
+  impact: 'value' | 'spa' | 'other' | null
+  structured_payload_json: {
+    amount_eur?: number
+    fiscal_years?: number[]
+    severity_floored?: boolean
+  } | null
   created_at: string
 }
 

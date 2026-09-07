@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import String, Float, Text, Integer, ForeignKey, Enum
+from sqlalchemy import String, Float, Text, Integer, ForeignKey, Enum, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -70,6 +70,22 @@ class RedFlag(TimestampMixin, Base):
     # Page within source_document_id where the flagged item appears. NULL when
     # the aggregator could not attribute (or validate) a specific page.
     source_page: Mapped[int | None] = mapped_column(Integer)
+    # Two independent axes, because the two professions tag differently.
+    #   remedy_type → the instrument that answers the finding (indemnity,
+    #                 warranty, price_adjustment, earn_out,
+    #                 condition_precedent, pre_closing_verification,
+    #                 post_closing_action, information_request) — the tag a
+    #                 law firm's risk memo assigns
+    #   impact      → what the finding hits (value | spa | other) — the tag a
+    #                 financial adviser's key-findings page assigns
+    # Vocabularies are validated in the aggregator, not by a DB enum: they
+    # will grow, and widening a native enum costs a migration each time.
+    remedy_type: Mapped[str | None] = mapped_column(String(40), index=True)
+    impact: Mapped[str | None] = mapped_column(String(20), index=True)
+    # What the specialist agents extracted and the aggregation must not lose:
+    # the amount the document stated, the fiscal years, the mitigating
+    # factors, the defensibility of the tax findings behind the flag.
+    structured_payload_json: Mapped[dict | None] = mapped_column(JSON)
 
     deal = relationship("Deal", back_populates="red_flags")
     source_document = relationship("Document", overlaps="red_flags")

@@ -156,11 +156,11 @@ class TestRedFlagCreation:
     """RedFlag rows are persisted with correct field values."""
 
     def test_red_flags_created_from_llm_output(self, db, test_deal):
-        """FakeLLM returns 1 red flag → 1 RedFlag row in DB."""
+        """FakeLLM returns 2 red flags → 2 RedFlag rows in DB."""
         _make_doc(db, test_deal)
         RedFlagAggregationAgent().run(test_deal.id, db)
         flags = _red_flags(db, test_deal)
-        assert len(flags) == 1
+        assert len(flags) == 2
 
     def test_red_flag_deal_id(self, db, test_deal):
         _make_doc(db, test_deal)
@@ -500,10 +500,10 @@ class TestOpenQuestionGeneration:
         return CustomLLM()
 
     def test_high_severity_creates_open_question(self, db, test_deal):
-        """FakeLLM returns severity='high' → 1 OpenQuestion."""
+        """Both stub red flags are high → one OpenQuestion each."""
         RedFlagAggregationAgent().run(test_deal.id, db)
         questions = _open_questions(db, test_deal)
-        assert len(questions) == 1
+        assert len(questions) == 2
 
     def test_critical_severity_creates_open_question(self, db, test_deal):
         flags = [{"title": "Critical Issue", "description": "...", "severity": "critical", "category": "compliance", "confidence": 0.95, "source_document_id": None}]
@@ -637,9 +637,9 @@ class TestReturnValue:
         assert "termination" in result["flags_by_category"]
 
     def test_flags_by_severity_high_count(self, db, test_deal):
-        """FakeLLM returns 1 high-severity flag."""
+        """FakeLLM returns 2 high-severity flags."""
         result = RedFlagAggregationAgent().run(test_deal.id, db)
-        assert result["flags_by_severity"]["high"] == 1
+        assert result["flags_by_severity"]["high"] == 2
 
 
 # ── 6. Idempotency ─────────────────────────────────────────────────────────
@@ -683,9 +683,9 @@ class TestIdempotency:
                     return json.dumps([])
                 return super().complete(prompt, max_tokens)
 
-        # First run: default FakeLLM → 1 flag
+        # First run: default FakeLLM → 2 flags
         RedFlagAggregationAgent().run(test_deal.id, db)
-        assert db.query(RedFlag).filter(RedFlag.deal_id == test_deal.id).count() == 1
+        assert db.query(RedFlag).filter(RedFlag.deal_id == test_deal.id).count() == 2
 
         # Second run: NoFlagsLLM → 0 flags; old row must be gone
         RedFlagAggregationAgent(provider=NoFlagsLLM()).run(test_deal.id, db)
@@ -701,9 +701,9 @@ class TestIdempotency:
                     return json.dumps([])
                 return super().complete(prompt, max_tokens)
 
-        # First run: 1 high-severity flag → 1 open question
+        # First run: 2 high-severity flags → 2 open questions
         RedFlagAggregationAgent().run(test_deal.id, db)
-        assert len(_open_questions(db, test_deal)) == 1
+        assert len(_open_questions(db, test_deal)) == 2
 
         # Second run: 0 flags → 0 questions
         RedFlagAggregationAgent(provider=NoFlagsLLM()).run(test_deal.id, db)
@@ -933,3 +933,247 @@ class TestOrchestratorCompatibility:
         RedFlagAggregationAgent().run(test_deal.id, db)
         for q in _open_questions(db, test_deal):
             assert q.agent_name == AGENT_RED_FLAG
+
+
+# ── Remedy and impact tags, carried figures, severity floor ────────────────
+
+from packages.agents.red_flag_aggregator import (  # noqa: E402
+    _VALID_REMEDY_TYPES,
+    _VALID_IMPACTS,
+    _build_severity_floors,
+    _apply_severity_floor,
+    _summarize_payload,
+)
+from packages.agents.deal_analysis_agent import LLMProvider  # noqa: E402
+
+
+def _flag_llm(**overrides) -> LLMProvider:
+    """A stub returning exactly one red flag, with fields overridden."""
+    item = {
+        "finding_type": "red_flag",
+        "title": "Notified tax assessment",
+        "issue": "An assessment was notified for FY2022.",
+        "risk": "The target bears the assessed amount.",
+        "recommendation": "Insert a specific indemnity in the SPA.",
+        "severity": "medium",
+        "area": "tax",
+        "category": "tax_assessment",
+        "confidence": 0.9,
+        "source_document_id": None,
+    }
+    item.update(overrides)
+
+    class _Stub(LLMProvider):
+        def complete(self, prompt: str, max_tokens: int = 4096) -> str:
+            if "RED FLAGS" in prompt.upper():
+                return json.dumps([item])
+            return "[]"
+
+    return _Stub()
+
+
+def _tax_finding(db, deal, *, category="tax_assessment", payload=None) -> AgentFinding:
+    af = AgentFinding(
+        deal_id=deal.id,
+        document_id=None,
+        agent_name="tax_analysis",
+        category=category,
+        title="Assessment",
+        description="An assessment was notified.",
+        severity=Severity.high,
+        confidence=0.9,
+        structured_payload_json=payload,
+    )
+    db.add(af)
+    db.flush()
+    return af
+
+
+class TestRemedyAndImpactTags:
+    """Two axes: the instrument that answers a finding, and what it hits."""
+
+    def test_tags_are_persisted(self, db, test_deal):
+        agent = RedFlagAggregationAgent(
+            provider=_flag_llm(remedy_type="indemnity", impact="value")
+        )
+        agent.run(test_deal.id, db)
+        flag = _red_flags(db, test_deal)[0]
+        assert flag.remedy_type == "indemnity"
+        assert flag.impact == "value"
+
+    @pytest.mark.parametrize("remedy", _VALID_REMEDY_TYPES)
+    def test_every_remedy_in_the_vocabulary_is_accepted(
+        self, db, test_deal, remedy: str
+    ):
+        RedFlagAggregationAgent(provider=_flag_llm(remedy_type=remedy)).run(
+            test_deal.id, db
+        )
+        assert _red_flags(db, test_deal)[0].remedy_type == remedy
+
+    @pytest.mark.parametrize("impact", _VALID_IMPACTS)
+    def test_every_impact_in_the_vocabulary_is_accepted(
+        self, db, test_deal, impact: str
+    ):
+        RedFlagAggregationAgent(provider=_flag_llm(impact=impact)).run(
+            test_deal.id, db
+        )
+        assert _red_flags(db, test_deal)[0].impact == impact
+
+    def test_normalisation_of_spacing_and_case(self, db, test_deal):
+        RedFlagAggregationAgent(
+            provider=_flag_llm(remedy_type="Condition Precedent", impact="SPA")
+        ).run(test_deal.id, db)
+        flag = _red_flags(db, test_deal)[0]
+        assert flag.remedy_type == "condition_precedent"
+        assert flag.impact == "spa"
+
+    @pytest.mark.parametrize("bad", ["escrow", "", None, 7, "value_or_spa"])
+    def test_unknown_tag_becomes_null_rather_than_a_guess(
+        self, db, test_deal, bad
+    ):
+        """An untagged flag a lawyer completes beats a wrongly tagged one."""
+        RedFlagAggregationAgent(provider=_flag_llm(remedy_type=bad)).run(
+            test_deal.id, db
+        )
+        assert _red_flags(db, test_deal)[0].remedy_type is None
+
+    def test_tags_absent_from_output_stay_null(self, db, test_deal):
+        RedFlagAggregationAgent(provider=_flag_llm()).run(test_deal.id, db)
+        flag = _red_flags(db, test_deal)[0]
+        assert flag.remedy_type is None and flag.impact is None
+
+
+class TestCarriedFigures:
+    """The amount and the years the specialists extracted must survive."""
+
+    def test_amount_and_years_are_carried(self, db, test_deal):
+        RedFlagAggregationAgent(
+            provider=_flag_llm(amount_eur=240000, fiscal_years=[2022, 2021])
+        ).run(test_deal.id, db)
+        payload = _red_flags(db, test_deal)[0].structured_payload_json
+        assert payload["amount_eur"] == 240000
+        assert payload["fiscal_years"] == [2021, 2022]
+
+    def test_payload_is_null_when_there_is_nothing_to_carry(self, db, test_deal):
+        RedFlagAggregationAgent(provider=_flag_llm()).run(test_deal.id, db)
+        assert _red_flags(db, test_deal)[0].structured_payload_json is None
+
+    @pytest.mark.parametrize("bad", ["circa 240k", -3, True, None])
+    def test_unusable_amount_is_dropped(self, db, test_deal, bad):
+        RedFlagAggregationAgent(provider=_flag_llm(amount_eur=bad)).run(
+            test_deal.id, db
+        )
+        payload = _red_flags(db, test_deal)[0].structured_payload_json
+        assert payload is None or "amount_eur" not in payload
+
+    def test_non_numeric_years_are_dropped(self, db, test_deal):
+        RedFlagAggregationAgent(
+            provider=_flag_llm(fiscal_years=[2022, "duemilaventidue", None])
+        ).run(test_deal.id, db)
+        payload = _red_flags(db, test_deal)[0].structured_payload_json
+        assert payload["fiscal_years"] == [2022]
+
+
+class TestSeverityFloor:
+    """A finding with no available defence cannot be reported as medium."""
+
+    def test_actual_defensibility_raises_the_flag(self, db, test_deal):
+        _tax_finding(db, test_deal, payload={"defensibility": "actual"})
+        RedFlagAggregationAgent(provider=_flag_llm(severity="medium")).run(
+            test_deal.id, db
+        )
+        flag = _red_flags(db, test_deal)[0]
+        assert flag.severity == Severity.high
+        assert flag.structured_payload_json["severity_floored"] is True
+
+    def test_capital_loss_is_never_below_high(self, db, test_deal):
+        _tax_finding(db, test_deal, category="capital_loss")
+        RedFlagAggregationAgent(
+            provider=_flag_llm(severity="low", category="capital_loss")
+        ).run(test_deal.id, db)
+        assert _red_flags(db, test_deal)[0].severity == Severity.high
+
+    def test_floor_never_lowers_a_severity(self, db, test_deal):
+        _tax_finding(db, test_deal, payload={"defensibility": "actual"})
+        RedFlagAggregationAgent(provider=_flag_llm(severity="high")).run(
+            test_deal.id, db
+        )
+        flag = _red_flags(db, test_deal)[0]
+        assert flag.severity == Severity.high
+        # Not marked as floored: the model already had it right.
+        assert flag.structured_payload_json is None
+
+    def test_no_floor_without_a_matching_category(self, db, test_deal):
+        """The floor is a safety net; a missed match costs nothing."""
+        _tax_finding(db, test_deal, category="tax_debt", payload={"defensibility": "actual"})
+        RedFlagAggregationAgent(
+            provider=_flag_llm(severity="medium", category="something_else")
+        ).run(test_deal.id, db)
+        assert _red_flags(db, test_deal)[0].severity == Severity.medium
+
+    def test_interpretative_grade_creates_no_floor(self, db, test_deal):
+        _tax_finding(db, test_deal, payload={"defensibility": "high"})
+        RedFlagAggregationAgent(provider=_flag_llm(severity="medium")).run(
+            test_deal.id, db
+        )
+        assert _red_flags(db, test_deal)[0].severity == Severity.medium
+
+
+class TestFloorHelpers:
+    """Unit-level behaviour of the floor computation."""
+
+    def test_floors_shared_ranking_understands_critical(self):
+        """The floor and the deduplication must agree on what is higher."""
+        assert _apply_severity_floor("critical", "high") == "critical"
+        assert _apply_severity_floor("low", "high") == "high"
+        assert _apply_severity_floor("high", None) == "high"
+
+    def test_findings_without_a_category_are_ignored(self, db, test_deal):
+        af = _tax_finding(db, test_deal, category="", payload={"defensibility": "actual"})
+        assert _build_severity_floors([af]) == {}
+
+
+class TestPayloadSummary:
+    """What the aggregator is told about each specialist finding."""
+
+    def test_present_fields_only(self):
+        summary = _summarize_payload({
+            "defensibility": "actual",
+            "tax_kind": "iva",
+            "amount_eur": 85000,
+            "fiscal_years": [2021, 2022],
+            "mitigating_factors": ["instalment_plan_in_force"],
+            "legal_basis": "art. 13 D.Lgs. 471/1997",
+        })
+        assert "defensibility=actual" in summary
+        assert "tax=iva" in summary
+        assert "EUR 85,000" in summary
+        assert "FY 2021, 2022" in summary
+        assert "instalment_plan_in_force" in summary
+        assert "art. 13" in summary
+
+    def test_empty_payload_renders_nothing(self):
+        assert _summarize_payload(None) == ""
+        assert _summarize_payload({}) == ""
+
+    def test_generic_tax_kind_is_not_noise(self):
+        assert _summarize_payload({"tax_kind": "altro"}) == ""
+
+    def test_time_barred_years_are_surfaced(self):
+        summary = _summarize_payload({
+            "assessment_periods": [
+                {"fiscal_year": 2004, "time_barred": True},
+                {"fiscal_year": 2022, "time_barred": False},
+            ]
+        })
+        assert "time-barred: FY 2004" in summary
+        assert "2022" not in summary
+
+    def test_keyword_floor_origin_is_disclosed(self):
+        assert "keyword floor" in _summarize_payload({"source": "heuristic"})
+
+    def test_covenant_flags_only_when_true(self):
+        assert "change-of-control clause: yes" in _summarize_payload(
+            {"change_of_control_clause": True}
+        )
+        assert _summarize_payload({"change_of_control_clause": False}) == ""

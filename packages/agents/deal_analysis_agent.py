@@ -449,10 +449,40 @@ class FakeLLMProvider(LLMProvider):
                     "issue": "Only one party has the right to terminate without cause, creating imbalance.",
                     "risk": "The counterparty may exit the agreement at any time, leaving the target without recourse.",
                     "recommendation": "Insert specific Sellers' representations and warranties in the SPA.",
+                    "remedy_type": "warranty",
+                    "impact": "spa",
+                    "amount_eur": None,
+                    "fiscal_years": [],
                     "severity": "high",
                     "area": "suppliers_customers",
                     "category": "termination",
                     "confidence": 0.88,
+                    "source_document_id": None,
+                },
+                {
+                    "finding_type": "red_flag",
+                    "title": "Notified tax assessment for FY2022",
+                    "issue": (
+                        "An avviso di accertamento for FY2022 claims Euro "
+                        "240.000 of additional IRES, penalties and interest."
+                    ),
+                    "risk": (
+                        "If upheld, the target bears the assessed amount plus "
+                        "litigation costs; other open years may follow."
+                    ),
+                    "recommendation": (
+                        "Insert a specific indemnity in the SPA covering the "
+                        "assessed exposure, surviving until the expiry of the "
+                        "assessment period for FY2022 plus a grace period."
+                    ),
+                    "remedy_type": "indemnity",
+                    "impact": "value",
+                    "amount_eur": 240000,
+                    "fiscal_years": [2022],
+                    "severity": "high",
+                    "area": "tax",
+                    "category": "tax_assessment",
+                    "confidence": 0.90,
                     "source_document_id": None,
                 },
                 {
