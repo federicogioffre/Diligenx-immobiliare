@@ -43,6 +43,63 @@ function ExpandableText({ text }: { text: string }) {
   )
 }
 
+// ── Remedy and impact ──────────────────────────────────────────────────────
+
+// Two axes, because the two professions tag a finding differently: the
+// remedy is the instrument that answers it (what a law firm's risk memo
+// assigns), the impact is what it hits (what a financial adviser's
+// key-findings page assigns).
+
+type Remedy = NonNullable<RedFlagRead['remedy_type']>
+type Impact = NonNullable<RedFlagRead['impact']>
+
+const REMEDY: Record<Remedy, string> = {
+  indemnity: 'Indennizzo',
+  warranty: 'Garanzia',
+  price_adjustment: 'Prezzo',
+  earn_out: 'Earn-out',
+  condition_precedent: 'Condizione sospensiva',
+  pre_closing_verification: 'Verifica pre-closing',
+  post_closing_action: 'Post-closing',
+  information_request: 'Informazioni',
+}
+
+// Order used for the filter chips: the instruments that change the contract
+// come first, the ones that only require an action come last.
+const REMEDY_ORDER: Remedy[] = [
+  'indemnity',
+  'warranty',
+  'price_adjustment',
+  'earn_out',
+  'condition_precedent',
+  'pre_closing_verification',
+  'post_closing_action',
+  'information_request',
+]
+
+const IMPACT: Record<Impact, string> = {
+  value: 'Valore',
+  spa: 'Contratto',
+  other: 'Altro',
+}
+
+const IMPACT_ORDER: Impact[] = ['value', 'spa', 'other']
+
+/** "Euro 240.000 · es. 2022" — the figures the source document stated. */
+function formatFigures(f: RedFlagRead): string | null {
+  const payload = f.structured_payload_json
+  if (!payload) return null
+
+  const bits: string[] = []
+  if (typeof payload.amount_eur === 'number') {
+    bits.push('Euro ' + payload.amount_eur.toLocaleString('it-IT', { maximumFractionDigits: 0 }))
+  }
+  if (payload.fiscal_years?.length) {
+    bits.push('es. ' + payload.fiscal_years.join(', '))
+  }
+  return bits.length ? bits.join(' · ') : null
+}
+
 // ── Filter pill ────────────────────────────────────────────────────────────
 
 function FilterPill({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
@@ -109,6 +166,7 @@ function ClauseCard({ c, docMap, index }: { c: ClauseFindingRead; docMap: Map<nu
 function RedFlagCard({ f, docMap, index }: { f: RedFlagRead; docMap: Map<number, string>; index: number }) {
   const severity = (f.severity ?? 'medium') as Severity
   const filename = f.source_document_id != null ? docMap.get(f.source_document_id) : undefined
+  const figures = formatFigures(f)
 
   return (
     <div className={`bg-white rounded-2xl border border-slate-200 border-l-4 ${severityLeftBorder(severity)} shadow-sm p-5`}>
@@ -121,6 +179,16 @@ function RedFlagCard({ f, docMap, index }: { f: RedFlagRead; docMap: Map<number,
         <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-slate-100 text-slate-600">
           {f.category.replace(/_/g, ' ')}
         </span>
+        {f.remedy_type && (
+          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
+            {REMEDY[f.remedy_type]}
+          </span>
+        )}
+        {f.impact && (
+          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-violet-50 text-violet-700 border border-violet-100">
+            {IMPACT[f.impact]}
+          </span>
+        )}
       </div>
 
       <h3 className="text-sm font-semibold text-slate-900 mb-2 leading-snug">{f.title}</h3>
@@ -150,6 +218,7 @@ function RedFlagCard({ f, docMap, index }: { f: RedFlagRead; docMap: Map<number,
           </span>
         )}
         {f.source_page != null && <span>Pag. {f.source_page}</span>}
+        {figures && <span className="font-semibold text-slate-500 tabular-nums">{figures}</span>}
         {f.confidence != null && <span>Conf. {(f.confidence * 100).toFixed(0)}%</span>}
       </div>
     </div>
@@ -170,6 +239,11 @@ export default function FindingsPage() {
 
   const [clauseFilter, setClauseFilter] = useState<'high' | 'all'>('high')
   const [flagFilter, setFlagFilter]     = useState<'important' | 'all'>('important')
+  // Null means "no filter on this axis". The two are independent, so a
+  // lawyer can ask for everything that needs a clause, or everything that
+  // an indemnity answers, or both at once.
+  const [remedyFilter, setRemedyFilter] = useState<Remedy | null>(null)
+  const [impactFilter, setImpactFilter] = useState<Impact | null>(null)
 
   useEffect(() => {
     // Auth guard is enforced by middleware.ts; 401s redirect automatically.
@@ -202,9 +276,21 @@ export default function FindingsPage() {
     ? clauses.filter(c => !c.relevance_score || c.relevance_score === 'high')
     : clauses
 
-  const visibleFlags = flagFilter === 'important'
-    ? flags.filter(f => f.severity === 'high')
-    : flags
+  // Only offer a chip for a tag that some flag actually carries: a wall of
+  // dead filters is worse than none.
+  const presentRemedies = REMEDY_ORDER.filter(r => flags.some(f => f.remedy_type === r))
+  const presentImpacts = IMPACT_ORDER.filter(i => flags.some(f => f.impact === i))
+
+  const visibleFlags = flags.filter(f => {
+    if (flagFilter === 'important' && f.severity !== 'high') return false
+    if (remedyFilter && f.remedy_type !== remedyFilter) return false
+    if (impactFilter && f.impact !== impactFilter) return false
+    return true
+  })
+
+  const countBy = (predicate: (f: RedFlagRead) => boolean) =>
+    flags.filter(f => (flagFilter === 'important' ? f.severity === 'high' : true) && predicate(f))
+      .length
 
   return (
     <div>
@@ -266,6 +352,49 @@ export default function FindingsPage() {
           </div>
         </div>
 
+        {(presentRemedies.length > 0 || presentImpacts.length > 0) && (
+          <div className="flex flex-col gap-2 mb-4">
+            {presentRemedies.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mr-1">
+                  Rimedio
+                </span>
+                <FilterPill active={remedyFilter === null} onClick={() => setRemedyFilter(null)}>
+                  Tutti
+                </FilterPill>
+                {presentRemedies.map(r => (
+                  <FilterPill
+                    key={r}
+                    active={remedyFilter === r}
+                    onClick={() => setRemedyFilter(remedyFilter === r ? null : r)}
+                  >
+                    {REMEDY[r]} ({countBy(f => f.remedy_type === r)})
+                  </FilterPill>
+                ))}
+              </div>
+            )}
+            {presentImpacts.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mr-1">
+                  Impatto
+                </span>
+                <FilterPill active={impactFilter === null} onClick={() => setImpactFilter(null)}>
+                  Tutti
+                </FilterPill>
+                {presentImpacts.map(i => (
+                  <FilterPill
+                    key={i}
+                    active={impactFilter === i}
+                    onClick={() => setImpactFilter(impactFilter === i ? null : i)}
+                  >
+                    {IMPACT[i]} ({countBy(f => f.impact === i)})
+                  </FilterPill>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {visibleFlags.length === 0 ? (
           <div className="text-center py-10 bg-white rounded-2xl border border-slate-200 border-dashed">
             <svg className="w-8 h-8 text-slate-200 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -274,7 +403,9 @@ export default function FindingsPage() {
             <p className="text-sm text-slate-400">
               {flags.length === 0
                 ? 'Nessun red flag identificato.'
-                : 'Nessun red flag con severity alta. Mostra "Tutti" per vedere i minori.'}
+                : remedyFilter || impactFilter
+                  ? 'Nessun red flag con questi filtri. Rimuovi un filtro per vedere gli altri.'
+                  : 'Nessun red flag con severity alta. Mostra "Tutti" per vedere i minori.'}
             </p>
           </div>
         ) : (

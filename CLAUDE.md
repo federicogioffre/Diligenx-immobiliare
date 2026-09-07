@@ -73,6 +73,7 @@ Diligenx/
 │   │   ├── dashboard/                    # workspace switcher, deal list
 │   │   ├── dashboard/insights/           # 4 aggregate widgets (pipeline, severity, top categories, completeness)
 │   │   └── deals/[id]/                   # deal detail with severity + follow-up widgets, upload, analyze, report
+│   │       └── findings/                 # clause + red-flag lists; red flags filterable by remedy and impact, with the tags and stated figures on each card
 │   ├── src/components/                   # shared UI (toasts, modals, upload zone)
 │   ├── src/lib/api.ts                    # typed API client
 │   ├── src/middleware.ts                 # server-side auth guard via cookie
