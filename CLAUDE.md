@@ -13,7 +13,7 @@
 - **Env:** `.env` via `pydantic-settings`
 - **Frontend:** Next.js 15 (App Router, TypeScript) — login + dashboard + insights + deals UI, server-side auth via cookie
 - **Frontend tests:** Playwright smoke suite (3 tests) in `apps/web/tests/e2e/`
-- **Tests:** pytest + FastAPI TestClient (SQLite), **987 passing**
+- **Tests:** pytest + FastAPI TestClient (SQLite), **1007 passing**
 
 ## Project Root
 ```
@@ -97,6 +97,7 @@ Diligenx/
 │   │   ├── report_agent.py               # Stage 6: Markdown report → Report row
 │   │   ├── deal_qa_agent.py              # RAG Q&A over deal documents
 │   │   ├── concurrency.py                # run_llm_tasks() — bounded parallel fan-out for per-doc LLM calls
+│   │   ├── stage_tx.py                   # release_connection_before_llm() — no DB transaction across the LLM phase
 │   │   ├── scoring_service.py            # compute_risk_score(deal_id)
 │   │   ├── legal_rules.py                # CCNL / legal heuristics
 │   │   └── deal_agent.py                 # legacy single-shot agent (kept for back-compat)
@@ -113,7 +114,7 @@ Diligenx/
 │       └── vector_store.py               # cosine similarity over DocumentChunk.embedding
 │
 ├── infra/, scripts/, docker-compose.yml, railway.toml
-├── tests/                                # 987 passing
+├── tests/                                # 1007 passing
 └── CLAUDE.md                             # ← this file
 ```
 
@@ -203,7 +204,7 @@ pnpm install && pnpm dev      # http://localhost:3000
 
 ```bash
 cd apps/api
-python -m pytest ../../tests -q   # 987 passed
+python -m pytest ../../tests -q   # 1007 passed
 ```
 
 ## Key Design Decisions
@@ -221,6 +222,7 @@ python -m pytest ../../tests -q   # 987 passed
 - **Anthropic prompt caching**: every LLM prompt is sent with `cache_control={"type":"ephemeral"}` so the idempotent `/analyze` re-runs hit Anthropic's cache (~90% input-cost reduction within the 5-minute TTL).
 - **Anthropic SDK 1.x**: `requirements.txt` pins `anthropic>=1,<2`. The 1.x SDK removed `temperature`/`top_p`/`top_k` from the `messages.create()` signature (passing them is a `TypeError`), so `AnthropicLLMProvider` sends `temperature=0` through `extra_body`, and only for model families that still accept sampling parameters (Claude 4.6/4.5 line and older — `_accepts_sampling_params`). Opus 4.7+, Sonnet 5 and the Claude 5 family reject sampling parameters with a 400, so for those the request carries none.
 - **Parallel LLM fan-out**: per-document LLM work inside each pipeline stage (routing, contract, corporate, corporate-intro) runs on a bounded thread pool via `packages/agents/concurrency.run_llm_tasks` (`LLM_MAX_CONCURRENCY`, default 4). Worker functions are pure (LLM + parse only — no `Session` access); persistence happens on the caller's thread in input order. Contract analysis now inserts only the clauses that survive filtering (no insert-then-delete churn).
+- **No DB transaction across the LLM phase** (`packages/agents/stage_tx.release_connection_before_llm`): every fan-out stage (routing, contract, corporate, corporate-intro, tax, financial) opens its running `AgentRun`, copies the worker inputs out of the ORM into plain values, **commits** (connection back to the pool, running row visible to the SSE stream), fans out, and only then — in a fresh transaction — deletes the previous outputs and persists the new ones. Before this, the contract stage held an idle transaction for 925 s on a 66-document data room; the managed Postgres proxy closed the connection and the first write failed with `SSL connection has been closed unexpectedly`, rolling back the whole stage. A failed stage still rolls its deletes back (previous outputs survive). Worker lambdas must never touch ORM instances (expired after the commit). Belt and braces: `db/session.py` sets TCP keepalives + `pool_recycle=1800` on Postgres connections.
 
 - **Postgres Row-Level Security (RLS)** — defense-in-depth on top of the application-level filters. Migration `012` enables RLS + `FORCE` + tenant-isolation policies on every workspace/deal/document-scoped table (incl. `company_profiles`). The auth dependency and every fresh `SessionLocal` (HTTP request, BackgroundTask, Arq worker, SSE stream) bind the tenant via `set_tenant_context(db, user_id)`, which writes the `app.current_user_id` GUC. A pool `checkin` event clears the GUC when a connection is returned. SQLite (test env) and superuser Postgres connections are no-ops — see "Enforcing RLS in production" below.
 

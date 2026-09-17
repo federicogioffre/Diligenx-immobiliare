@@ -153,29 +153,14 @@ class ContractAgent:
             self.AGENT_NAME, deal_id, deal.title,
         )
 
-        # ── 1. Idempotency: wipe previous outputs ─────────────────── #
+        # ── 1. Idempotency: replace the previous AgentRun ─────────── #
+        # Previous *outputs* (ClauseFinding / AgentFinding) are deleted in
+        # the persistence phase below, inside the same transaction as the
+        # new rows, so a failed stage still rolls the deletes back.
         db.query(AgentRun).filter(
             AgentRun.deal_id == deal_id,
             AgentRun.agent_name == self.AGENT_NAME,
         ).delete(synchronize_session=False)
-
-        db.query(AgentFinding).filter(
-            AgentFinding.deal_id == deal_id,
-            AgentFinding.agent_name == self.AGENT_NAME,
-        ).delete(synchronize_session=False)
-
-        # Clear ClauseFinding rows for all documents in this deal.
-        doc_ids_in_deal = [
-            row.id
-            for row in db.query(Document.id)
-            .filter(Document.deal_id == deal_id)
-            .all()
-        ]
-        if doc_ids_in_deal:
-            db.query(ClauseFinding).filter(
-                ClauseFinding.document_id.in_(doc_ids_in_deal)
-            ).delete(synchronize_session=False)
-
         db.flush()
 
         # ── 2. Open AgentRun ──────────────────────────────────────── #
@@ -218,11 +203,13 @@ class ContractAgent:
             # bounded pool. Only the surviving payloads are persisted below,
             # on this thread, in input order (Sessions aren't thread-safe;
             # this also removes the old insert-then-delete churn).
+            # Plain values for the workers: after the commit below the ORM
+            # instances are expired and must not be touched off-thread.
             to_analyse = []
             for doc in documents:
                 text = (doc.raw_text or "").strip()
                 if text:
-                    to_analyse.append((doc, text))
+                    to_analyse.append((doc, doc.id, doc.filename, text))
                 else:
                     logger.warning(
                         "[%s] deal=%d doc=%d — no text, skipping",
@@ -230,18 +217,42 @@ class ContractAgent:
                     )
 
             from packages.agents.concurrency import run_llm_tasks
+            from packages.agents.stage_tx import release_connection_before_llm
+
+            # No transaction may stay open across the LLM phase (minutes on a
+            # real data room): the idle connection gets closed server-side
+            # and the whole stage would be rolled back at the first write.
+            release_connection_before_llm(db)
 
             analyses = run_llm_tasks(
                 to_analyse,
-                lambda pair: self._analyze_document_payloads(
-                    pair[0].id, pair[0].filename, pair[1]
+                lambda item: self._analyze_document_payloads(
+                    item[1], item[2], item[3]
                 ),
             )
 
             # ── 5. Persist results (main thread, input order) ──────── #
             from app.models.clause_finding import ClauseFinding, ClauseType
 
-            for (doc, _), analysis in zip(to_analyse, analyses):
+            # Idempotency: wipe the previous run's outputs in the same
+            # transaction as the new rows.
+            db.query(AgentFinding).filter(
+                AgentFinding.deal_id == deal_id,
+                AgentFinding.agent_name == self.AGENT_NAME,
+            ).delete(synchronize_session=False)
+            doc_ids_in_deal = [
+                row.id
+                for row in db.query(Document.id)
+                .filter(Document.deal_id == deal_id)
+                .all()
+            ]
+            if doc_ids_in_deal:
+                db.query(ClauseFinding).filter(
+                    ClauseFinding.document_id.in_(doc_ids_in_deal)
+                ).delete(synchronize_session=False)
+            db.flush()
+
+            for (doc, _, _, _), analysis in zip(to_analyse, analyses):
                 doc_clauses: list = []
                 for p in analysis["clauses"]:
                     finding = ClauseFinding(

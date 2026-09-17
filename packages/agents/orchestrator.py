@@ -312,13 +312,10 @@ def _stage_document_routing(
     agent = AGENT_ROUTER
     logger.info("[%s] deal=%d — starting document routing", agent, deal_id)
 
-    # Idempotency
+    # Idempotency: replace the previous AgentRun. Previous classification
+    # findings are deleted in the persistence phase, in the same transaction
+    # as the new ones (see stage_tx).
     _clear_previous_runs(db, deal_id, agent)
-    db.query(AgentFinding).filter(
-        AgentFinding.deal_id == deal_id,
-        AgentFinding.agent_name == agent,
-    ).delete(synchronize_session=False)
-    db.flush()
 
     run = _create_run(db, deal_id, agent)
 
@@ -338,19 +335,22 @@ def _stage_document_routing(
         # pure, so it fans out on a bounded pool (results come back in input
         # order). Persistence stays on this thread — Sessions aren't
         # thread-safe.
+        # Plain values for the workers: after the commit below the ORM
+        # instances are expired and must not be touched off-thread.
         to_classify = []
         for doc in documents:
             if doc.raw_text:
-                to_classify.append(doc)
+                to_classify.append((doc, doc.id, doc.filename, doc.raw_text[:3000]))
             else:
                 logger.warning(
                     "[%s] deal=%d doc=%d — no text, skipping", agent, deal_id, doc.id
                 )
 
-        def _classify(doc) -> dict:
+        def _classify(item) -> dict:
+            _, doc_id, filename, text = item
             prompt = DOCUMENT_CLASSIFICATION_PROMPT.format(
-                filename=doc.filename,
-                text=(doc.raw_text or "")[:3000],
+                filename=filename,
+                text=text,
             )
             raw = llm.complete(prompt, max_tokens=256)
 
@@ -359,7 +359,7 @@ def _stage_document_routing(
             except Exception:
                 logger.warning(
                     "[%s] deal=%d doc=%d — parse error: %r",
-                    agent, deal_id, doc.id, raw,
+                    agent, deal_id, doc_id, raw,
                 )
                 classification = None
 
@@ -375,10 +375,22 @@ def _stage_document_routing(
             return classification
 
         from packages.agents.concurrency import run_llm_tasks
+        from packages.agents.stage_tx import release_connection_before_llm
+
+        # No transaction may stay open across the LLM phase.
+        release_connection_before_llm(db)
 
         results = run_llm_tasks(to_classify, _classify)
 
-        for doc, classification in zip(to_classify, results):
+        # Idempotency: wipe the previous run's classifications in the same
+        # transaction as the new ones.
+        db.query(AgentFinding).filter(
+            AgentFinding.deal_id == deal_id,
+            AgentFinding.agent_name == agent,
+        ).delete(synchronize_session=False)
+        db.flush()
+
+        for (doc, _, _, _), classification in zip(to_classify, results):
             doc_type = classification.get("document_type", "other")
             confidence = classification.get("confidence", 0.0)
 
