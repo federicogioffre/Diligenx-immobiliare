@@ -217,6 +217,38 @@ class CorporateIntroAgent:
         return any(kw in haystack for kw in _CORPORATE_INTRO_KEYWORDS)
 
     def _profile_payloads(self, filename: str, raw_text: str, document_id: int) -> list[dict]:
+        from packages.agents.document_coverage import collect_document_payloads
+
+        parts = collect_document_payloads(
+            raw_text,
+            lambda batch: self._profile_payloads_batch(filename, batch, document_id),
+            max_chars=_TEXT_MAX_CHARS,
+        )
+        # Profile fields may appear in different parts of the same document.
+        # Preserve differing values rather than silently letting the last part win.
+        merged: dict[str, dict] = {}
+        for item in parts:
+            key = " ".join(item["company_name"].casefold().split())
+            if key not in merged:
+                merged[key] = dict(item)
+                continue
+            previous = merged[key]
+            confidence = item.get("confidence")
+            if confidence is not None:
+                existing = previous.get("confidence")
+                previous["confidence"] = min(existing, confidence) if existing is not None else confidence
+            for field, value in item.items():
+                if field in {"company_name", "confidence", "source_spans"} or value in (None, ""):
+                    continue
+                old = previous.get(field)
+                if old in (None, ""):
+                    previous[field] = value
+                elif str(value) not in str(old).split("\n"):
+                    previous[field] = f"{old}\n{value}"
+            previous["source_spans"].extend(item["source_spans"])
+        return list(merged.values())
+
+    def _profile_payloads_batch(self, filename: str, raw_text: str, document_id: int) -> list[dict]:
         """Call the LLM and return validated profile payload dicts.
 
         PURE with respect to the database — safe to run on a worker thread
@@ -225,7 +257,7 @@ class CorporateIntroAgent:
         """
         from packages.prompts.deal_prompts import CORPORATE_INTRO_EXTRACTION_PROMPT
 
-        text = raw_text[:_TEXT_MAX_CHARS]
+        text = raw_text
         if not text.strip():
             return []
 

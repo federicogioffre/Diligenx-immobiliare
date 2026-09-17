@@ -1,17 +1,19 @@
+import hashlib
 import logging
 import threading
-import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File
 from app.core.limiter import limiter
 from typing import List
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
+from slowapi.util import get_remote_address
 
 from app.core.config import settings
 from app.db.session import SessionLocal, get_db
 from app.models.document import Document, DocumentStatus
-from app.models.deal import Deal
+from app.models.deal import Deal, DealStatus
 from app.models.user import User
 from app.schemas.document import DocumentRead, DocumentUploadResponse
 from app.services.auth import get_current_user
@@ -61,10 +63,70 @@ def _read_capped(upload: UploadFile, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
-def _storage_key(deal_id: int, original_filename: str) -> str:
-    """Build a unique storage key (used as both the S3 object key and local sub-path)."""
+def _storage_key(deal_id: int, original_filename: str, content: bytes) -> str:
+    """Stable key: retrying the same named file cannot create another document."""
     base = Path(original_filename).name  # strip any directory prefix
-    return f"deals/{deal_id}/{uuid.uuid4().hex}_{base}"
+    hasher = hashlib.sha256(base.encode("utf-8") + b"\0")
+    hasher.update(content)
+    digest = hasher.hexdigest()
+    return f"deals/{deal_id}/{digest}_{base}"
+
+
+def _upload_user(request: Request, user: User = Depends(get_current_user)) -> User:
+    # Dependencies run before the decorated route, so the limiter can use the
+    # authenticated account instead of sharing a budget across an office IP.
+    request.state.upload_user_id = user.id
+    return user
+
+
+def _upload_rate_key(request: Request) -> str:
+    user_id = getattr(request.state, "upload_user_id", None)
+    return f"upload-user:{user_id}" if user_id is not None else get_remote_address(request)
+
+
+def _prepare_upload(deal_id: int, user_id: int, file: UploadFile, db: Session) -> DocumentUploadResponse:
+    """Serialize changes to a deal's inventory; called outside the event loop.
+
+    The PostgreSQL deal lock protects content-based idempotency across API
+    replicas and serializes against the analysis claim and document deletion.
+    A failed enqueue deliberately leaves the pending row for a safe retry.
+    """
+    deal = (
+        db.query(Deal)
+        .filter(Deal.id == deal_id, Deal.workspace.has(owner_id=user_id))
+        .with_for_update()
+        .populate_existing()
+        .first()
+    )
+    if deal is None:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    if file.content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.content_type}")
+    try:
+        content = _read_capped(file, settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024)
+    except _FileTooLarge:
+        raise HTTPException(status_code=413, detail=f"File troppo grande. Massimo {settings.MAX_UPLOAD_SIZE_MB} MB")
+    base_name = (file.filename or "unknown").replace("\\", "/").split("/")[-1]
+    key = _storage_key(deal_id, base_name, content)
+    doc = db.query(Document).filter(Document.deal_id == deal_id, Document.file_path == key).first()
+    if doc is None:
+        if deal.status == DealStatus.analyzing:
+            raise HTTPException(status_code=409, detail="Analisi in corso: attendere prima di modificare i documenti.")
+        save_file(content, key)
+        doc = Document(
+            deal_id=deal_id, filename=base_name, file_path=key,
+            mime_type=file.content_type, file_size=len(content), status=DocumentStatus.pending,
+        )
+        db.add(doc)
+        db.flush()
+    elif doc.status == DocumentStatus.failed:
+        if deal.status == DealStatus.analyzing:
+            raise HTTPException(status_code=409, detail="Analisi in corso: attendere prima di riprovare il documento.")
+        save_file(content, key)  # Also recover an object lost during a prior attempt.
+        doc.status = DocumentStatus.pending
+    response = DocumentUploadResponse.model_validate(doc)
+    db.commit()
+    return response
 
 
 def _assert_deal_access(deal_id: int, user_id: int, db: Session) -> Deal:
@@ -126,110 +188,59 @@ def _run_ingestion(document_id: int, user_id: int) -> None:
 
 
 @router.post("/upload", response_model=DocumentUploadResponse, status_code=201)
-@limiter.limit("30/minute")
+@limiter.limit(lambda: settings.UPLOAD_RATE_LIMIT, key_func=_upload_rate_key)
 async def upload_document(
     request: Request,
     deal_id: int,
     file: UploadFile,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(_upload_user),
 ):
-    _assert_deal_access(deal_id, current_user.id, db)
-
-    if file.content_type not in ALLOWED_MIME_TYPES:
-        raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.content_type}")
-
-    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
-    try:
-        content = _read_capped(file, max_bytes)
-    except _FileTooLarge:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File troppo grande. Massimo {settings.MAX_UPLOAD_SIZE_MB} MB",
-        )
-    file_size = len(content)
-
-    base_name = (file.filename or "unknown").replace("\\", "/").split("/")[-1]
-    key = _storage_key(deal_id, base_name)
-    save_file(content, key)
-
-    doc = Document(
-        deal_id=deal_id,
-        filename=base_name,
-        file_path=key,          # stores the storage key (works for both local and cloud)
-        mime_type=file.content_type or "application/octet-stream",
-        file_size=file_size,
-        status=DocumentStatus.pending,
-    )
-    db.add(doc)
-    db.commit()
-    db.refresh(doc)
-
-    # Schedule ingestion AFTER response is sent. Any failure inside the
-    # pipeline (OCR on scanned PDFs, embedding errors, etc.) is isolated
-    # from the HTTP response — the document will simply end in status=failed
-    # and the UI will see it via the status polling.
     from app.services.jobs import enqueue_or_run
-    await enqueue_or_run(
-        request, background_tasks,
-        "run_ingestion_for_document", _run_ingestion, doc.id, current_user.id,
-    )
+
+    user_id = current_user.id
+    doc = await run_in_threadpool(_prepare_upload, deal_id, user_id, file, db)
+    if doc.status in (DocumentStatus.pending, DocumentStatus.processing):
+        await enqueue_or_run(
+            request, background_tasks, "run_ingestion_for_document",
+            _run_ingestion, doc.id, user_id, job_id=f"ingestion:{doc.id}",
+        )
     return doc
 
 
 @router.post("/upload-batch", response_model=list[DocumentUploadResponse], status_code=201)
-@limiter.limit("10/minute")
-def upload_documents_batch(
+@limiter.limit(lambda: settings.UPLOAD_BATCH_RATE_LIMIT, key_func=_upload_rate_key)
+async def upload_documents_batch(
     request: Request,
     deal_id: int,
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(_upload_user),
 ):
-    """Upload multiple documents in a single request."""
-    _assert_deal_access(deal_id, current_user.id, db)
+    """Save and durably dispatch each accepted file; retries reuse document IDs."""
+    from app.services.jobs import enqueue_or_run
 
     if len(files) > _MAX_BATCH_FILES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Too many files in one request. Maximum {_MAX_BATCH_FILES}.",
-        )
-
-    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+        raise HTTPException(status_code=413, detail=f"Too many files in one request. Maximum {_MAX_BATCH_FILES}.")
+    user_id = current_user.id
     results = []
     for file in files:
-        if file.content_type not in ALLOWED_MIME_TYPES:
-            logger.warning("Skipping unsupported type %s: %s", file.filename, file.content_type)
-            continue
-
         try:
-            content = _read_capped(file, max_bytes)
-        except _FileTooLarge:
-            logger.warning("Skipping oversized file %s", file.filename)
-            continue
-        file_size = len(content)
-
-        base_name = (file.filename or "unknown").replace("\\", "/").split("/")[-1]
-        key = _storage_key(deal_id, base_name)
-        save_file(content, key)
-
-        doc = Document(
-            deal_id=deal_id,
-            filename=base_name,
-            file_path=key,
-            mime_type=file.content_type or "application/octet-stream",
-            file_size=file_size,
-            status=DocumentStatus.pending,
-        )
-        db.add(doc)
-        db.commit()
-        db.refresh(doc)
-
-        background_tasks.add_task(_run_ingestion, doc.id, current_user.id)
+            doc = await run_in_threadpool(_prepare_upload, deal_id, user_id, file, db)
+        except HTTPException as exc:
+            db.rollback()
+            if exc.status_code in (400, 413):
+                logger.warning("Skipping unsupported or oversized batch file: %s", file.filename)
+                continue
+            raise
+        if doc.status in (DocumentStatus.pending, DocumentStatus.processing):
+            await enqueue_or_run(
+                request, background_tasks, "run_ingestion_for_document",
+                _run_ingestion, doc.id, user_id, job_id=f"ingestion:{doc.id}",
+            )
         results.append(doc)
-
     return results
 
 
@@ -252,8 +263,13 @@ def delete_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    delete_file(doc.file_path)   # best-effort, never raises
-
+    deal = db.query(Deal).filter(Deal.id == doc.deal_id).with_for_update().populate_existing().one()
+    if deal.status == DealStatus.analyzing:
+        raise HTTPException(status_code=409, detail="Analisi in corso: attendere prima di eliminare documenti.")
+    key = doc.file_path
+    # Keep the inventory lock through deletion. A re-upload has the same
+    # content key, and must not race with deletion of its newly stored object.
+    delete_file(key)
     db.delete(doc)
     db.commit()
 

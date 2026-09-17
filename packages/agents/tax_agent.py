@@ -934,7 +934,14 @@ class TaxAgent:
 
     # ── Finding extraction ──────────────────────────────────────────────
 
-    def _tax_payloads(
+    def _tax_payloads(self, filename: str, text: str, document_id: int) -> list[dict]:
+        from packages.agents.document_coverage import collect_document_payloads
+
+        return collect_document_payloads(
+            text, lambda batch: self._tax_payloads_batch(filename, batch, document_id)
+        )
+
+    def _tax_payloads_batch(
         self,
         filename: str,
         text: str,
@@ -950,9 +957,9 @@ class TaxAgent:
 
         prompt = TAX_ANALYSIS_PROMPT.format(
             filename=filename,
-            text=text[:8000],
+            text=text,
         )
-        raw = self._llm.complete(prompt, max_tokens=2048)
+        raw = self._llm.complete(prompt, max_tokens=8192)
 
         items = _parse_llm_items(
             raw, context=f"{self.AGENT_NAME}, document {document_id}"
@@ -1071,6 +1078,7 @@ class TaxAgent:
                     "tax_kind": p.get("tax_kind", "altro"),
                     "document_id": doc.id,
                     "filename": doc.filename,
+                    "source_spans": p.get("source_spans", []),
                     "source": p["source"],
                     "defensibility": p.get("defensibility", "medium"),
                     "legal_basis": p.get("legal_basis"),

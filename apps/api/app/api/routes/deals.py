@@ -206,21 +206,51 @@ async def analyze_deal(
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
 
-    # Flip status immediately so the UI knows analysis has started.
+    # Lock the inventory while admitting a run; upload/delete take the same
+    # deal-row lock, so the document set cannot change underneath this check.
     from app.models.deal import DealStatus
-    deal.status = DealStatus.analyzing
+    from app.models.document import Document, DocumentStatus
+    deal = db.query(Deal).filter(Deal.id == deal_id).with_for_update().populate_existing().one()
+    if deal.status == DealStatus.analyzing:
+        raise HTTPException(status_code=409, detail="Analysis is already running")
+    incomplete = db.query(Document.id).filter(
+        Document.deal_id == deal_id,
+        (Document.status != DocumentStatus.processed) | (Document.raw_text.is_(None)) | (Document.raw_text == ""),
+    ).first()
+    if incomplete:
+        raise HTTPException(status_code=409, detail="All documents must finish processing successfully before analysis")
+    previous_status = deal.status
+    user_id = current_user.id
+    # Compare-and-set also protects SQLite, where FOR UPDATE is ignored.
+    claimed = db.query(Deal).filter(
+        Deal.id == deal_id, Deal.status != DealStatus.analyzing,
+    ).update({Deal.status: DealStatus.analyzing}, synchronize_session=False)
+    if claimed != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Analysis is already running")
     db.commit()
-    db.refresh(deal)
 
     from app.services.jobs import enqueue_or_run
-    await enqueue_or_run(
-        request, background_tasks,
-        "run_pipeline_for_deal", _run_pipeline_background, deal_id, current_user.id,
-    )
+    try:
+        await enqueue_or_run(
+            request, background_tasks,
+            "run_pipeline_for_deal", _run_pipeline_background, deal_id, user_id,
+            job_id=f"analysis:{deal_id}",
+        )
+    except HTTPException as exc:
+        if getattr(exc, "may_have_enqueued", False):
+            # Redis may have accepted the command before the response was lost.
+            # Keep the inventory locked until the job completes or is reconciled.
+            raise
+        db.query(Deal).filter(Deal.id == deal_id, Deal.status == DealStatus.analyzing).update(
+            {Deal.status: previous_status}, synchronize_session=False,
+        )
+        db.commit()
+        raise
 
     return DealAnalysisResponse(
         deal_id=deal_id,
-        status=deal.status,
+        status=DealStatus.analyzing,
         completed=False,
         documents_analyzed=0,
         clause_findings_count=0,
@@ -229,6 +259,49 @@ async def analyze_deal(
         report_id=None,
         stages=None,
     )
+
+
+@router.post("/{deal_id}/recover-analysis", response_model=DealRead)
+async def recover_analysis(
+    request: Request,
+    deal_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Reconcile a stale admission only after Redis confirms no active job.
+
+    This covers an API crash between committing the admission and dispatching.
+    It deliberately does not cancel an active/queued analysis.
+    """
+    from datetime import datetime
+    from arq.jobs import Job, JobStatus
+    from app.core.config import settings
+    from app.models.deal import DealStatus
+    deal = db.query(Deal).filter(
+        Deal.id == deal_id, Deal.workspace.has(owner_id=current_user.id),
+    ).with_for_update().populate_existing().first()
+    if deal is None:
+        raise HTTPException(404, "Deal not found")
+    if deal.status != DealStatus.analyzing:
+        return deal
+    changed = deal.updated_at or deal.created_at
+    if changed.tzinfo is None:
+        changed = changed.replace(tzinfo=timezone.utc)
+    if (datetime.now(timezone.utc) - changed).total_seconds() < settings.WORKER_JOB_TIMEOUT_SECONDS + 60:
+        raise HTTPException(409, "Analysis is not stale; wait for it to finish")
+    pool = getattr(request.app.state, "arq_pool", None)
+    if not settings.REDIS_URL or pool is None:
+        raise HTTPException(503, "Durable queue must be available to verify recovery")
+    try:
+        state = await asyncio.wait_for(Job(f"analysis:{deal_id}", pool).status(), timeout=5)
+    except Exception:
+        raise HTTPException(503, "Unable to verify whether the analysis is running") from None
+    if state != JobStatus.not_found:
+        raise HTTPException(409, "Analysis still exists in the queue")
+    deal.status = DealStatus.draft
+    db.commit()
+    db.refresh(deal)
+    return deal
 
 
 @router.post("/{deal_id}/report", response_model=ReportGenerateResponse)
@@ -701,6 +774,7 @@ _PIPELINE_STAGES = [
 
 @router.get("/{deal_id}/analysis-stream")
 async def stream_analysis_progress(
+    request: Request,
     deal_id: int,
     ticket: str,
     db: Session = Depends(get_db),
@@ -766,13 +840,9 @@ async def stream_analysis_progress(
         from app.models.agent_run import AgentRun
         from app.models.deal import Deal as DealModel
 
-        stream_db = SessionLocal()
-        try:
-            set_tenant_context(stream_db, user_id)
-            while True:
-                # Force fresh reads on every tick (bypass SQLAlchemy identity cache)
-                stream_db.expire_all()
-
+        while not await request.is_disconnected():
+            with SessionLocal() as stream_db:
+                set_tenant_context(stream_db, user_id)
                 fresh_deal = stream_db.query(DealModel).filter(DealModel.id == deal_id).first()
                 if fresh_deal is None:
                     break
@@ -821,15 +891,11 @@ async def stream_analysis_progress(
                     "deal_status": fresh_deal.status.value,
                     "stages": stages,
                 }
-                yield f"data: {json.dumps(payload)}\n\n"
-
-                # Stop streaming once the pipeline has finished
-                if fresh_deal.status.value != "analyzing":
-                    break
-
-                await asyncio.sleep(1)
-        finally:
-            stream_db.close()
+            # Close before yielding or sleeping, even for a slow/disconnected reader.
+            yield f"data: {json.dumps(payload)}\n\n"
+            if payload["deal_status"] != "analyzing":
+                break
+            await asyncio.sleep(1)
 
     return StreamingResponse(
         event_generator(),

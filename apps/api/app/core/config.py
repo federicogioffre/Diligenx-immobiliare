@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     # App
     APP_NAME: str = "Diligenx"
     DEBUG: bool = False
+    # Explicit opt-in for deployments accepting external beta users.
+    BETA_MODE: bool = False
 
     # Database — default to PostgreSQL
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/diligenx"
@@ -41,6 +43,8 @@ class Settings(BaseSettings):
     # File uploads
     UPLOAD_DIR: str = str(Path("uploads").resolve())
     MAX_UPLOAD_SIZE_MB: int = 50
+    UPLOAD_RATE_LIMIT: str = "120/minute"
+    UPLOAD_BATCH_RATE_LIMIT: str = "10/minute"
 
     # Cloud storage (S3 / Cloudflare R2)
     # Leave S3_BUCKET empty to use local disk (development default)
@@ -62,6 +66,8 @@ class Settings(BaseSettings):
     # The analysis pipeline parallelises independent per-document calls with a
     # bounded thread pool of this size; 1 restores fully sequential behaviour.
     LLM_MAX_CONCURRENCY: int = 4
+    # Process-wide ceiling across simultaneous deals and Q&A calls.
+    LLM_MAX_IN_FLIGHT: int = 4
 
     # Durable job queue (Arq + Redis). Leave empty to use FastAPI
     # BackgroundTasks — the original in-process path. When set, /analyze
@@ -70,6 +76,9 @@ class Settings(BaseSettings):
     #   redis://default:<password>@<host>:<port>
     #   rediss://...                          (TLS, recommended on Upstash)
     REDIS_URL: str = ""
+    WORKER_MAX_JOBS: int = 4
+    WORKER_JOB_TIMEOUT_SECONDS: int = 3600
+    WORKER_MAX_TRIES: int = 3
 
     # Error monitoring (Sentry). Leave empty to run without Sentry — the
     # SDK is only initialised when a DSN is provided, so the dependency

@@ -1,49 +1,37 @@
-"""Per-request tenant context for Postgres Row-Level Security.
+"""Tenant identity belongs to the ORM session, never to a pooled connection.
 
-The RLS policies installed by migration 008 read ``app.current_user_id`` from
-the session. This module exposes a single helper, :func:`set_tenant_context`,
-which writes that GUC at the session level so Postgres applies the policies
-to every query on the connection — including queries that span multiple
-transactions (e.g. the analysis pipeline, which commits between stages).
-
-Connection-pool safety: a SQLAlchemy ``checkin`` event registered in
-``app.db.session`` issues ``RESET app.current_user_id`` whenever a connection
-is returned to the pool, so a connection never leaks a stale tenant context
-to the next request that picks it up.
-
-On SQLite (test environment) the function is a no-op — SQLite has no RLS and
-the GUC syntax would error.
+Reapply a transaction-local GUC on every begin, including after commit/rollback.
+The pool reset remains a second defence against legacy session-level bindings.
 """
-
 from __future__ import annotations
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.orm import Session
+
+_TENANT_KEY = "diligenx_tenant_user_id"
+_BIND = text("SELECT set_config('app.current_user_id', :uid, true)")
+
+
+@event.listens_for(Session, "after_begin")
+def _bind_transaction_tenant(session, transaction, connection):
+    if connection.dialect.name == "postgresql":
+        # Session.execute here would recurse while provisioning the connection.
+        connection.execute(_BIND, {"uid": str(session.info.get(_TENANT_KEY, ""))})
 
 
 def set_tenant_context(db: Session, user_id: int) -> None:
-    """Bind *user_id* as the tenant context on this session's connection.
-
-    Applies to every subsequent query until either ``clear_tenant_context``
-    is called, or the connection is returned to the pool (where it is
-    automatically reset).
-
-    Idempotent: calling twice with the same user is harmless; calling with
-    a different user swaps the context.
-    """
+    """Bind this request/job until explicitly cleared; survives transaction ends."""
     if db.bind is None or db.bind.dialect.name != "postgresql":
         return
-
-    # SET (without LOCAL) applies to the connection until reset, so it
-    # survives the multiple ``db.commit()`` calls a pipeline stage performs.
-    db.execute(text("SET app.current_user_id = :uid"), {"uid": str(user_id)})
+    if not isinstance(user_id, int) or isinstance(user_id, bool) or user_id <= 0:
+        raise ValueError("Tenant user id must be a positive integer")
+    db.info[_TENANT_KEY] = user_id
+    # Authentication may already have started a transaction to read the user.
+    db.connection().execute(_BIND, {"uid": str(user_id)})
 
 
 def clear_tenant_context(db: Session) -> None:
-    """Reset the tenant GUC, hiding all tenant-scoped rows from subsequent
-    queries on this connection. Mostly useful in tests; the pool ``checkin``
-    hook clears it automatically when a connection is released.
-    """
-    if db.bind is None or db.bind.dialect.name != "postgresql":
-        return
-    db.execute(text("RESET app.current_user_id"))
+    """Clear the current transaction and future transactions of this session."""
+    db.info.pop(_TENANT_KEY, None)
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        db.connection().execute(_BIND, {"uid": ""})

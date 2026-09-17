@@ -124,13 +124,19 @@ def get_embedding_provider() -> EmbeddingProvider:
     """
     global _default_provider
     if _default_provider is not None:
+        from app.core.config import settings
+        if settings.BETA_MODE and isinstance(_default_provider, FakeEmbeddingProvider):
+            raise RuntimeError("BETA_MODE cannot use fake embeddings")
         return _default_provider
 
     import os
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+    from app.core.config import settings
+    api_key = settings.OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY", "")
     if api_key:
         _default_provider = OpenAIEmbeddingProvider(api_key=api_key)
     else:
+        if settings.BETA_MODE:
+            raise RuntimeError("BETA_MODE cannot use fake embeddings")
         logger.warning(
             "OPENAI_API_KEY not set — using FakeEmbeddingProvider. "
             "Embeddings will be deterministic but not semantically meaningful."

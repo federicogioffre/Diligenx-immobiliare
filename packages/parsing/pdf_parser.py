@@ -64,8 +64,12 @@ def extract_pdf(path: str | Path) -> list[PageText]:
         text = page.extract_text() or ""
         if not text.strip():
             text = _ocr_page(str(path), idx)
-        if text.strip():
-            pages.append(PageText(page_number=idx, text=text))
+        if not text.strip():
+            raise ValueError(
+                f"PDF page {idx} has no readable text after OCR; "
+                "document coverage is incomplete"
+            )
+        pages.append(PageText(page_number=idx, text=text))
     return pages
 
 

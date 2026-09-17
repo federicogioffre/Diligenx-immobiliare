@@ -1,24 +1,21 @@
-"""Durable job queue abstraction.
-
-Routes call :func:`enqueue_or_run` instead of ``background_tasks.add_task``
-directly. When ``REDIS_URL`` is configured at startup we hold an Arq pool
-on ``app.state.arq_pool``; ``enqueue_or_run`` then schedules the job there
-so it survives worker restarts. When the pool is not present (the default
-in development and in tests) we fall back to the existing in-process
-``BackgroundTasks`` behaviour, preserving the pre-Arq contract.
-
-The two callables wired through this helper today are
-:func:`packages.agents.orchestrator.run_deal_analysis_pipeline` (via
-``run_pipeline_for_deal``) and :func:`packages.parsing.ingestion_pipeline.
-process_document` (via ``run_ingestion_for_document``); see ``app.worker``
-for the Arq task definitions that the worker process consumes.
-"""
+"""Dispatch durable jobs; the in-process path is for explicit local mode only."""
 import logging
+import asyncio
 from typing import Any, Callable
 
-from fastapi import BackgroundTasks, Request
+from fastapi import BackgroundTasks, HTTPException, Request
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class JobDispatchError(HTTPException):
+    """An uncertain Redis response must not release an active analysis claim."""
+
+    def __init__(self, detail: str, *, may_have_enqueued: bool):
+        super().__init__(status_code=503, detail=detail, headers={"Retry-After": "10"})
+        self.may_have_enqueued = may_have_enqueued
 
 
 async def enqueue_or_run(
@@ -27,32 +24,35 @@ async def enqueue_or_run(
     arq_function_name: str,
     sync_function: Callable[..., Any],
     *args: Any,
+    job_id: str | None = None,
     **kwargs: Any,
 ) -> str:
-    """Enqueue *arq_function_name* on Arq when configured, else schedule
-    *sync_function* in the request's BackgroundTasks.
+    """Raise 503 if durable dispatch is unavailable.
 
-    Returns the string ``"arq"`` or ``"background_tasks"`` to indicate
-    which path was taken (used by tests; production callers can ignore it).
-
-    Any failure on the Arq enqueue path falls back transparently to
-    BackgroundTasks — we'd rather still run the job in-process than reject
-    a user request because Redis blipped.
+    A stable job_id prevents duplicate in-flight Arq jobs. Arq returning None
+    means this ID is already queued/running, a successful dispatch.
+    WorkerSettings.keep_result=0 permits later intentional re-runs of the ID.
+    Queue options never reach the synchronous development fallback.
     """
     pool = getattr(request.app.state, "arq_pool", None)
     if pool is not None:
         try:
-            await pool.enqueue_job(arq_function_name, *args, **kwargs)
-            logger.info(
-                "Enqueued %s(args=%s, kwargs=%s) via Arq.",
-                arq_function_name, args, kwargs,
+            options = {"_job_id": job_id} if job_id is not None else {}
+            await asyncio.wait_for(
+                pool.enqueue_job(arq_function_name, *args, **options, **kwargs), timeout=10,
             )
             return "arq"
-        except Exception:
-            logger.exception(
-                "Arq enqueue failed for %s; falling back to BackgroundTasks.",
-                arq_function_name,
-            )
-
+        except Exception as exc:
+            logger.exception("Durable dispatch failed for %s", arq_function_name)
+            raise JobDispatchError(
+                detail="Elaborazione temporaneamente non disponibile. Riprovare il caricamento o l'analisi.",
+                may_have_enqueued=True,
+            ) from exc
+    if settings.REDIS_URL:
+        raise JobDispatchError(
+            detail="Coda di elaborazione non disponibile. Riprovare tra poco.",
+            may_have_enqueued=False,
+        )
     background_tasks.add_task(sync_function, *args, **kwargs)
     return "background_tasks"
+

@@ -103,6 +103,9 @@ async def _lifespan(app_: FastAPI):
     to FastAPI BackgroundTasks (see app.services.jobs.enqueue_or_run).
     """
     _validate_runtime_secrets()
+    from app.core.runtime_validation import validate_beta_configuration, validate_beta_database
+    validate_beta_configuration()
+    validate_beta_database()
     app_.state.arq_pool = None
     if settings.REDIS_URL:
         try:
@@ -114,10 +117,9 @@ async def _lifespan(app_: FastAPI):
             logger.info("Arq pool ready — jobs will be enqueued for the worker.")
         except Exception:
             logger.exception(
-                "Failed to initialise Arq pool; the API will keep running "
-                "but will fall back to in-process BackgroundTasks.",
+                "Failed to initialise the configured durable job queue.",
             )
-            app_.state.arq_pool = None
+            raise RuntimeError("Configured Redis queue is unavailable") from None
     yield
     if app_.state.arq_pool is not None:
         try:
@@ -141,6 +143,7 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(
         status_code=429,
         content={"detail": f"Too many requests. Limit: {exc.detail}"},
+        headers={"Retry-After": "60"},
     )
 
 _fastapi.add_middleware(

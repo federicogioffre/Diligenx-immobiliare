@@ -825,7 +825,14 @@ class FinancialAgent:
 
     # ── Finding extraction ──────────────────────────────────────────────
 
-    def _financial_payloads(
+    def _financial_payloads(self, filename: str, text: str, document_id: int) -> list[dict]:
+        from packages.agents.document_coverage import collect_document_payloads
+
+        return collect_document_payloads(
+            text, lambda batch: self._financial_payloads_batch(filename, batch, document_id)
+        )
+
+    def _financial_payloads_batch(
         self,
         filename: str,
         text: str,
@@ -841,9 +848,9 @@ class FinancialAgent:
 
         prompt = FINANCIAL_ANALYSIS_PROMPT.format(
             filename=filename,
-            text=text[:8000],
+            text=text,
         )
-        raw = self._llm.complete(prompt, max_tokens=2048)
+        raw = self._llm.complete(prompt, max_tokens=8192)
 
         items = _parse_llm_items(
             raw, context=f"{self.AGENT_NAME}, document {document_id}"
@@ -950,6 +957,7 @@ class FinancialAgent:
                     "finding_type": p["finding_type"],
                     "document_id": doc.id,
                     "filename": doc.filename,
+                    "source_spans": p.get("source_spans", []),
                     "source": p["source"],
                     "amount_eur": p.get("amount_eur"),
                     # Distinguishes "the document states no figure" from

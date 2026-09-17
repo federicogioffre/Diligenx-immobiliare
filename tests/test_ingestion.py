@@ -478,12 +478,12 @@ class TestOCRFallback:
         mock_ocr.assert_not_called()
         assert len(pages) == 1
 
-    def test_ocr_empty_result_excludes_page(self, tmp_dir):
-        """If OCR returns only whitespace, the page is excluded."""
+    def test_ocr_empty_result_fails_document(self, tmp_dir):
+        """Unreadable pages must never be silently excluded from analysis."""
         path = self._make_blank_pdf(tmp_dir)
         with patch("packages.parsing.pdf_parser._ocr_page", return_value="   "):
-            pages = extract_pdf(path)
-        assert pages == []
+            with pytest.raises(ValueError, match="PDF page 1.*incomplete"):
+                extract_pdf(path)
 
     def test_ocr_mixed_pdf(self, tmp_dir):
         """Mixed PDF: native text pages use pypdf, blank pages use OCR."""

@@ -9,7 +9,6 @@ Pipeline::
               → build prompt with context → LLM → answer + cited_chunks
               → map cited indices back to document/page sources
 """
-import json
 import logging
 
 from sqlalchemy.orm import Session
@@ -31,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 # Maximum number of chunks to include in the LLM context
 _DEFAULT_TOP_K = 5
+_INSUFFICIENT_EVIDENCE = (
+    "The available evidence does not support a verifiable answer to this question. "
+    "Please review the source documents or ask a more specific question."
+)
 
 
 def answer_deal_question(
@@ -66,11 +69,7 @@ def answer_deal_question(
 
     llm = llm_provider or get_llm_provider()
 
-    logger.info(
-        "Answering question for deal %d: %r",
-        deal_id,
-        question[:80],
-    )
+    logger.info("Answering question for deal %d.", deal_id)
 
     # ── 1. Retrieve relevant chunks ───────────────────────────────────── #
     matches: list[ChunkMatch] = search_similar_chunks(
@@ -106,19 +105,20 @@ def answer_deal_question(
     try:
         parsed = _safe_json(raw)
     except Exception:
-        logger.warning("QA response parse error: %r", raw)
-        parsed = {"answer": raw, "cited_chunks": []}
+        logger.warning("QA response parse error for deal %d.", deal_id)
+        parsed = {}
 
-    answer_text: str = parsed.get("answer", raw) if isinstance(parsed, dict) else raw
-    cited_indices: list[int] = (
-        parsed.get("cited_chunks", []) if isinstance(parsed, dict) else []
-    )
+    answer_text = parsed.get("answer") if isinstance(parsed, dict) else None
+    cited_indices = parsed.get("cited_chunks") if isinstance(parsed, dict) else None
+    if not isinstance(cited_indices, list):
+        cited_indices = []
 
     # ── 4. Map cited chunk indices → sources ──────────────────────────── #
     sources: list[dict] = []
     seen = set()
     for idx in cited_indices:
-        if not isinstance(idx, int) or idx < 0 or idx >= len(matches):
+        # bool is an int subclass, but JSON true/false is not a citation index.
+        if type(idx) is not int or idx < 0 or idx >= len(matches):
             continue
         m = matches[idx]
         key = (m.document_id, m.page_number)
@@ -131,14 +131,12 @@ def answer_deal_question(
             "excerpt": m.content[:300],
         })
 
-    # If LLM didn't cite anything but we have matches, include the top hit
-    if not sources and matches:
-        m = matches[0]
-        sources.append({
-            "document_id": m.document_id,
-            "page_number": m.page_number,
-            "excerpt": m.content[:300],
-        })
+    # Retrieval relevance alone does not show that a chunk supports the
+    # generated answer. Never manufacture a first-hit citation when the
+    # model supplied none, malformed indices, or an invalid answer.
+    if not sources or not isinstance(answer_text, str) or not answer_text.strip():
+        answer_text = _INSUFFICIENT_EVIDENCE
+        sources = []
 
     logger.info(
         "QA for deal %d: %d sources cited, answer length=%d.",

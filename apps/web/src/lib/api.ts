@@ -514,57 +514,77 @@ export const api = {
      * The on-wire behaviour is identical to `upload()` — same endpoint,
      * same FormData payload, same 401 → redirect contract.
      */
-    uploadWithProgress(
+    async uploadWithProgress(
       dealId: number,
       file: File,
       onProgress: (bytesSent: number, bytesTotal: number) => void,
       signal?: AbortSignal,
+      onRetry?: (seconds: number) => void,
     ): Promise<DocumentUploadResponse> {
-      return new Promise((resolve, reject) => {
+      // The server identifies repeated named file content, so a timeout after
+      // saving the file is safe to retry. Do not retry validation/auth errors.
+      const attemptUpload = () => new Promise<DocumentUploadResponse>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
-        // Same-origin request: the browser attaches the session cookie.
         xhr.open('POST', `${BASE}/documents/upload?deal_id=${dealId}`)
-
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) onProgress(e.loaded, e.total)
+        xhr.timeout = 120_000
+        const abort = () => xhr.abort()
+        const fail = (message: string, retryable: boolean, retryAfter = 0) =>
+          reject(Object.assign(new Error(message), { retryable, retryAfter }))
+        xhr.onloadend = () => signal?.removeEventListener('abort', abort)
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) onProgress(event.loaded, event.total)
         }
         xhr.onload = () => {
           if (xhr.status === 401) {
-            // Same contract as handle401IfNeeded but adapted to XHR:
-            // await the backend logout before redirecting (see that helper).
             if (typeof window !== 'undefined') {
-              clearAuth().finally(() => {
-                window.location.href = '/login'
-              })
+              clearAuth().finally(() => { window.location.href = '/login' })
             }
-            reject(new Error('Unauthorized'))
+            fail('Unauthorized', false)
             return
           }
           if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              resolve(JSON.parse(xhr.responseText) as DocumentUploadResponse)
-            } catch {
-              reject(new Error('Invalid JSON response'))
-            }
-          } else {
-            reject(new Error(xhr.responseText || `HTTP ${xhr.status}`))
-          }
-        }
-        xhr.onerror = () => reject(new Error('Errore di rete'))
-        xhr.onabort = () => reject(new Error('Upload annullato'))
-
-        if (signal) {
-          if (signal.aborted) {
-            xhr.abort()
+            try { resolve(JSON.parse(xhr.responseText) as DocumentUploadResponse) }
+            catch { fail('Risposta non valida dal server', true) }
             return
           }
-          signal.addEventListener('abort', () => xhr.abort())
+          const header = xhr.getResponseHeader('Retry-After')
+          const retryAfter = header
+            ? (/^\d+$/.test(header) ? Number(header) * 1000 : Math.max(0, Date.parse(header) - Date.now()))
+            : 0
+          let message = `Caricamento non riuscito (HTTP ${xhr.status})`
+          try { message = JSON.parse(xhr.responseText).detail || message } catch { /* keep concise message */ }
+          fail(message, [408, 429, 500, 502, 503, 504].includes(xhr.status), retryAfter)
         }
-
+        xhr.onerror = () => fail('Connessione interrotta durante il caricamento', true)
+        xhr.ontimeout = () => fail('Tempo di caricamento scaduto', true)
+        xhr.onabort = () => fail('Upload annullato', false)
+        if (signal?.aborted) { fail('Upload annullato', false); return }
+        signal?.addEventListener('abort', abort, { once: true })
         const form = new FormData()
         form.append('file', file)
         xhr.send(form)
       })
+      for (let attempt = 0; ; attempt++) {
+        try { return await attemptUpload() }
+        catch (error) {
+          const failure = error as Error & { retryable?: boolean; retryAfter?: number }
+          if (!failure.retryable || signal?.aborted || attempt >= 4) throw error
+          const delay = Math.max(failure.retryAfter || 0, Math.min(120_000, 2000 * 2 ** attempt)) + Math.random() * 1000
+          onRetry?.(Math.ceil(delay / 1000))
+          await new Promise<void>((resolve, reject) => {
+            const abort = () => {
+              clearTimeout(timer)
+              reject(new Error('Upload annullato'))
+            }
+            const timer = setTimeout(() => {
+              signal?.removeEventListener('abort', abort)
+              resolve()
+            }, delay)
+            if (signal?.aborted) abort()
+            else signal?.addEventListener('abort', abort, { once: true })
+          })
+        }
+      }
     },
     async delete(documentId: number): Promise<void> {
       const res = await fetch(`${BASE}/documents/${documentId}`, { method: 'DELETE' })
