@@ -474,7 +474,14 @@ class ContractAgent:
             )
         return to_keep
 
-    def _ccnl_compliance_payloads(
+    def _ccnl_compliance_payloads(self, document_id: int, filename: str, text: str) -> list[dict]:
+        from packages.agents.document_coverage import collect_document_payloads
+
+        return collect_document_payloads(
+            text, lambda batch: self._ccnl_compliance_payloads_batch(document_id, filename, batch)
+        )
+
+    def _ccnl_compliance_payloads_batch(
         self,
         document_id: int,
         filename: str,
@@ -509,7 +516,7 @@ class ContractAgent:
 
         prompt = CCNL_COMPLIANCE_PROMPT.format(
             filename=filename,
-            text=text[:8000],
+            text=text,
         )
 
         raw = self._llm.complete(prompt, max_tokens=4096)
@@ -547,7 +554,10 @@ class ContractAgent:
                 description=p["description"],
                 severity=p["severity"],
                 confidence=p["confidence"],
-                structured_payload_json={"ccnl_category": p["category"]},
+                structured_payload_json={
+                    "ccnl_category": p["category"],
+                    "source_spans": p.get("source_spans", []),
+                },
             )
             db.add(af)
             findings.append(af)
@@ -563,7 +573,13 @@ class ContractAgent:
 
     # ── Relevance classification & filtering ────────────────────────────
 
-    def _classify_relevance_payloads(
+    def _classify_relevance_payloads(self, payloads: list[dict], filename: str, is_ccnl: bool) -> list[dict]:
+        kept: list[dict] = []
+        for start in range(0, len(payloads), 30):
+            kept.extend(self._classify_relevance_batch(payloads[start:start + 30], filename, is_ccnl))
+        return kept
+
+    def _classify_relevance_batch(
         self,
         payloads: list[dict],
         filename: str,
@@ -571,7 +587,7 @@ class ContractAgent:
     ) -> list[dict]:
         """Classify each clause payload for M&A relevance; keep only high/medium.
 
-        The LLM is called once per document with all clauses in a single batch.
+        Each call classifies at most 30 clauses, with complete decision validation.
         Kept payloads get ``relevance_score`` and ``relevance_reason`` keys;
         low-relevance payloads are dropped.
 

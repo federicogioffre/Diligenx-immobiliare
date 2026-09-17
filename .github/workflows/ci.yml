@@ -37,11 +37,11 @@ jobs:
         run: python -m pytest ../../tests -q
 
   backend-postgres-integration:
-    name: Backend Postgres integration (connection-pool regression)
+    name: Backend Postgres integration (pool and enforced tenant isolation)
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -54,7 +54,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/diligenx_ci
+      DATABASE_URL: postgresql://diligenx_app:ci-app-password@localhost:5432/diligenx_ci
+      MIGRATIONS_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/diligenx_ci
       # A non-SQLite DATABASE_URL puts main.py's startup guard into
       # production mode, which then requires a strong SECRET_KEY too.
       # CI-only value, never used anywhere real.
@@ -83,6 +84,18 @@ jobs:
       - name: Run Alembic migrations against Postgres
         working-directory: apps/api
         run: python -m alembic upgrade head
+
+      - name: Create restricted application role (RLS must apply)
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d diligenx_ci -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE diligenx_app LOGIN PASSWORD 'ci-app-password' NOSUPERUSER NOBYPASSRLS;
+          GRANT CONNECT ON DATABASE diligenx_ci TO diligenx_app;
+          GRANT USAGE ON SCHEMA public TO diligenx_app;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO diligenx_app;
+          GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO diligenx_app;
+          SQL
 
       - name: Run Postgres integration suite
         working-directory: apps/api

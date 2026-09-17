@@ -1,14 +1,14 @@
 """Semantic search over DocumentChunk embeddings.
 
-Embeds a query string, then ranks all chunks belonging to a deal by
-cosine similarity.  Works on both PostgreSQL (pgvector) and SQLite
-(FakeEmbeddingProvider) — the similarity is computed in Python so
-it is dialect-agnostic.
+PostgreSQL ranks vectors in the database and returns only the requested
+matches. SQLite retains a streaming Python fallback for development/tests.
 """
+import heapq
 import logging
 import math
 from dataclasses import dataclass
 
+from sqlalchemy import Float, bindparam, select
 from sqlalchemy.orm import Session
 
 from packages.retrieval.embedding_service import (
@@ -60,25 +60,29 @@ def search_similar_chunks(
 ) -> list[ChunkMatch]:
     """Return the *top_k* chunks most similar to *query* within a deal.
 
-    Steps
-    -----
-    1. Embed the query text using the configured ``EmbeddingProvider``.
-    2. Load all ``DocumentChunk`` rows (with embeddings) for processed
-       documents in *deal_id*.
-    3. Compute cosine similarity in Python.
-    4. Return the top-k results sorted by descending similarity.
-
-    Returns an empty list when there are no chunks with embeddings.
+    Only processed documents in the requested deal participate. PostgreSQL
+    requires the pgvector extension installed by the normal migrations; a
+    database error is surfaced instead of downloading the entire corpus.
+    ``top_k <= 0`` returns no matches without invoking the embedding provider.
     """
     from app.models.document import Document, DocumentStatus
     from app.models.document_chunk import DocumentChunk
 
+    if top_k <= 0:
+        return []
+
     emb_provider = provider or get_embedding_provider()
-
-    # 1. Embed query
     query_vec = emb_provider.embed_texts([query])[0]
+    if not query_vec or not all(math.isfinite(value) for value in query_vec):
+        raise ValueError("Query embedding must contain finite values")
+    if not any(query_vec):
+        return []
 
-    # 2. Load all chunks for this deal's processed documents
+    if db.get_bind().dialect.name == "postgresql":
+        return _search_postgres(deal_id, query_vec, db, top_k)
+
+    # Keep the portable fallback bounded in memory too: the heap retains
+    # only top_k ORM rows and yield_per bounds each database fetch.
     chunks = (
         db.query(DocumentChunk)
         .join(Document, DocumentChunk.document_id == Document.id)
@@ -87,29 +91,20 @@ def search_similar_chunks(
             Document.status == DocumentStatus.processed,
             DocumentChunk.embedding.isnot(None),
         )
-        .all()
+        .yield_per(128)
     )
 
-    if not chunks:
-        logger.info("No embedded chunks found for deal %d.", deal_id)
-        return []
+    def scored_chunks():
+        for chunk in chunks:
+            vec = chunk.embedding
+            if isinstance(vec, str):
+                import json
+                vec = json.loads(vec)
+            if vec is not None:
+                sim = _cosine_similarity(query_vec, vec)
+                if math.isfinite(sim):
+                    yield sim, -chunk.id, chunk
 
-    # 3. Rank by cosine similarity
-    scored: list[tuple[float, DocumentChunk]] = []
-    for chunk in chunks:
-        vec = chunk.embedding
-        if vec is None:
-            continue
-        # SQLite returns JSON-decoded list; pgvector returns list-like
-        if isinstance(vec, str):
-            import json
-            vec = json.loads(vec)
-        sim = _cosine_similarity(query_vec, vec)
-        scored.append((sim, chunk))
-
-    scored.sort(key=lambda t: t[0], reverse=True)
-
-    # 4. Return top-k
     results = [
         ChunkMatch(
             chunk_id=chunk.id,
@@ -118,14 +113,61 @@ def search_similar_chunks(
             page_number=chunk.page_number,
             score=round(sim, 4),
         )
-        for sim, chunk in scored[:top_k]
+        for sim, _, chunk in heapq.nlargest(top_k, scored_chunks())
     ]
 
     logger.info(
-        "Retrieved %d chunks for deal %d (query=%r, top score=%.4f).",
+        "Retrieved %d chunks for deal %d (top score=%.4f).",
         len(results),
         deal_id,
-        query[:60],
         results[0].score if results else 0.0,
     )
     return results
+
+
+def _postgres_search_statement(deal_id: int, query_vec: list[float], top_k: int):
+    from pgvector.sqlalchemy import Vector
+    from app.models.document import Document, DocumentStatus
+    from app.models.document_chunk import DocumentChunk, EMBEDDING_DIM
+
+    if len(query_vec) != EMBEDDING_DIM:
+        raise ValueError(f"Query embedding dimension must be {EMBEDDING_DIM}")
+    # VectorType is a portable TypeDecorator, so use an explicitly typed
+    # operand and Float result instead of its underlying Text comparator.
+    distance = DocumentChunk.embedding.op("<=>", return_type=Float)(
+        bindparam("query_embedding", value=query_vec, type_=Vector(EMBEDDING_DIM))
+    )
+    return (
+        select(
+            DocumentChunk.id.label("chunk_id"),
+            DocumentChunk.document_id,
+            DocumentChunk.content,
+            DocumentChunk.page_number,
+            distance.label("distance"),
+        )
+        .join(Document, DocumentChunk.document_id == Document.id)
+        .where(
+            Document.deal_id == deal_id,
+            Document.status == DocumentStatus.processed,
+            DocumentChunk.embedding.isnot(None),
+        )
+        .order_by(distance.asc(), DocumentChunk.id.asc())
+        .limit(top_k)
+    )
+
+
+def _search_postgres(
+    deal_id: int, query_vec: list[float], db: Session, top_k: int
+) -> list[ChunkMatch]:
+    rows = db.execute(_postgres_search_statement(deal_id, query_vec, top_k))
+    return [
+        ChunkMatch(
+            chunk_id=row.chunk_id,
+            document_id=row.document_id,
+            content=row.content,
+            page_number=row.page_number,
+            score=round(max(-1.0, min(1.0, 1.0 - row.distance)), 4),
+        )
+        for row in rows
+        if row.distance is not None and math.isfinite(row.distance)
+    ]

@@ -81,8 +81,9 @@ async def test_uses_arq_pool_when_configured():
 
 
 @pytest.mark.anyio
-async def test_arq_enqueue_failure_falls_back_to_background_tasks():
-    """If Redis is down at enqueue time, we should still run the job."""
+async def test_arq_enqueue_failure_is_explicit_without_background_fallback():
+    """An unavailable durable queue must not silently accept volatile work."""
+    from fastapi import HTTPException
     pool = AsyncMock()
     pool.enqueue_job = AsyncMock(side_effect=ConnectionError("redis down"))
     request = _FakeRequest(pool=pool)
@@ -91,13 +92,11 @@ async def test_arq_enqueue_failure_falls_back_to_background_tasks():
     def sync_fn(doc_id: int):
         pass
 
-    where = await enqueue_or_run(
-        request, bg, "run_ingestion_for_document", sync_fn, 7,
-    )
-
-    assert where == "background_tasks"
+    with pytest.raises(HTTPException) as caught:
+        await enqueue_or_run(request, bg, "run_ingestion_for_document", sync_fn, 7)
+    assert caught.value.status_code == 503
     pool.enqueue_job.assert_awaited_once()
-    assert bg.added == [(sync_fn, (7,), {})]
+    assert bg.added == []
 
 
 # ── pytest-anyio config: required for the async test functions above ─────

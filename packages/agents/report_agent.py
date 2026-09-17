@@ -564,6 +564,32 @@ def _render_documents_appendix(documents: list, lang: str) -> str:
     )
 
 
+def _large_report_summary(documents_count: int, flags: list, observations_count: int, lang: str) -> str:
+    """A bounded factual overview when the complete findings exceed the AI budget.
+
+    All findings remain in the deterministic report tables. This overview makes
+    its abbreviated scope explicit and does not infer an overall legal opinion.
+    """
+    counts = {severity: sum(f.severity.value == severity for f in flags)
+              for severity in ("high", "medium", "low")}
+    ranks = {"high": 0, "medium": 1, "low": 2}
+    ordered = sorted(flags, key=lambda f: (ranks.get(f.severity.value, 3), f.id))
+    titles = [f.title if len(f.title) <= 160 else f.title[:157] + "..." for f in ordered[:5]]
+    if lang == "it":
+        text = (f"Riepilogo sintetico: {documents_count} documenti analizzati, {len(flags)} rilievi "
+                f"({counts['high']} di gravità alta, {counts['medium']} media, {counts['low']} bassa) "
+                f"e {observations_count} osservazioni. ")
+        if titles:
+            text += "Primi rilievi in ordine di gravità: " + "; ".join(titles) + ". "
+        return text + "Questo riepilogo è abbreviato; tutti i rilievi e le raccomandazioni sono riportati nelle sezioni successive."
+    text = (f"Brief summary: {documents_count} documents analyzed, {len(flags)} findings "
+            f"({counts['high']} high, {counts['medium']} medium, {counts['low']} low severity) "
+            f"and {observations_count} observations. ")
+    if titles:
+        text += "First findings in severity order: " + "; ".join(titles) + ". "
+    return text + "This summary is abbreviated; all findings and recommendations appear in the sections below."
+
+
 class IncompleteAnalysisError(RuntimeError):
     """A report cannot be published from failed or unfinished analysis."""
 
@@ -692,7 +718,10 @@ def generate_due_diligence_report(
             observations=observations_context,
             language_instruction=language_instruction(lang),
         )
-        executive_summary = llm.complete(summary_prompt, max_tokens=1024).strip()
+        if len(summary_prompt) > 24000:
+            executive_summary = _large_report_summary(len(documents), red_flags, len(observations), lang)
+        else:
+            executive_summary = llm.complete(summary_prompt, max_tokens=1024).strip()
         if not executive_summary:
             from packages.agents.deal_analysis_agent import LLMResponseError
 

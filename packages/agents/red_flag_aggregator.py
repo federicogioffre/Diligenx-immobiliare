@@ -9,8 +9,8 @@ Key features
 ------------
 Deduplication
     After the LLM returns its raw list of red flags, the agent fingerprints
-    each item as ``(normalize(title), category)`` (lower-cased, punctuation
-    stripped).  When two flags share the same fingerprint the one with the
+    each item's normalized title/category, source document, amount and fiscal
+    years. When two flags share the same fingerprint the one with the
     **higher severity** is retained; the rest are discarded.  The count of
     discarded duplicates is reported in the result.
 
@@ -35,6 +35,7 @@ Orchestrator compatibility
     thin wrapper that delegates entirely to this agent, preserving all
     existing orchestrator tests unchanged.
 """
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -293,27 +294,6 @@ class RedFlagAggregationAgent:
             AgentRun.agent_name == self.AGENT_NAME,
         ).delete(synchronize_session=False)
 
-        # Clear ALL red flags for the deal (this agent owns them).
-        # `synchronize_session="fetch"` also expunges the deleted rows from the
-        # session identity map; otherwise the inserts below can collide with
-        # stale RedFlag instances when SQLite reuses rowids.
-        db.query(RedFlag).filter(
-            RedFlag.deal_id == deal_id,
-        ).delete(synchronize_session="fetch")
-
-        # Clear own observations / information_request AgentFindings.
-        db.query(AgentFinding).filter(
-            AgentFinding.deal_id == deal_id,
-            AgentFinding.agent_name == self.AGENT_NAME,
-            AgentFinding.category.in_(["observation", "information_request"]),
-        ).delete(synchronize_session=False)
-
-        # Clear only own open questions.
-        db.query(OpenQuestion).filter(
-            OpenQuestion.deal_id == deal_id,
-            OpenQuestion.agent_name == self.AGENT_NAME,
-        ).delete(synchronize_session=False)
-
         db.flush()
 
         # ── 2. Open AgentRun ──────────────────────────────────────────── #
@@ -354,6 +334,9 @@ class RedFlagAggregationAgent:
                 resolve_output_language,
             )
             output_lang = resolve_output_language(deal, db)
+            severity_floors = _build_severity_floors(agent_findings)
+            from packages.agents.stage_tx import release_connection_before_llm
+            release_connection_before_llm(db)
             raw_flags = self._call_llm_for_flags(
                 context_text, deal_id, language_instruction(output_lang)
             )
@@ -373,12 +356,33 @@ class RedFlagAggregationAgent:
                 )
 
             # ── 6. Persist ────────────────────────────────────────────── #
+            # Clear ALL red flags for the deal (this agent owns them).
+            # `synchronize_session="fetch"` also expunges the deleted rows from the
+            # session identity map; otherwise the inserts below can collide with
+            # stale RedFlag instances when SQLite reuses rowids.
+            db.query(RedFlag).filter(
+                RedFlag.deal_id == deal_id,
+            ).delete(synchronize_session="fetch")
+
+            # Clear own observations / information_request AgentFindings.
+            db.query(AgentFinding).filter(
+                AgentFinding.deal_id == deal_id,
+                AgentFinding.agent_name == self.AGENT_NAME,
+                AgentFinding.category.in_(["observation", "information_request"]),
+            ).delete(synchronize_session=False)
+
+            # Clear only own open questions.
+            db.query(OpenQuestion).filter(
+                OpenQuestion.deal_id == deal_id,
+                OpenQuestion.agent_name == self.AGENT_NAME,
+            ).delete(synchronize_session=False)
+
             red_flags, open_questions = self._persist_flags_and_questions(
                 deal_id,
                 deduped_flags,
                 db,
                 pages_by_doc,
-                severity_floors=_build_severity_floors(agent_findings),
+                severity_floors=severity_floors,
             )
 
             db.flush()
@@ -558,23 +562,41 @@ class RedFlagAggregationAgent:
         from packages.prompts.deal_prompts import RED_FLAG_AGGREGATION_PROMPT
         from packages.agents.legal_rules import build_legal_rules_context
 
-        prompt = RED_FLAG_AGGREGATION_PROMPT.format(
-            findings_by_document=context_text,
-            legal_rules_context=build_legal_rules_context(),
-            language_instruction=lang_instruction,
-        )
-        raw = self._llm.complete(prompt, max_tokens=4096)
+        from packages.agents.document_coverage import aggregation_batches
 
-        return _parse_llm_items(raw, context=f"Red flags for deal {deal_id}")
+        results: list[dict] = []
+        for index, batch in enumerate(aggregation_batches(context_text), start=1):
+            prompt = RED_FLAG_AGGREGATION_PROMPT.format(
+                findings_by_document=batch,
+                legal_rules_context=build_legal_rules_context(),
+                language_instruction=lang_instruction,
+            )
+            raw = self._llm.complete(prompt, max_tokens=8192)
+            results.extend(_parse_llm_items(
+                raw, context=f"Red flags for deal {deal_id}, batch {index}"
+            ))
+        return results
 
     # ── Deduplication ───────────────────────────────────────────────────
 
     @staticmethod
-    def _fingerprint(flag: dict) -> tuple[str, str]:
-        """Normalised (title, category) key for deduplication."""
+    def _fingerprint(flag: dict) -> tuple[str, str, str]:
+        """Merge title variants only when their source and exposure match.
+
+        Similar titles across documents are not proof of the same obligation.
+        Conservative merging also preserves different amounts or fiscal years.
+        """
         title = re.sub(r"[^a-z0-9]", "", flag.get("title", "").lower())
         category = flag.get("category", "").lower().strip()
-        return (title, category)
+        years = flag.get("fiscal_years") or []
+        if not isinstance(years, list):
+            years = [years]
+        exposure = json.dumps({
+            "source_document_id": flag.get("source_document_id"),
+            "amount_eur": flag.get("amount_eur"),
+            "fiscal_years": sorted(str(year) for year in years),
+        }, sort_keys=True, default=str)
+        return (title, category, exposure)
 
     def _deduplicate(
         self, raw_flags: list[dict]

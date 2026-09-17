@@ -4,6 +4,7 @@ from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
+from app.db import tenant_context  # noqa: F401 -- register transaction RLS binding
 
 connect_args: dict = {}
 engine_kwargs: dict = {"pool_pre_ping": True}

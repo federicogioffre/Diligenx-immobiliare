@@ -339,7 +339,14 @@ class CorporateAgent:
 
     # ── Insight extraction ──────────────────────────────────────────────
 
-    def _governance_payloads(
+    def _governance_payloads(self, filename: str, text: str, document_id: int) -> list[dict]:
+        from packages.agents.document_coverage import collect_document_payloads
+
+        return collect_document_payloads(
+            text, lambda batch: self._governance_payloads_batch(filename, batch, document_id)
+        )
+
+    def _governance_payloads_batch(
         self,
         filename: str,
         text: str,
@@ -355,7 +362,7 @@ class CorporateAgent:
 
         prompt = CORPORATE_GOVERNANCE_PROMPT.format(
             filename=filename,
-            text=text[:8000],
+            text=text,
         )
         raw = self._llm.complete(prompt, max_tokens=2048)
 
@@ -403,6 +410,7 @@ class CorporateAgent:
                     "insight_type": p["insight_type"],
                     "document_id": doc.id,
                     "filename": doc.filename,
+                    "source_spans": p.get("source_spans", []),
                 },
             )
             db.add(finding)

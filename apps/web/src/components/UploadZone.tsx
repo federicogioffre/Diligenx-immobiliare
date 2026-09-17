@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 
 // ── Config ─────────────────────────────────────────────────────────────────
@@ -105,65 +105,48 @@ export default function UploadZone({ dealId, existingNames, onUploaded }: Props)
   const folderInputRef = useRef<HTMLInputElement>(null)
   const runningRef = useRef(0) // concurrent uploads in flight — not in state to avoid re-renders
 
-  // ── Core queue operations ───────────────────────────────────────────────
+  const activeRef = useRef(new Map<string, AbortController>())
 
-  /**
-   * Walk the items state and kick off uploads for up to CONCURRENCY items in
-   * 'queued' status. Idempotent: always reads runningRef for the live count.
-   */
-  const pumpQueue = useCallback(() => {
-    setItems((prev) => {
-      let available = CONCURRENCY - runningRef.current
-      if (available <= 0) return prev
-
-      const next = prev.map((it) => {
-        if (available > 0 && it.status === 'queued') {
-          available--
-          runningRef.current++
-          // Kick off async upload; it'll update state via its callbacks
-          void startUpload(it.id, it.file)
-          return { ...it, status: 'uploading' as const, bytesSent: 0 }
-        }
-        return it
+  const startUpload = useCallback(async (id: string, file: File, controller: AbortController) => {
+    try {
+      await api.documents.uploadWithProgress(dealId, file, (sent, total) => {
+        setItems((prev) => prev.map((it) => it.id === id
+          ? { ...it, bytesSent: sent, bytesTotal: total, error: undefined } : it))
+      }, controller.signal, (seconds) => {
+        setItems((prev) => prev.map((it) => it.id === id
+          ? { ...it, error: `Attesa del server, nuovo tentativo tra ${seconds} secondi…` } : it))
       })
-      return next
-    })
-    // startUpload is defined below and depends on pumpQueue via a ref-ish pattern
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+      setItems((prev) => prev.map((it) => it.id === id
+        ? { ...it, status: 'success', bytesSent: it.bytesTotal, error: undefined } : it))
+      onUploaded()
+    } catch (err) {
+      setItems((prev) => prev.map((it) => it.id === id
+        ? { ...it, status: 'failed', error: err instanceof Error ? err.message : 'Upload fallito' } : it))
+    } finally {
+      runningRef.current--
+      activeRef.current.delete(id)
+    }
+  }, [dealId, onUploaded])
 
-  const startUpload = useCallback(
-    async (id: string, file: File) => {
-      try {
-        await api.documents.uploadWithProgress(dealId, file, (sent, total) => {
-          setItems((prev) =>
-            prev.map((it) =>
-              it.id === id ? { ...it, bytesSent: sent, bytesTotal: total } : it,
-            ),
-          )
-        })
-        setItems((prev) =>
-          prev.map((it) =>
-            it.id === id
-              ? { ...it, status: 'success' as const, bytesSent: it.bytesTotal }
-              : it,
-          ),
-        )
-        onUploaded()
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Upload fallito'
-        setItems((prev) =>
-          prev.map((it) =>
-            it.id === id ? { ...it, status: 'failed' as const, error: msg } : it,
-          ),
-        )
-      } finally {
-        runningRef.current--
-        pumpQueue()
-      }
-    },
-    [dealId, onUploaded, pumpQueue],
-  )
+  // Launch network work outside React state updater functions, which may be
+  // evaluated more than once. The ref reserves slots before starting requests.
+  useEffect(() => {
+    for (const item of items) {
+      if (runningRef.current >= CONCURRENCY) break
+      if (item.status !== 'queued' || activeRef.current.has(item.id)) continue
+      const controller = new AbortController()
+      activeRef.current.set(item.id, controller)
+      runningRef.current++
+      setItems((prev) => prev.map((it) => it.id === item.id
+        ? { ...it, status: 'uploading', bytesSent: 0, error: undefined } : it))
+      void startUpload(item.id, item.file, controller)
+    }
+  }, [items, startUpload])
+
+  useEffect(() => {
+    const active = activeRef.current
+    return () => { active.forEach((controller) => controller.abort()) }
+  }, [])
 
   // ── Enqueue with validation ─────────────────────────────────────────────
 
@@ -200,10 +183,8 @@ export default function UploadZone({ dealId, existingNames, onUploaded }: Props)
         return [...prev, ...additions]
       })
 
-      // Run on a microtask so the state update above settles first.
-      queueMicrotask(pumpQueue)
     },
-    [existingNames, pumpQueue],
+    [existingNames],
   )
 
   // ── Event handlers ──────────────────────────────────────────────────────
@@ -235,7 +216,6 @@ export default function UploadZone({ dealId, existingNames, onUploaded }: Props)
           : it,
       ),
     )
-    queueMicrotask(pumpQueue)
   }
 
   const remove = (id: string) => {
@@ -421,7 +401,7 @@ function QueueRow({
             </div>
           )}
 
-          {item.status === 'failed' && (
+          {(item.status === 'failed' || (item.status === 'uploading' && item.error)) && (
             <p className="text-xs text-red-600 mt-0.5 truncate" title={item.error}>
               {item.error}
             </p>
@@ -464,3 +444,4 @@ function QueueRow({
     </li>
   )
 }
+

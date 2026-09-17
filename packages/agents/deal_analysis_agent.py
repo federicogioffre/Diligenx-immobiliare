@@ -203,22 +203,33 @@ class AnthropicLLMProvider(LLMProvider):
         return None
 
     def complete(self, prompt: str, max_tokens: int = 2048) -> str:
-        msg = self._client.messages.create(
-            model=self._model,
-            max_tokens=max_tokens,
-            extra_body=self._extra_body(),
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt,
-                            "cache_control": {"type": "ephemeral"},
-                        }
-                    ],
-                }
-            ],
+        from time import monotonic
+        from packages.agents.provider_limits import llm_slot
+        started = monotonic()
+        with llm_slot():
+            msg = self._client.messages.create(
+                model=self._model,
+                max_tokens=max_tokens,
+                extra_body=self._extra_body(),
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt,
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                    }
+                ],
+            )
+        usage = getattr(msg, "usage", None)
+        logger.info(
+            "llm_usage model=%s seconds=%.3f input_tokens=%s output_tokens=%s cache_read_tokens=%s cache_write_tokens=%s",
+            self._model, monotonic() - started,
+            getattr(usage, "input_tokens", None), getattr(usage, "output_tokens", None),
+            getattr(usage, "cache_read_input_tokens", None), getattr(usage, "cache_creation_input_tokens", None),
         )
         if msg.stop_reason == "max_tokens":
             raise LLMResponseError("AI response was truncated at the output token limit")
@@ -608,6 +619,9 @@ def get_llm_provider() -> LLMProvider:
         logger.info("Using AnthropicLLMProvider (%s).", model)
         _llm_provider = AnthropicLLMProvider(api_key=api_key, model=model)
     else:
+        from app.core.config import settings
+        if settings.BETA_MODE:
+            raise RuntimeError("BETA_MODE cannot use fake LLM analysis")
         logger.warning(
             "ANTHROPIC_API_KEY not set — using FakeLLMProvider. "
             "Analysis results will be deterministic stubs."

@@ -249,6 +249,15 @@ def _stage_intake(deal_id: int, db: Session) -> dict:
             .all()
         )
         processed = [d for d in docs if d.status == DocumentStatus.processed]
+        incomplete = [
+            d for d in docs
+            if d.status != DocumentStatus.processed or not (d.raw_text or "").strip()
+        ]
+        if incomplete:
+            raise ValueError(
+                f"Document ingestion is incomplete for {len(incomplete)} document(s): "
+                + ", ".join(str(d.id) for d in incomplete[:20])
+            )
 
         logger.info(
             "[%s] deal=%d — %d total documents, %d processed",

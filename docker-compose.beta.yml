@@ -1,0 +1,91 @@
+# Isolated staging deployment: docker compose -f docker-compose.yml -f docker-compose.beta.yml up --build -d
+# Supply real staging credentials via .env (never commit it). Terminate HTTPS
+# in a reverse proxy for the public frontend and API URLs.
+x-runtime: &runtime
+  BETA_MODE: "true"
+  DATABASE_URL: postgresql://diligenx_app:${BETA_DB_PASSWORD:?Set BETA_DB_PASSWORD}@postgres:5432/diligenx
+  MIGRATIONS_DATABASE_URL: postgresql://postgres:${BETA_DB_ADMIN_PASSWORD:?Set BETA_DB_ADMIN_PASSWORD}@postgres:5432/diligenx
+  REDIS_URL: redis://redis:6379/0
+  SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY}
+  S3_BUCKET: ${S3_BUCKET:?Set the staging S3_BUCKET}
+  S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+  S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+  S3_REGION: ${S3_REGION:-auto}
+  AUTH_COOKIE_SECURE: "true"
+  ALLOWED_ORIGINS: '["${BETA_WEB_URL:?Set the HTTPS frontend URL}"]'
+  FRONTEND_URL: ${BETA_WEB_URL}
+  LLM_MAX_CONCURRENCY: "4"
+  LLM_MAX_IN_FLIGHT: "4"
+  WORKER_MAX_JOBS: "4"
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_ENVIRONMENT: staging
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: diligenx
+      POSTGRES_PASSWORD: ${BETA_DB_ADMIN_PASSWORD}
+      BETA_DB_PASSWORD: ${BETA_DB_PASSWORD}
+    volumes:
+      - beta-postgres:/var/lib/postgresql/data
+      - ./infra/beta-init-role.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d diligenx"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, "yes", --appendfsync, everysec]
+    volumes: ["beta-redis:/data"]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment: *runtime
+    command: [python, -m, alembic, upgrade, head]
+    depends_on:
+      postgres:
+        condition: service_healthy
+  api:
+    environment: *runtime
+    command: [uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment: *runtime
+    command: [arq, app.worker.WorkerSettings]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 65m
+  web:
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: ${BETA_API_URL:?Set the public HTTPS API URL}
+    environment:
+      NEXT_PUBLIC_API_URL: ${BETA_API_URL}
+
+volumes:
+  beta-postgres:
+  beta-redis:

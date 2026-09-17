@@ -706,8 +706,8 @@ class TestEdgeCases:
         assert result["stages"]["specialist_analysis"]["clause_findings_count"] == 6
         assert result["stages"]["specialist_analysis"]["contract_documents"] == 3
 
-    def test_pending_documents_not_classified(self, db, test_deal):
-        """Documents still in *pending* status must be skipped by the router."""
+    def test_pending_documents_block_analysis(self, db, test_deal):
+        """An unfinished upload must block publication of a partial analysis."""
         doc = Document(
             deal_id=test_deal.id,
             filename="pending_contract.txt",
@@ -721,7 +721,10 @@ class TestEdgeCases:
         db.commit()
 
         result = run_deal_analysis_pipeline(test_deal.id, db)
-        assert result["stages"]["document_routing"]["documents_classified"] == 0
+        assert not result["completed"]
+        assert "error" in result["stages"]["intake"]
+        assert "error" in result["stages"]["document_routing"]
+        assert "error" in result["stages"]["report_generation"]
 
     def test_pipeline_uses_injected_provider(self, db, test_deal, processed_doc):
         """Provider kwarg is forwarded to all LLM calls (no global singleton needed)."""
@@ -730,4 +733,3 @@ class TestEdgeCases:
             test_deal.id, db, provider=explicit_provider
         )
         assert result["completed"] is True
-
