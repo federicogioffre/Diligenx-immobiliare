@@ -954,21 +954,19 @@ class TestPayloadFields:
         payload = _agent_findings(db, test_deal)[0].structured_payload_json
         assert payload["mitigating_factors"] == ["already_paid", "42"]
 
-    def test_non_dict_items_are_skipped(self, db: Session, test_deal: Deal):
+    def test_non_dict_items_fail_the_stage(self, db: Session, test_deal: Deal):
         class _Stub(LLMProvider):
             def complete(self, prompt: str, max_tokens: int = 4096) -> str:
                 if "ANALYZE TAX MATTERS" in prompt.upper():
                     return json.dumps(["nonsense", 7, {"finding_type": "tax_debt"}])
                 return "[]"
 
-        # A document with no heuristic keyword, so nothing but the parsed
-        # item can reach the findings list.
+        # A partially usable array is an incomplete response, not evidence
+        # that the remaining items are the entire set of findings.
         doc = _make_doc(db, test_deal, raw_text=_NON_TAX_DOC)
         set_llm_provider(_Stub())
-        TaxAgent().run(test_deal.id, db, document_ids={doc.id})
-
-        findings = _agent_findings(db, test_deal)
-        assert [f.category for f in findings] == ["tax_debt"]
+        with pytest.raises(LLMResponseError):
+            TaxAgent().run(test_deal.id, db, document_ids={doc.id})
 
     def test_heuristic_floor_carries_the_new_fields(
         self, db: Session, test_deal: Deal
@@ -1137,4 +1135,3 @@ class TestDocumentSelection:
             db, test_deal, filename="service_agreement.pdf", raw_text=_NON_TAX_DOC
         )
         assert TaxAgent().run(test_deal.id, db)["documents_analyzed"] == 0
-
