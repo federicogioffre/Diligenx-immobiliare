@@ -17,6 +17,8 @@ Covers:
 """
 import json
 import pytest
+
+from packages.agents.deal_analysis_agent import LLMResponseError
 from sqlalchemy.orm import Session
 
 from app.models.deal import Deal
@@ -810,8 +812,8 @@ class TestEdgeCases:
         RedFlagAggregationAgent().run(test_deal.id, db)
         assert _agent_runs(db, test_deal)[0].status == AgentRunStatus.completed
 
-    def test_llm_returns_invalid_json_produces_no_flags(self, db, test_deal):
-        """Unparseable LLM output results in zero red flags (no crash)."""
+    def test_llm_returns_invalid_json_fails_stage(self, db, test_deal):
+        """Unparseable LLM output fails the stage."""
 
         class GarbageLLM(FakeLLMProvider):
             def complete(self, prompt, max_tokens=2048):
@@ -819,8 +821,8 @@ class TestEdgeCases:
                     return "this is not valid json at all"
                 return super().complete(prompt, max_tokens)
 
-        result = RedFlagAggregationAgent(provider=GarbageLLM()).run(test_deal.id, db)
-        assert result["red_flags_count"] == 0
+        with pytest.raises(LLMResponseError):
+            RedFlagAggregationAgent(provider=GarbageLLM()).run(test_deal.id, db)
 
     def test_llm_returns_empty_array_produces_no_flags(self, db, test_deal):
         """An empty JSON array from the LLM produces zero red flags."""
@@ -835,8 +837,8 @@ class TestEdgeCases:
         assert result["red_flags_count"] == 0
         assert result["open_questions_count"] == 0
 
-    def test_llm_returns_non_list_treated_as_empty(self, db, test_deal):
-        """A JSON object (not array) is treated as no flags."""
+    def test_llm_returns_non_list_fails_stage(self, db, test_deal):
+        """A JSON object is not a valid red-flag response."""
 
         class ObjectLLM(FakeLLMProvider):
             def complete(self, prompt, max_tokens=2048):
@@ -844,8 +846,8 @@ class TestEdgeCases:
                     return json.dumps({"error": "unexpected object"})
                 return super().complete(prompt, max_tokens)
 
-        result = RedFlagAggregationAgent(provider=ObjectLLM()).run(test_deal.id, db)
-        assert result["red_flags_count"] == 0
+        with pytest.raises(LLMResponseError):
+            RedFlagAggregationAgent(provider=ObjectLLM()).run(test_deal.id, db)
 
     def test_module_level_run_red_flag_aggregation(self, db, test_deal):
         """run_red_flag_aggregation convenience function works correctly."""
@@ -1177,3 +1179,4 @@ class TestPayloadSummary:
             {"change_of_control_clause": True}
         )
         assert _summarize_payload({"change_of_control_clause": False}) == ""
+

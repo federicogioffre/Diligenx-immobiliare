@@ -43,7 +43,7 @@ from sqlalchemy.orm import Session
 
 from packages.agents.deal_analysis_agent import (
     LLMProvider,
-    _safe_json,
+    _parse_llm_items,
     _normalize_severity,
     _parse_dd_area,
     get_llm_provider,
@@ -565,15 +565,7 @@ class RedFlagAggregationAgent:
         )
         raw = self._llm.complete(prompt, max_tokens=4096)
 
-        try:
-            items = _safe_json(raw)
-        except Exception:
-            logger.warning(
-                "[%s] deal=%d — parse error: %r", self.AGENT_NAME, deal_id, raw
-            )
-            items = []
-
-        return items if isinstance(items, list) else []
+        return _parse_llm_items(raw, context=f"Red flags for deal {deal_id}")
 
     # ── Deduplication ───────────────────────────────────────────────────
 
@@ -784,3 +776,4 @@ def run_red_flag_aggregation(
 ) -> dict:
     """Create a :class:`RedFlagAggregationAgent` and run aggregation."""
     return RedFlagAggregationAgent(provider=provider).run(deal_id, db)
+

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from packages.agents.deal_analysis_agent import (
     LLMProvider,
     get_llm_provider,
-    _safe_json,
+    _parse_llm_items,
 )
 
 logger = logging.getLogger(__name__)
@@ -232,18 +232,12 @@ class CorporateIntroAgent:
         prompt = CORPORATE_INTRO_EXTRACTION_PROMPT.format(
             filename=filename, text=text,
         )
-        try:
-            raw = self._llm.complete(prompt, max_tokens=4096)
-            items = _safe_json(raw)
-        except Exception:
-            logger.warning(
-                "[%s] doc=%d — parse error on LLM output", self.AGENT_NAME, document_id,
-            )
-            return []
+        raw = self._llm.complete(prompt, max_tokens=4096)
+        items = _parse_llm_items(
+            raw, context=f"{self.AGENT_NAME}, document {document_id}"
+        )
 
         payloads: list[dict] = []
-        if not isinstance(items, list):
-            return []
         for item in items:
             name = (item.get("company_name") or "").strip()
             if not name:

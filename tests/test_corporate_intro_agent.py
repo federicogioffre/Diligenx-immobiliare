@@ -178,7 +178,7 @@ class TestDegradedInput:
         result = CorporateIntroAgent(provider=NoNameLLM()).run(test_deal.id, db)
         assert result["company_profiles_count"] == 0
 
-    def test_unparseable_llm_output_yields_zero_profiles(self, db, test_deal):
+    def test_unparseable_llm_output_fails_stage(self, db, test_deal):
         _make_doc(db, test_deal, filename="statuto.pdf")
 
         class BrokenLLM(FakeLLMProvider):
@@ -187,5 +187,7 @@ class TestDegradedInput:
                     return "not json at all"
                 return super().complete(prompt, max_tokens)
 
-        result = CorporateIntroAgent(provider=BrokenLLM()).run(test_deal.id, db)
-        assert result["company_profiles_count"] == 0
+        from packages.agents.deal_analysis_agent import LLMResponseError
+
+        with pytest.raises(LLMResponseError):
+            CorporateIntroAgent(provider=BrokenLLM()).run(test_deal.id, db)

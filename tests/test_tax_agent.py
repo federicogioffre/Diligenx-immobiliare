@@ -21,6 +21,8 @@ Covers:
 """
 import json
 import pytest
+
+from packages.agents.deal_analysis_agent import LLMResponseError
 from sqlalchemy.orm import Session
 
 from app.models.deal import Deal
@@ -634,7 +636,7 @@ class TestEdgeCases:
         assert result["documents_analyzed"] == 0
         assert result["agent_findings_count"] == 0
 
-    def test_llm_returns_non_list_handled_gracefully(
+    def test_llm_returns_non_list_fails_stage(
         self, db: Session, test_deal: Deal
     ):
         class _BadJsonLLM(LLMProvider):
@@ -642,12 +644,12 @@ class TestEdgeCases:
                 return '{"not": "an array"}'
 
         doc = _make_doc(db, test_deal, raw_text=_NON_TAX_DOC)
-        result = TaxAgent(provider=_BadJsonLLM()).run(
-            test_deal.id, db, document_ids={doc.id}
-        )
-        assert result["agent_findings_count"] == 0
+        with pytest.raises(LLMResponseError):
+            TaxAgent(provider=_BadJsonLLM()).run(
+                test_deal.id, db, document_ids={doc.id}
+            )
 
-    def test_llm_returns_invalid_json_handled_gracefully(
+    def test_llm_returns_invalid_json_fails_stage(
         self, db: Session, test_deal: Deal
     ):
         class _GarbageLLM(LLMProvider):
@@ -655,10 +657,10 @@ class TestEdgeCases:
                 return "this is not json at all"
 
         doc = _make_doc(db, test_deal, raw_text=_NON_TAX_DOC)
-        result = TaxAgent(provider=_GarbageLLM()).run(
-            test_deal.id, db, document_ids={doc.id}
-        )
-        assert result["agent_findings_count"] == 0
+        with pytest.raises(LLMResponseError):
+            TaxAgent(provider=_GarbageLLM()).run(
+                test_deal.id, db, document_ids={doc.id}
+            )
 
     def test_run_tax_analysis_convenience_wrapper(
         self, db: Session, test_deal: Deal
@@ -952,21 +954,19 @@ class TestPayloadFields:
         payload = _agent_findings(db, test_deal)[0].structured_payload_json
         assert payload["mitigating_factors"] == ["already_paid", "42"]
 
-    def test_non_dict_items_are_skipped(self, db: Session, test_deal: Deal):
+    def test_non_dict_items_fail_the_stage(self, db: Session, test_deal: Deal):
         class _Stub(LLMProvider):
             def complete(self, prompt: str, max_tokens: int = 4096) -> str:
                 if "ANALYZE TAX MATTERS" in prompt.upper():
                     return json.dumps(["nonsense", 7, {"finding_type": "tax_debt"}])
                 return "[]"
 
-        # A document with no heuristic keyword, so nothing but the parsed
-        # item can reach the findings list.
+        # A partially usable array is an incomplete response, not evidence
+        # that the remaining items are the entire set of findings.
         doc = _make_doc(db, test_deal, raw_text=_NON_TAX_DOC)
         set_llm_provider(_Stub())
-        TaxAgent().run(test_deal.id, db, document_ids={doc.id})
-
-        findings = _agent_findings(db, test_deal)
-        assert [f.category for f in findings] == ["tax_debt"]
+        with pytest.raises(LLMResponseError):
+            TaxAgent().run(test_deal.id, db, document_ids={doc.id})
 
     def test_heuristic_floor_carries_the_new_fields(
         self, db: Session, test_deal: Deal

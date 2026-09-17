@@ -569,16 +569,17 @@ class TestFailureIsolation:
         assert "error" not in result["stages"]["specialist_analysis"]
         assert "error" not in result["stages"]["corporate_analysis"]
 
-    def test_report_stage_still_runs_after_red_flag_failure(
+    def test_report_stage_blocked_after_red_flag_failure(
         self, db, test_deal, processed_doc, failing_red_flag_llm
     ):
-        """Stage 6 must execute even though Stage 5 failed."""
+        """A failed aggregation must not publish a falsely clean report."""
         result = run_deal_analysis_pipeline(
             test_deal.id, db, provider=failing_red_flag_llm
         )
         rpt = result["stages"]["report_generation"]
-        assert "error" not in rpt
-        assert "report_id" in rpt
+        assert "error" in rpt
+        assert "report_id" not in rpt
+        assert db.query(Report).count() == 0
 
     def test_completed_is_false_on_any_failure(
         self, db, test_deal, processed_doc, failing_red_flag_llm
@@ -729,3 +730,4 @@ class TestEdgeCases:
             test_deal.id, db, provider=explicit_provider
         )
         assert result["completed"] is True
+

@@ -12,6 +12,8 @@ Covers:
 """
 import json
 import pytest
+
+from packages.agents.deal_analysis_agent import LLMResponseError
 from sqlalchemy.orm import Session
 
 from app.models.deal import Deal
@@ -606,8 +608,8 @@ class TestEdgeCases:
         assert len(findings) == 1
         assert findings[0].structured_payload_json["clause_count"] == 0
 
-    def test_llm_returns_invalid_json_produces_no_clauses(self, db, test_deal):
-        """Unparseable LLM output results in zero clauses (no crash)."""
+    def test_llm_returns_invalid_json_fails_stage(self, db, test_deal):
+        """Unparseable LLM output fails the stage instead of claiming zero clauses."""
 
         class GarbageLLM(FakeLLMProvider):
             def complete(self, prompt, max_tokens=2048):
@@ -616,8 +618,8 @@ class TestEdgeCases:
                 return super().complete(prompt, max_tokens)
 
         doc = _make_doc(db, test_deal)
-        result = ContractAgent(provider=GarbageLLM()).run(test_deal.id, db)
-        assert result["clause_findings_count"] == 0
+        with pytest.raises(LLMResponseError):
+            ContractAgent(provider=GarbageLLM()).run(test_deal.id, db)
         assert len(_clause_findings(db, doc)) == 0
 
     def test_module_level_run_contract_analysis(self, db, test_deal):
@@ -653,7 +655,7 @@ class TestRelevanceFiltering:
             p = prompt.upper()
             if "RELEVANCE FILTERING" in p:
                 import re as _re
-                indices = [int(m) for m in _re.findall(r'"clause_index"\s*:\s*(\d+)', prompt)]
+                indices = [int(m) for m in _re.findall(r'"clause_index"\s*:\s*(\d+)', prompt.split("INPUT CLAUSES:", 1)[1].split("Return ONLY", 1)[0])]
                 result = []
                 for idx in indices:
                     relevance = "high" if idx == 0 else "low"
@@ -706,8 +708,8 @@ class TestRelevanceFiltering:
         result = ContractAgent().run(test_deal.id, db)
         assert result["clause_findings_count"] == 2
 
-    def test_classification_failure_keeps_all_clauses(self, db, test_deal):
-        """If relevance LLM raises, all clauses are retained (fail-open)."""
+    def test_classification_failure_fails_stage(self, db, test_deal):
+        """A failed relevance call must not be marked as a completed analysis."""
         class _FailRelevanceLLM(FakeLLMProvider):
             def complete(self, prompt, max_tokens=2048):
                 if "RELEVANCE FILTERING" in prompt.upper():
@@ -715,8 +717,8 @@ class TestRelevanceFiltering:
                 return super().complete(prompt, max_tokens)
 
         _make_doc(db, test_deal)
-        result = ContractAgent(provider=_FailRelevanceLLM()).run(test_deal.id, db)
-        assert result["clause_findings_count"] == 2  # all kept on failure
+        with pytest.raises(RuntimeError, match="Simulated relevance failure"):
+            ContractAgent(provider=_FailRelevanceLLM()).run(test_deal.id, db)
 
     def test_ccnl_detected_by_filename(self, db, test_deal):
         """Document with 'ccnl' in filename is flagged as CCNL."""
@@ -737,7 +739,7 @@ class TestRelevanceFiltering:
                 if "RELEVANCE FILTERING" in prompt.upper():
                     import re as _re
                     import json as _json
-                    indices = [int(m) for m in _re.findall(r'"clause_index"\s*:\s*(\d+)', prompt)]
+                    indices = [int(m) for m in _re.findall(r'"clause_index"\s*:\s*(\d+)', prompt.split("INPUT CLAUSES:", 1)[1].split("Return ONLY", 1)[0])]
                     return _json.dumps([
                         {"clause_index": idx, "relevance": "medium", "reason": "Medium"}
                         for idx in indices
@@ -975,3 +977,4 @@ class TestCCNLComplianceAnalysis:
             if f.category == "ccnl_compliance"
         ])
         assert first_count == second_count  # no duplication
+

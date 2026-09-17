@@ -156,6 +156,10 @@ def _accepts_sampling_params(model: str) -> bool:
     return bool(_SAMPLING_PARAM_MODELS.match(model))
 
 
+class LLMResponseError(RuntimeError):
+    """An AI response is incomplete or cannot be used as analysis evidence."""
+
+
 class LLMProvider(ABC):
     """Abstract interface for LLM completion providers."""
 
@@ -216,7 +220,15 @@ class AnthropicLLMProvider(LLMProvider):
                 }
             ],
         )
-        return msg.content[0].text
+        if msg.stop_reason == "max_tokens":
+            raise LLMResponseError("AI response was truncated at the output token limit")
+        text = "".join(
+            block.text for block in msg.content
+            if isinstance(getattr(block, "text", None), str)
+        )
+        if not text.strip():
+            raise LLMResponseError("AI response contained no text")
+        return text
 
 
 class FakeLLMProvider(LLMProvider):
@@ -314,7 +326,8 @@ class FakeLLMProvider(LLMProvider):
         if "RELEVANCE FILTERING" in p:
             # Parse clause indices from the JSON block in the prompt and mark all as high.
             import re as _re
-            indices = [int(m) for m in _re.findall(r'"clause_index"\s*:\s*(\d+)', prompt)]
+            input_block = prompt.split("INPUT CLAUSES:", 1)[1].split("Return ONLY", 1)[0]
+            indices = [int(m) for m in _re.findall(r'"clause_index"\s*:\s*(\d+)', input_block)]
             if not indices:
                 return json.dumps([])
             return json.dumps([
@@ -624,7 +637,7 @@ def _escape_stray_quotes(text: str) -> str:
     quote met inside a string closes it only if the next non-blank character
     is a structural token (``,`` ``}`` ``]`` ``:``); otherwise it is part of
     the text and gets escaped. A stray quote immediately followed by a comma
-    is still ambiguous and left alone — the truncation fallback handles it.
+    is still ambiguous and left alone; invalid JSON then fails explicitly.
     """
     out: list[str] = []
     in_str = False
@@ -659,64 +672,62 @@ def _escape_stray_quotes(text: str) -> str:
 
 
 def _safe_json(raw: str) -> list | dict:
-    """Parse JSON from LLM output, with fallback recovery for truncated arrays.
+    """Repair escaping errors only; never accept a truncated array prefix.
 
-    The LLM occasionally returns a JSON array whose last element is cut off
-    (max-tokens reached mid-string) or contains a character that breaks the
-    JSON parser (e.g. an unescaped quote inside Italian legal text).  Rather
-    than discarding the entire batch, we attempt to salvage the valid prefix.
+    Recovering the first objects silently loses findings. Callers must
+    propagate invalid or incomplete responses so the orchestrator can
+    preserve the previous outputs.
     """
     text = raw.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        lines = lines[1:]  # drop opening fence (```json or ```)
-        if lines and lines[-1].strip().startswith("```"):
+    fence = "```"
+    if text.startswith(fence):
+        lines = text.splitlines()[1:]
+        if lines and lines[-1].strip().startswith(fence):
             lines = lines[:-1]
         text = "\n".join(lines).strip()
 
-    # The model sometimes escapes apostrophes in Italian text (``l\\'attività``).
-    # ``\'`` is not a valid JSON escape, so the whole batch would be lost;
-    # a JSON string never legitimately contains it, so unescaping is safe.
-    text = text.replace("\\'", "'")
-
-    # Fast path — well-formed JSON
+    # Do not change valid JSON, including literal backslashes/apostrophes.
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Recovery 1: unescaped double quotes inside string values (the most
-    # common failure on Italian legal text). Keeps the whole batch.
+    # Repair an odd backslash before an apostrophe; preserve escaped pairs.
+    text = re.sub(r"(?<!\\)((?:\\\\)*)\\'", r"\1'", text)
     try:
-        result = json.loads(_escape_stray_quotes(text))
-        logger.debug("_safe_json: recovered batch by escaping stray quotes")
-        return result
+        return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Recovery 2: for JSON arrays, truncate at the last complete object and
-    # close the array.  This preserves all valid items from the batch even
-    # when the final item is broken.
-    if text.startswith("["):
-        # Try closing after the last complete "}," or "}" before end
-        last_close = text.rfind("},")
-        if last_close == -1:
-            last_close = text.rfind("}")
-        if last_close > 0:
-            candidate = text[: last_close + 1] + "]"
-            try:
-                result = json.loads(candidate)
-                logger.debug(
-                    "_safe_json: recovered %d item(s) from truncated JSON array",
-                    len(result) if isinstance(result, list) else 1,
-                )
-                return result
-            except json.JSONDecodeError:
-                pass
+    # Keep the PR 37 repair for unescaped quotes in document text.
+    try:
+        return json.loads(_escape_stray_quotes(text))
+    except json.JSONDecodeError as exc:
+        raise LLMResponseError("AI response contains incomplete or invalid JSON") from exc
 
-    # Nothing worked — let the original exception propagate so the caller
-    # can log it and continue with an empty item list.
-    return json.loads(text)
+
+def _parse_llm_items(raw: str, *, context: str) -> list[dict]:
+    """Only an explicit, valid [] means that the model found no items."""
+    try:
+        items = _safe_json(raw)
+    except LLMResponseError as exc:
+        raise LLMResponseError(f"{context}: {exc}") from exc
+    if not isinstance(items, list) or any(
+        not isinstance(item, dict) or not item for item in items
+    ):
+        raise LLMResponseError(f"{context}: expected a JSON array of non-empty objects")
+    return items
+
+
+def _parse_classification(raw: str) -> dict:
+    result = _safe_json(raw)
+    if (
+        not isinstance(result, dict)
+        or not isinstance(result.get("document_type"), str)
+        or not result["document_type"].strip()
+    ):
+        raise LLMResponseError("Document classification: expected an object with document_type")
+    return result
 
 
 # ── Main agent ─────────────────────────────────────────────────────────────
@@ -906,11 +917,7 @@ class DealAnalysisAgent:
             text=text[:4000],
         )
         raw = self._llm.complete(prompt, max_tokens=256)
-        try:
-            return _safe_json(raw)
-        except Exception:
-            logger.warning("Classification parse error: %r", raw)
-            return {"document_type": "other", "confidence": 0.0, "rationale": raw}
+        return _parse_classification(raw)
 
     def _extract_clauses(
         self, document_id: int, text: str, db: Session
@@ -937,17 +944,11 @@ class DealAnalysisAgent:
                 ),
             )
             raw = self._llm.complete(prompt, max_tokens=8192)
-            try:
-                items = _safe_json(raw)
-            except Exception as exc:
-                logger.warning(
-                    "Clause extraction parse error for doc %d batch %d (%s); "
-                    "last 300 chars: %r",
-                    document_id, batch_idx, exc, raw[-300:],
-                )
-                items = []
+            items = _parse_llm_items(
+                raw, context=f"Contract document {document_id}, batch {batch_idx + 1}"
+            )
 
-            for item in items if isinstance(items, list) else []:
+            for item in items:
                 content = item.get("content", "")
                 confidence = item.get("confidence")
 
@@ -1005,16 +1006,10 @@ class DealAnalysisAgent:
 
         prompt = RED_FLAG_DETECTION_PROMPT.format(findings=findings_text)
         raw = self._llm.complete(prompt, max_tokens=2048)
-        try:
-            items = _safe_json(raw)
-        except Exception:
-            logger.warning(
-                "Red-flag parse error for deal %d: %r", deal_id, raw
-            )
-            items = []
+        items = _parse_llm_items(raw, context=f"Red flags for deal {deal_id}")
 
         red_flags = []
-        for item in items if isinstance(items, list) else []:
+        for item in items:
             severity_str = _normalize_severity(item.get("severity", "medium"))
             flag = RedFlag(
                 deal_id=deal_id,

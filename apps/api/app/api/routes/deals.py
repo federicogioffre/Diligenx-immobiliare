@@ -252,10 +252,19 @@ def generate_report(
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
 
-    from packages.agents.report_agent import generate_due_diligence_report
+    from packages.agents.report_agent import (
+        IncompleteAnalysisError,
+        generate_due_diligence_report,
+    )
+    from app.models.deal import DealStatus
+
+    if deal.status == DealStatus.analyzing:
+        raise HTTPException(status_code=409, detail="Analisi in corso: attendi il completamento.")
 
     try:
         result = generate_due_diligence_report(deal_id, db)
+    except IncompleteAnalysisError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception:

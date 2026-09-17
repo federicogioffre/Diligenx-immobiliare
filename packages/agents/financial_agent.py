@@ -82,7 +82,7 @@ from sqlalchemy.orm import Session
 from packages.agents.deal_analysis_agent import (
     LLMProvider,
     get_llm_provider,
-    _safe_json,
+    _parse_llm_items,
     _normalize_severity,
 )
 
@@ -845,17 +845,12 @@ class FinancialAgent:
         )
         raw = self._llm.complete(prompt, max_tokens=2048)
 
-        try:
-            items = _safe_json(raw)
-        except Exception:
-            logger.warning(
-                "[%s] doc=%d — financial parse error: %r",
-                self.AGENT_NAME, document_id, raw,
-            )
-            items = []
+        items = _parse_llm_items(
+            raw, context=f"{self.AGENT_NAME}, document {document_id}"
+        )
 
         payloads: list[dict] = []
-        for item in items if isinstance(items, list) else []:
+        for item in items:
             if not isinstance(item, dict):
                 continue
 
