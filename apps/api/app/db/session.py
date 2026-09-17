@@ -15,6 +15,17 @@ else:
     # pool (5 + 10 overflow) exhausts during batch uploads while the
     # frontend polls the document list.
     engine_kwargs.update(pool_size=10, max_overflow=20, pool_timeout=60)
+    # Managed Postgres sits behind a TCP proxy that drops connections which
+    # stay silent for minutes (the analysis pipeline waits on the LLM for
+    # far longer than that). Keepalives keep the path alive; recycling caps
+    # how old a pooled connection may get before it is reopened.
+    connect_args.update(
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+    )
+    engine_kwargs.update(pool_recycle=1800)
 
 engine = create_engine(
     settings.DATABASE_URL,

@@ -105,14 +105,13 @@ class CorporateIntroAgent:
             self.AGENT_NAME, deal_id, deal.title,
         )
 
-        # Idempotency: clear this agent's previous run + previous profiles.
+        # Idempotency: replace this agent's previous run. Previous profiles
+        # are deleted in the persistence phase, in the same transaction as
+        # the new ones (see stage_tx).
         db.query(AgentRun).filter(
             AgentRun.deal_id == deal_id,
             AgentRun.agent_name == self.AGENT_NAME,
         ).delete(synchronize_session=False)
-        db.query(CompanyProfile).filter(
-            CompanyProfile.deal_id == deal_id,
-        ).delete(synchronize_session="fetch")
         db.flush()
 
         run = AgentRun(
@@ -131,11 +130,26 @@ class CorporateIntroAgent:
             # LLM+parse per document is pure → fan out on a bounded pool;
             # ORM persistence happens below on this thread, in input order.
             from packages.agents.concurrency import run_llm_tasks
+            from packages.agents.stage_tx import release_connection_before_llm
+
+            # Plain values for the workers: after the commit below the ORM
+            # instances are expired and must not be touched off-thread.
+            work = [(doc.filename, doc.raw_text or "", doc.id) for doc in documents]
+
+            # No transaction may stay open across the LLM phase.
+            release_connection_before_llm(db)
 
             payload_lists = run_llm_tasks(
-                documents,
-                lambda doc: self._profile_payloads(doc.filename, doc.raw_text or "", doc.id),
+                work,
+                lambda item: self._profile_payloads(item[0], item[1], item[2]),
             )
+
+            # Idempotency: wipe the previous run's profiles in the same
+            # transaction as the new ones.
+            db.query(CompanyProfile).filter(
+                CompanyProfile.deal_id == deal_id,
+            ).delete(synchronize_session="fetch")
+            db.flush()
 
             profiles: list = []
             for doc, payloads in zip(documents, payload_lists):

@@ -745,17 +745,13 @@ class TaxAgent:
             self.AGENT_NAME, deal_id, deal.title,
         )
 
-        # ── 1. Idempotency: wipe previous outputs ─────────────────────── #
+        # ── 1. Idempotency: replace the previous AgentRun ─────────────── #
+        # Previous AgentFinding rows are deleted in the persistence phase,
+        # inside the same transaction as the new rows (see stage_tx).
         db.query(AgentRun).filter(
             AgentRun.deal_id == deal_id,
             AgentRun.agent_name == self.AGENT_NAME,
         ).delete(synchronize_session=False)
-
-        db.query(AgentFinding).filter(
-            AgentFinding.deal_id == deal_id,
-            AgentFinding.agent_name == self.AGENT_NAME,
-        ).delete(synchronize_session=False)
-
         db.flush()
 
         # ── 2. Open AgentRun ──────────────────────────────────────────── #
@@ -785,11 +781,13 @@ class TaxAgent:
 
             # LLM+parse per document is pure → fan out on a bounded pool;
             # ORM persistence happens below on this thread, in input order.
+            # Plain values for the workers: after the commit below the ORM
+            # instances are expired and must not be touched off-thread.
             to_analyse = []
             for doc in documents:
                 text = (doc.raw_text or "").strip()
                 if text:
-                    to_analyse.append((doc, text))
+                    to_analyse.append((doc, doc.id, doc.filename, text))
                 else:
                     logger.warning(
                         "[%s] deal=%d doc=%d — no text, skipping",
@@ -797,13 +795,25 @@ class TaxAgent:
                     )
 
             from packages.agents.concurrency import run_llm_tasks
+            from packages.agents.stage_tx import release_connection_before_llm
+
+            # No transaction may stay open across the LLM phase.
+            release_connection_before_llm(db)
 
             payload_lists = run_llm_tasks(
                 to_analyse,
-                lambda pair: self._tax_payloads(pair[0].filename, pair[1], pair[0].id),
+                lambda item: self._tax_payloads(item[2], item[3], item[1]),
             )
 
-            for (doc, text), payloads in zip(to_analyse, payload_lists):
+            # Idempotency: wipe the previous run's outputs in the same
+            # transaction as the new rows.
+            db.query(AgentFinding).filter(
+                AgentFinding.deal_id == deal_id,
+                AgentFinding.agent_name == self.AGENT_NAME,
+            ).delete(synchronize_session=False)
+            db.flush()
+
+            for (doc, _, _, text), payloads in zip(to_analyse, payload_lists):
                 # Deterministic floor for high-signal Italian tax red flags.
                 floor_payloads = self._heuristic_payloads(text, payloads)
                 heuristic_count += len(floor_payloads)

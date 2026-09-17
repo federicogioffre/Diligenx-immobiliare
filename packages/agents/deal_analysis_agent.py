@@ -627,6 +627,11 @@ def _safe_json(raw: str) -> list | dict:
             lines = lines[:-1]
         text = "\n".join(lines).strip()
 
+    # The model sometimes escapes apostrophes in Italian text (``l\\'attività``).
+    # ``\'`` is not a valid JSON escape, so the whole batch would be lost;
+    # a JSON string never legitimately contains it, so unescaping is safe.
+    text = text.replace("\\'", "'")
+
     # Fast path — well-formed JSON
     try:
         return json.loads(text)
