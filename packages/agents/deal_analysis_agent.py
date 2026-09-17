@@ -598,6 +598,9 @@ def get_llm_provider() -> LLMProvider:
     """
     global _llm_provider
     if _llm_provider is not None:
+        from app.core.config import settings
+        if settings.BETA_MODE and isinstance(_llm_provider, FakeLLMProvider):
+            raise RuntimeError("BETA_MODE cannot use fake LLM analysis")
         return _llm_provider
 
     # Prefer the pydantic-settings value (populated from .env) over the raw

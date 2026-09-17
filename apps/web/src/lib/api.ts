@@ -569,7 +569,7 @@ export const api = {
         catch (error) {
           const failure = error as Error & { retryable?: boolean; retryAfter?: number }
           if (!failure.retryable || signal?.aborted || attempt >= 4) throw error
-          const delay = Math.min(120_000, Math.max(failure.retryAfter || 0, 2000 * 2 ** attempt) + Math.random() * 1000)
+          const delay = Math.max(failure.retryAfter || 0, Math.min(120_000, 2000 * 2 ** attempt)) + Math.random() * 1000
           onRetry?.(Math.ceil(delay / 1000))
           await new Promise<void>((resolve, reject) => {
             const abort = () => {
@@ -656,4 +656,3 @@ export function openAnalysisStream(
     es?.close()
   }
 }
-

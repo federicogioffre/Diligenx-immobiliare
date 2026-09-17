@@ -112,6 +112,63 @@ async def test_worker_process_preserves_exit_status():
 
 
 @pytest.mark.anyio
+async def test_child_hard_deadline_terminates_without_parent_cancellation():
+    api_dir = str(Path(worker.__file__).resolve().parents[1])
+    code = (
+        f"import sys,time;sys.path.insert(0,{api_dir!r});"
+        "from app.job_runner import _install_process_guards;"
+        "_install_process_guards(None,time.monotonic()+0.2);time.sleep(30)"
+    )
+    before = time.monotonic()
+    result = await asyncio.wait_for(worker._run_command(sys.executable, "-c", code), timeout=5)
+    assert result != 0
+    assert time.monotonic() - before < 5
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux kernel parent-death guard")
+@pytest.mark.anyio
+async def test_child_dies_when_worker_parent_is_killed(tmp_path):
+    api_dir = str(Path(worker.__file__).resolve().parents[1])
+    marker = tmp_path / "child-pid"
+    child_code = (
+        f"import sys,os,time;sys.path.insert(0,{api_dir!r});"
+        "from pathlib import Path;from app.job_runner import _install_process_guards;"
+        "_install_process_guards(PARENT_PID,time.monotonic()+10);"
+        f"Path({str(marker)!r}).write_text(str(os.getpid()));time.sleep(30)"
+    )
+    parent_code = (
+        "import subprocess,sys,os,time;"
+        f"code={child_code!r}.replace('PARENT_PID',str(os.getpid()));"
+        "subprocess.Popen([sys.executable,'-c',code],start_new_session=True);time.sleep(30)"
+    )
+    task = asyncio.create_task(worker._run_command(sys.executable, "-c", parent_code))
+    try:
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert marker.exists()
+        pid = int(marker.read_text())
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            stat = Path(f"/proc/{pid}/stat")
+            if not stat.exists() or stat.read_text().split()[2] == "Z":
+                break  # A zombie has exited and cannot publish database writes.
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("job child survived the death of its Arq parent")
+    finally:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
+@pytest.mark.anyio
 async def test_transient_ingestion_retry_is_bounded(monkeypatch):
     monkeypatch.setattr(settings, "WORKER_MAX_TRIES", 3)
     monkeypatch.setattr(worker, "_run_command", AsyncMock(return_value=75))
@@ -175,4 +232,3 @@ def test_provider_retry_classification(status, expected):
     error = RuntimeError("provider failure")
     error.status_code = status
     assert worker._is_transient(error) is expected
-

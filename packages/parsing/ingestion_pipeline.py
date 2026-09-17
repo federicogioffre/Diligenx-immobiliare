@@ -36,9 +36,9 @@ def process_document(document_id: int, db: Session) -> None:
     2. Extract per-page text (PDF / DOCX / TXT)
     3. Detect language
     4. Chunk text
-    5. Store chunks in DocumentChunk table
-    6. Generate embeddings for chunks
-    7. Update Document status / metadata
+    5. Generate embeddings without holding a database transaction
+    6. Atomically replace text, chunks, embeddings and metadata
+    7. Mark the document processed only after complete extraction
     """
     # Import models here to keep packages/ decoupled from app/
     from app.models.document import Document, DocumentStatus

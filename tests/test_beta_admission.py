@@ -33,6 +33,32 @@ def test_queue_failure_preserves_previous_deal_state(client, db, test_deal, auth
     assert test_deal.status == DealStatus.reviewed
 
 
+def test_ambiguous_dispatch_keeps_inventory_locked(client, db, test_deal, auth_headers, monkeypatch):
+    from app.services.jobs import JobDispatchError
+    monkeypatch.setattr("app.services.jobs.enqueue_or_run", AsyncMock(side_effect=JobDispatchError("Response lost", may_have_enqueued=True)))
+    assert client.post(f"/deals/{test_deal.id}/analyze", headers=auth_headers).status_code == 503
+    db.refresh(test_deal)
+    assert test_deal.status == DealStatus.analyzing
+
+
+@pytest.mark.parametrize("job_state,expected", [("not_found", 200), ("queued", 409), ("in_progress", 409)])
+def test_recovery_requires_stale_analysis_and_no_redis_job(client, db, test_deal, auth_headers, monkeypatch, job_state, expected):
+    from datetime import datetime, timedelta, timezone
+    from arq.jobs import Job, JobStatus
+    from app.core.config import settings
+    from app.main import _fastapi
+    test_deal.status = DealStatus.analyzing
+    test_deal.updated_at = datetime.now(timezone.utc) - timedelta(hours=3)
+    db.commit()
+    monkeypatch.setattr(settings, "REDIS_URL", "redis://configured")
+    monkeypatch.setattr(_fastapi.state, "arq_pool", AsyncMock())
+    monkeypatch.setattr(Job, "status", AsyncMock(return_value=JobStatus(job_state)))
+    response = client.post(f"/deals/{test_deal.id}/recover-analysis", headers=auth_headers)
+    assert response.status_code == expected, response.text
+    db.refresh(test_deal)
+    assert test_deal.status == (DealStatus.draft if expected == 200 else DealStatus.analyzing)
+
+
 @pytest.mark.anyio
 async def test_sse_releases_session_before_each_yield(db, test_deal, test_user, monkeypatch):
     from app.api.routes.deals import stream_analysis_progress

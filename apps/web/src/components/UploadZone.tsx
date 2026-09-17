@@ -97,7 +97,7 @@ async function extractFiles(dt: DataTransfer): Promise<File[]> {
 
 // ── Component ──────────────────────────────────────────────────────────────
 
-export default function UploadZone({ dealId, existingNames, onUploaded }: Props) {
+export default function UploadZone({ dealId, onUploaded }: Props) {
   const [items, setItems] = useState<QueueItem[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
 
@@ -154,15 +154,9 @@ export default function UploadZone({ dealId, existingNames, onUploaded }: Props)
     (incoming: File[]) => {
       if (incoming.length === 0) return
 
-      const existingLower = new Set(existingNames.map((n) => n.toLowerCase()))
-
       setItems((prev) => {
-        const inQueueLower = new Set(
-          prev.map((it) => it.file.name.toLowerCase()),
-        )
         const additions: QueueItem[] = []
         for (const file of incoming) {
-          const lower = file.name.toLowerCase()
           if (!ALLOWED_EXTENSIONS.test(file.name)) {
             additions.push(mkItem(file, 'invalid', 'Tipo non supportato'))
             continue
@@ -173,18 +167,16 @@ export default function UploadZone({ dealId, existingNames, onUploaded }: Props)
             )
             continue
           }
-          if (existingLower.has(lower) || inQueueLower.has(lower)) {
-            additions.push(mkItem(file, 'invalid', 'Già presente'))
-            continue
-          }
-          inQueueLower.add(lower)
+          // Names alone are not document identities (folders commonly repeat
+          // them). The API deduplicates named content and safely resumes files
+          // whose previous response or queue dispatch was interrupted.
           additions.push(mkItem(file, 'queued'))
         }
         return [...prev, ...additions]
       })
 
     },
-    [existingNames],
+    [],
   )
 
   // ── Event handlers ──────────────────────────────────────────────────────
@@ -444,4 +436,3 @@ function QueueRow({
     </li>
   )
 }
-

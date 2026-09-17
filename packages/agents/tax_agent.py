@@ -959,7 +959,7 @@ class TaxAgent:
             filename=filename,
             text=text,
         )
-        raw = self._llm.complete(prompt, max_tokens=2048)
+        raw = self._llm.complete(prompt, max_tokens=8192)
 
         items = _parse_llm_items(
             raw, context=f"{self.AGENT_NAME}, document {document_id}"

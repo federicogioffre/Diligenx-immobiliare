@@ -124,6 +124,9 @@ def get_embedding_provider() -> EmbeddingProvider:
     """
     global _default_provider
     if _default_provider is not None:
+        from app.core.config import settings
+        if settings.BETA_MODE and isinstance(_default_provider, FakeEmbeddingProvider):
+            raise RuntimeError("BETA_MODE cannot use fake embeddings")
         return _default_provider
 
     import os

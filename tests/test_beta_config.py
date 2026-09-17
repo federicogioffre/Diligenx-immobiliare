@@ -27,3 +27,14 @@ def test_beta_rejects_incomplete_runtime(valid_beta, monkeypatch, name, value):
     monkeypatch.setattr(settings, name, value)
     with pytest.raises(RuntimeError):
         validate_beta_configuration()
+
+
+def test_beta_cannot_reuse_cached_fake_providers(valid_beta, monkeypatch):
+    from packages.agents import deal_analysis_agent as llm
+    from packages.retrieval import embedding_service as embeddings
+    monkeypatch.setattr(llm, "_llm_provider", llm.FakeLLMProvider())
+    monkeypatch.setattr(embeddings, "_default_provider", embeddings.FakeEmbeddingProvider())
+    with pytest.raises(RuntimeError, match="fake"):
+        llm.get_llm_provider()
+    with pytest.raises(RuntimeError, match="fake"):
+        embeddings.get_embedding_provider()

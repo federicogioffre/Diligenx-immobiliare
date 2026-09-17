@@ -39,6 +39,7 @@ def tenants():
 
 def test_tenant_survives_commits_rollbacks_and_different_connections(tenants):
     own, other = tenants
+    engine.dispose()  # start with exactly one idle physical connection
     with SessionLocal() as db:
         set_tenant_context(db, own[0])
         original_pid = db.execute(text("SELECT pg_backend_pid()")).scalar_one()
@@ -92,3 +93,10 @@ def test_interleaved_sessions_keep_distinct_tenants(tenants):
             a.commit()
             assert [r.id for r in b.query(Deal)] == [tenants[1][2]]
             b.rollback()
+
+
+def test_beta_database_guard_checks_real_role_policies_and_migration_head(monkeypatch):
+    from app.core.config import settings
+    from app.core.runtime_validation import validate_beta_database
+    monkeypatch.setattr(settings, "BETA_MODE", True)
+    validate_beta_database()

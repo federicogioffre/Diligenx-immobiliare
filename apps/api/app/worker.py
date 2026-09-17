@@ -11,6 +11,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import time
 from typing import Any
 
 import httpx
@@ -84,7 +85,13 @@ def _job_command(kind: str, entity_id: int, user_id: int) -> tuple[str, ...]:
         f"import sys;sys.path[:0]=[{api_dir!r},{repo_dir!r}];"
         "from app.job_runner import main;sys.exit(main())"
     )
-    return sys.executable, "-c", bootstrap, kind, str(entity_id), str(user_id)
+    # Use an absolute monotonic deadline so slow imports/spawn cannot extend
+    # the child's life past Arq's in-progress lease. Leave time for reaping.
+    deadline = time.monotonic() + max(0.1, settings.WORKER_JOB_TIMEOUT_SECONDS - 5)
+    return (
+        sys.executable, "-c", bootstrap, kind, str(entity_id), str(user_id),
+        "--parent-pid", str(os.getpid()), "--deadline", str(deadline),
+    )
 
 
 class JobProcessError(RuntimeError):
@@ -176,4 +183,3 @@ class WorkerSettings:
     max_tries = settings.WORKER_MAX_TRIES
     keep_result = 0
     health_check_interval = 15
-

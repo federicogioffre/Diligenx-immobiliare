@@ -5,7 +5,7 @@ professional Italian M&A legal advisors:
 
     1. Introduction (purpose / object / limitations — deterministic boilerplate)
     2. Corporate Introductory Information (placeholder until extraction ships)
-    3. Executive Summary (LLM-generated, grounded on the findings)
+    3. Executive Summary (grounded prose, or a bounded factual overview for large reports)
     4. Key Findings — one table per DD area, each row carrying the
        Issue | Risk | Recommendation | Severity quadruple
     5. Observations / Information Requests (from the aggregator's AgentFindings)
@@ -13,7 +13,8 @@ professional Italian M&A legal advisors:
 
 Everything except the Executive Summary is rendered deterministically from
 database rows — structure and data sections cannot hallucinate. Only the
-summary prose goes through the LLM.
+summary prose goes through the LLM. Large reports use a clearly abbreviated,
+deterministic summary while retaining every finding in the detail sections.
 
 The report is stored in the ``Report`` table with
 ``report_type = due_diligence``.  Calling the function again for the same deal
