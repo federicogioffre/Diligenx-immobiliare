@@ -611,6 +611,53 @@ def set_llm_provider(provider: LLMProvider | None) -> None:
 
 # ── JSON parsing helper ────────────────────────────────────────────────────
 
+def _escape_stray_quotes(text: str) -> str:
+    """Escape double quotes the model left unescaped *inside* JSON strings.
+
+    Italian legal text is full of quoted terms (``la clausola "change of
+    control"``, ``il c.d. "patto di non concorrenza"``) and the model
+    regularly copies them into a ``content`` value without escaping. The
+    parser then fails with ``Expecting ',' delimiter`` and the whole batch
+    of clauses is lost.
+
+    Heuristic: walk the text tracking whether we are inside a string. A
+    quote met inside a string closes it only if the next non-blank character
+    is a structural token (``,`` ``}`` ``]`` ``:``); otherwise it is part of
+    the text and gets escaped. A stray quote immediately followed by a comma
+    is still ambiguous and left alone — the truncation fallback handles it.
+    """
+    out: list[str] = []
+    in_str = False
+    escaped = False
+    n = len(text)
+    for i, ch in enumerate(text):
+        if not in_str:
+            if ch == '"':
+                in_str = True
+            out.append(ch)
+            continue
+        if escaped:
+            escaped = False
+            out.append(ch)
+            continue
+        if ch == "\\":
+            escaped = True
+            out.append(ch)
+            continue
+        if ch == '"':
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j >= n or text[j] in ",}]:":
+                in_str = False
+                out.append(ch)
+            else:
+                out.append('\\"')
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
 def _safe_json(raw: str) -> list | dict:
     """Parse JSON from LLM output, with fallback recovery for truncated arrays.
 
@@ -638,7 +685,16 @@ def _safe_json(raw: str) -> list | dict:
     except json.JSONDecodeError:
         pass
 
-    # Recovery: for JSON arrays, truncate at the last complete object and
+    # Recovery 1: unescaped double quotes inside string values (the most
+    # common failure on Italian legal text). Keeps the whole batch.
+    try:
+        result = json.loads(_escape_stray_quotes(text))
+        logger.debug("_safe_json: recovered batch by escaping stray quotes")
+        return result
+    except json.JSONDecodeError:
+        pass
+
+    # Recovery 2: for JSON arrays, truncate at the last complete object and
     # close the array.  This preserves all valid items from the batch even
     # when the final item is broken.
     if text.startswith("["):

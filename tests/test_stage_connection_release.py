@@ -38,6 +38,30 @@ def test_safe_json_keeps_legitimate_escapes():
     assert _safe_json(raw)[0]["content"] == 'line one\nline "two" \\ backslash'
 
 
+def test_safe_json_escapes_stray_quotes_inside_strings():
+    """The production failure on docs 107/108/169: ``Expecting ',' delimiter``
+    because the model copied quoted Italian terms into ``content`` verbatim."""
+    raw = (
+        '[{"clause_type": "change_of_control", "title": "Cambio di controllo", '
+        '"content": "la clausola "change of control" e il c.d. "patto di non '
+        'concorrenza" restano validi", "page_number": 3, "confidence": 0.92}, '
+        '{"clause_type": "other", "title": "Altro", "content": "testo pulito", '
+        '"page_number": null, "confidence": 0.8}]'
+    )
+    items = _safe_json(raw)
+    assert len(items) == 2
+    assert items[0]["content"] == (
+        'la clausola "change of control" e il c.d. "patto di non concorrenza" restano validi'
+    )
+    assert items[0]["confidence"] == 0.92
+    assert items[1]["content"] == "testo pulito"
+
+
+def test_safe_json_stray_quote_repair_does_not_touch_valid_json():
+    raw = '{"a": "x", "b": ["y", "z"], "c": {"d": "e: f, g"}}'
+    assert _safe_json(raw) == {"a": "x", "b": ["y", "z"], "c": {"d": "e: f, g"}}
+
+
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
 

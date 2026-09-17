@@ -13,7 +13,7 @@
 - **Env:** `.env` via `pydantic-settings`
 - **Frontend:** Next.js 15 (App Router, TypeScript) — login + dashboard + insights + deals UI, server-side auth via cookie
 - **Frontend tests:** Playwright smoke suite (3 tests) in `apps/web/tests/e2e/`
-- **Tests:** pytest + FastAPI TestClient (SQLite), **1007 passing**
+- **Tests:** pytest + FastAPI TestClient (SQLite), **1009 passing**
 
 ## Project Root
 ```
@@ -114,7 +114,7 @@ Diligenx/
 │       └── vector_store.py               # cosine similarity over DocumentChunk.embedding
 │
 ├── infra/, scripts/, docker-compose.yml, railway.toml
-├── tests/                                # 1007 passing
+├── tests/                                # 1009 passing
 └── CLAUDE.md                             # ← this file
 ```
 
@@ -204,7 +204,7 @@ pnpm install && pnpm dev      # http://localhost:3000
 
 ```bash
 cd apps/api
-python -m pytest ../../tests -q   # 1007 passed
+python -m pytest ../../tests -q   # 1009 passed
 ```
 
 ## Key Design Decisions

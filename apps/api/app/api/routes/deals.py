@@ -740,6 +740,17 @@ async def stream_analysis_progress(
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
 
+    user_id = user.id
+
+    # Release the request-scoped session *now*. FastAPI keeps dependencies
+    # alive until the streaming response finishes, so without this the
+    # ``get_db`` connection would sit idle (in transaction) for the whole
+    # analysis — one pool slot per open tab — and the managed Postgres proxy
+    # closes it after a few minutes, making ``get_db``'s teardown raise
+    # "SSL connection has been closed unexpectedly" when the stream ends.
+    # The generator below opens its own short-lived session per tick.
+    db.close()
+
     async def event_generator():
         from app.db.session import SessionLocal
         from app.db.tenant_context import set_tenant_context
@@ -748,7 +759,7 @@ async def stream_analysis_progress(
 
         stream_db = SessionLocal()
         try:
-            set_tenant_context(stream_db, user.id)
+            set_tenant_context(stream_db, user_id)
             while True:
                 # Force fresh reads on every tick (bypass SQLAlchemy identity cache)
                 stream_db.expire_all()
