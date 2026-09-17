@@ -160,6 +160,18 @@ def test_manual_report_failure_preserves_published_report(db, analyzed):
     assert rows(db, Report) == before
 
 
+def test_manual_report_retry_clears_failure_in_progress_view(db, analyzed):
+    failed = run_deal_analysis_pipeline(
+        analyzed.id, db, provider=BadResponse('EXECUTIVE SUMMARY', ' '),
+    )
+    assert not failed['completed']
+    generate_due_diligence_report(analyzed.id, db, provider=FakeLLMProvider())
+    run = db.query(AgentRun).filter_by(agent_name='report_generation').one()
+    assert run.status == AgentRunStatus.completed
+    assert run.error_message is None
+    assert analyzed.status == DealStatus.reviewed
+
+
 @pytest.mark.parametrize('status', [AgentRunStatus.failed, AgentRunStatus.running])
 def test_manual_report_endpoint_blocks_incomplete_analysis(
     db, analyzed, client, auth_headers, status,

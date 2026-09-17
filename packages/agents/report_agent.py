@@ -775,6 +775,23 @@ def generate_due_diligence_report(
         report.title = f"Due Diligence Report — {deal.title}"
         report.content = markdown
         report.status = ReportStatus.completed
+        # A manual retry after the pipeline's report stage failed must clear
+        # that failure too, otherwise the UI keeps labelling this new report
+        # as a retained older version. Publish both updates atomically.
+        failed_report_runs = db.query(AgentRun).filter(
+            AgentRun.deal_id == deal_id,
+            AgentRun.agent_name == "report_generation",
+            AgentRun.status == AgentRunStatus.failed,
+        ).all()
+        if failed_report_runs:
+            from datetime import datetime, timezone
+            from app.models.deal import DealStatus
+
+            for run in failed_report_runs:
+                run.status = AgentRunStatus.completed
+                run.error_message = None
+                run.completed_at = datetime.now(timezone.utc)
+            deal.status = DealStatus.reviewed
         db.commit()
         db.refresh(report)
 
