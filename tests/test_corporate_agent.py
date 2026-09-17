@@ -15,6 +15,8 @@ Covers:
 """
 import json
 import pytest
+
+from packages.agents.deal_analysis_agent import LLMResponseError
 from sqlalchemy.orm import Session
 
 from app.models.deal import Deal
@@ -832,7 +834,7 @@ class TestEdgeCases:
         assert result["documents_analyzed"] == 0
         assert result["agent_findings_count"] == 0
 
-    def test_llm_returns_non_list_handled_gracefully(
+    def test_llm_returns_non_list_fails_stage(
         self, db: Session, test_deal: Deal
     ):
         class _BadJsonLLM(LLMProvider):
@@ -840,12 +842,12 @@ class TestEdgeCases:
                 return '{"not": "an array"}'
 
         doc = _make_doc(db, test_deal)
-        result = CorporateAgent(provider=_BadJsonLLM()).run(
-            test_deal.id, db, document_ids={doc.id}
-        )
-        assert result["agent_findings_count"] == 0
+        with pytest.raises(LLMResponseError):
+            CorporateAgent(provider=_BadJsonLLM()).run(
+                test_deal.id, db, document_ids={doc.id}
+            )
 
-    def test_llm_returns_invalid_json_handled_gracefully(
+    def test_llm_returns_invalid_json_fails_stage(
         self, db: Session, test_deal: Deal
     ):
         class _GarbageLLM(LLMProvider):
@@ -853,10 +855,10 @@ class TestEdgeCases:
                 return "this is not json at all"
 
         doc = _make_doc(db, test_deal)
-        result = CorporateAgent(provider=_GarbageLLM()).run(
-            test_deal.id, db, document_ids={doc.id}
-        )
-        assert result["agent_findings_count"] == 0
+        with pytest.raises(LLMResponseError):
+            CorporateAgent(provider=_GarbageLLM()).run(
+                test_deal.id, db, document_ids={doc.id}
+            )
 
     def test_run_corporate_analysis_convenience_wrapper(
         self, db: Session, test_deal: Deal
@@ -954,3 +956,4 @@ class TestIsCorpDocHelper:
         agent = CorporateAgent(provider=_ZeroInsightLLM())
         text = "a" * 1001 + " bylaws document"
         assert not agent._is_corporate_document(self._doc_stub("misc.txt", text))
+

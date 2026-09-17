@@ -68,6 +68,8 @@ export default function ReportPage() {
   const [generating, setGenerating] = useState(false)
   const [downloading, setDownloading] = useState<DownloadFormat | null>(null)
   const [error, setError]       = useState('')
+  const [analysisIncomplete, setAnalysisIncomplete] = useState(false)
+  const [reportFailed, setReportFailed] = useState(false)
 
   useEffect(() => {
     // Auth guard is enforced by middleware.ts; 401s redirect automatically.
@@ -78,6 +80,13 @@ export default function ReportPage() {
   async function fetchReport() {
     setLoading(true); setError('')
     try {
+      const [runs, deal] = await Promise.all([
+        api.deals.agentRuns(dealId), api.deals.get(dealId),
+      ])
+      setAnalysisIncomplete(deal.status === 'analyzing' || runs.some((run) =>
+        run.agent_name !== 'report_generation' && run.status !== 'completed'))
+      setReportFailed(runs.some((run) =>
+        run.agent_name === 'report_generation' && run.status === 'failed'))
       const data = await api.deals.getReport(dealId)
       setMarkdown(data.markdown)
     } catch (err: unknown) {
@@ -97,6 +106,7 @@ export default function ReportPage() {
     try {
       const data = await api.deals.generateReport(dealId)
       setMarkdown(data.markdown)
+      setReportFailed(false)
       toast.success('Report generato')
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Generazione fallita')
@@ -173,7 +183,7 @@ export default function ReportPage() {
           )}
           <button
             onClick={handleGenerate}
-            disabled={generating || downloading !== null}
+            disabled={loading || analysisIncomplete || generating || downloading !== null}
             className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors shadow-sm"
           >
             {generating ? (
@@ -194,6 +204,14 @@ export default function ReportPage() {
       </div>
 
       <ErrorAlert error={error} className="mb-4" />
+      {(analysisIncomplete || reportFailed) && (
+        <p role="alert" className="mb-4 rounded-lg bg-amber-50 p-4 text-sm text-amber-800">
+          {analysisIncomplete
+            ? 'Analisi incompleta. Riesegui l’analisi prima di generare un nuovo report.'
+            : 'L’ultima generazione del report non è stata completata.'}
+          {markdown && ' Il report mostrato è la versione precedente conservata.'}
+        </p>
+      )}
 
       {loading && (
         <div className="flex items-center gap-2 text-slate-500 text-sm">

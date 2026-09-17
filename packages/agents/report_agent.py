@@ -564,6 +564,10 @@ def _render_documents_appendix(documents: list, lang: str) -> str:
     )
 
 
+class IncompleteAnalysisError(RuntimeError):
+    """A report cannot be published from failed or unfinished analysis."""
+
+
 def generate_due_diligence_report(
     deal_id: int,
     db: Session,
@@ -591,9 +595,26 @@ def generate_due_diligence_report(
     if deal is None:
         raise ValueError(f"Deal {deal_id} not found")
 
+    from app.models.agent_run import AgentRun, AgentRunStatus
+
+    incomplete = (
+        db.query(AgentRun)
+        .filter(
+            AgentRun.deal_id == deal_id,
+            AgentRun.agent_name != "report_generation",
+            AgentRun.status != AgentRunStatus.completed,
+        )
+        .first()
+    )
+    if incomplete is not None:
+        raise IncompleteAnalysisError(
+            "Analisi incompleta: riesegui l'analisi prima di generare il report."
+        )
+
     logger.info("Generating due-diligence report for deal %d ('%s')", deal_id, deal.title)
 
-    # ── Upsert Report row (status = generating) ──────────────────────── #
+    # Read the published report without modifying it. Replace it only
+    # after generation succeeds, so a failed retry preserves its content.
     report = (
         db.query(Report)
         .filter(
@@ -602,22 +623,6 @@ def generate_due_diligence_report(
         )
         .first()
     )
-    if report is None:
-        report = Report(
-            deal_id=deal_id,
-            report_type=ReportType.due_diligence,
-            title=f"Due Diligence Report — {deal.title}",
-        )
-        db.add(report)
-    else:
-        report.title = f"Due Diligence Report — {deal.title}"
-
-    report.status = ReportStatus.generating
-    report.content = None
-    db.commit()
-    db.refresh(report)
-    report_id = report.id  # safe reference even after rollback
-
     try:
         from app.models.agent_finding import AgentFinding
         from packages.agents.red_flag_aggregator import AGENT_NAME as AGGREGATOR_AGENT
@@ -688,6 +693,10 @@ def generate_due_diligence_report(
             language_instruction=language_instruction(lang),
         )
         executive_summary = llm.complete(summary_prompt, max_tokens=1024).strip()
+        if not executive_summary:
+            from packages.agents.deal_analysis_agent import LLMResponseError
+
+            raise LLMResponseError("Executive summary: AI response contained no text")
 
         # ── Deterministic assembly ───────────────────────────────────── #
         areas_reviewed = [
@@ -760,6 +769,10 @@ def generate_due_diligence_report(
         markdown = _add_section_numbering(markdown)
 
         # ── Persist result ────────────────────────────────────────────── #
+        if report is None:
+            report = Report(deal_id=deal_id, report_type=ReportType.due_diligence)
+            db.add(report)
+        report.title = f"Due Diligence Report — {deal.title}"
         report.content = markdown
         report.status = ReportStatus.completed
         db.commit()
@@ -779,9 +792,4 @@ def generate_due_diligence_report(
     except Exception:
         logger.exception("Report generation failed for deal %d", deal_id)
         db.rollback()
-        # Mark as failed — the report was committed before the try block
-        report = db.query(Report).filter(Report.id == report_id).first()
-        if report:
-            report.status = ReportStatus.failed
-            db.commit()
         raise

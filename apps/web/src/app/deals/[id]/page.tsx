@@ -93,6 +93,7 @@ function StageIcon({ status }: { status: string }) {
 function AnalysisProgress({ stages, analyzing }: { stages: StageRow[]; analyzing: boolean }) {
   const completedCount = stages.filter((s) => s.status === 'completed').length
   const pct = Math.round((completedCount / TOTAL_STAGES) * 100)
+  const incomplete = !analyzing && completedCount < TOTAL_STAGES
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 mb-4">
@@ -100,7 +101,7 @@ function AnalysisProgress({ stages, analyzing }: { stages: StageRow[]; analyzing
         <div className="flex items-center gap-2">
           {analyzing && <div className="w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />}
           <span className="text-sm font-semibold text-slate-800">
-            {analyzing ? 'Analisi in corso…' : 'Pipeline completata'}
+            {analyzing ? 'Analisi in corso…' : incomplete ? 'Analisi incompleta' : 'Pipeline completata'}
           </span>
         </div>
         <span className="text-xs font-medium text-slate-400 tabular-nums">
@@ -109,6 +110,13 @@ function AnalysisProgress({ stages, analyzing }: { stages: StageRow[]; analyzing
       </div>
 
       {/* Progress bar */}
+      {incomplete && (
+        <p role="alert" className="mb-4 text-sm text-amber-800">
+          Alcune fasi non sono state completate. I risultati disponibili possono
+          includere quelli dell&apos;analisi precedente. Riesegui l&apos;analisi
+          prima di considerare aggiornati i rilievi e il report.
+        </p>
+      )}
       <div className="w-full bg-slate-100 rounded-full h-1.5 mb-5">
         <div
           className="bg-blue-600 h-1.5 rounded-full transition-all duration-700"

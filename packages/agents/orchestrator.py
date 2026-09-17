@@ -34,7 +34,7 @@ Pipeline stages:
 Design principles:
 
 * Every stage is wrapped in its own ``AgentRun``; a failing stage marks
-  its run as *failed* but does **not** abort the pipeline.
+  its run as *failed*; independent stages continue and dependent stages are blocked.
 * All logging includes agent name and deal_id for easy filtering.
 * The pipeline returns a summary dict with per-stage outcomes.
 """
@@ -47,7 +47,7 @@ from sqlalchemy.orm import Session
 from packages.agents.deal_analysis_agent import (
     LLMProvider,
     get_llm_provider,
-    _safe_json,
+    _parse_classification,
     _VALID_SEVERITIES,
     _CONTRACT_TYPES,
 )
@@ -354,25 +354,7 @@ def _stage_document_routing(
             )
             raw = llm.complete(prompt, max_tokens=256)
 
-            try:
-                classification = _safe_json(raw)
-            except Exception:
-                logger.warning(
-                    "[%s] deal=%d doc=%d — parse error: %r",
-                    agent, deal_id, doc_id, raw,
-                )
-                classification = None
-
-            # Parsing may succeed yet yield a non-dict (e.g. a JSON array). Coerce
-            # anything that isn't a dict to a safe default so a single odd LLM
-            # response can't crash routing for every document in the deal.
-            if not isinstance(classification, dict):
-                classification = {
-                    "document_type": "other",
-                    "confidence": 0.0,
-                    "rationale": raw,
-                }
-            return classification
+            return _parse_classification(raw)
 
         from packages.agents.concurrency import run_llm_tasks
         from packages.agents.stage_tx import release_connection_before_llm
@@ -688,8 +670,8 @@ def run_deal_analysis_pipeline(
             "completed": bool,   # True if all stages succeeded
         }
 
-    Individual stage failures are recorded but do **not** abort the
-    pipeline.  The ``"error"`` key is present in a stage result only
+    Individual stage failures are recorded; independent stages continue,
+    while dependent stages are blocked to preserve their previous outputs.  The ``"error"`` key is present in a stage result only
     when that stage failed.
 
     Raises ``ValueError`` if *deal_id* does not exist.
@@ -706,71 +688,38 @@ def run_deal_analysis_pipeline(
 
     stages: dict[str, dict] = {}
 
-    # Each stage runs inside ``_execute_stage``: its work is committed on
-    # success and rolled back on failure, so one stage's error can neither
-    # poison the session for the next stage nor wipe an earlier stage's data.
+    def execute(key, fn, dependencies):
+        failed = [name for name in dependencies if "error" in stages[name]]
+        if failed:
+            error = "Analysis incomplete; prerequisite stages failed: " + ", ".join(failed)
+            _record_failed_run(db, deal_id, key, error)
+            stages[key] = {"error": error}
+        else:
+            stages[key] = _execute_stage(db, deal_id, key, fn)
 
-    # ── Stage 1: Intake ────────────────────────────────────────────────
-    stages["intake"] = _execute_stage(
-        db, deal_id, "intake", lambda: _stage_intake(deal_id, db)
-    )
-
-    # ── Stage 2: Document routing ──────────────────────────────────────
-    stages["document_routing"] = _execute_stage(
-        db, deal_id, "document_routing",
-        lambda: _stage_document_routing(deal_id, db, llm),
-    )
-
-    # Extract classifications for stage 3
+    execute("intake", lambda: _stage_intake(deal_id, db), ())
+    execute("document_routing", lambda: _stage_document_routing(deal_id, db, llm), ("intake",))
     classifications = stages["document_routing"].get("classifications", [])
 
-    # ── Stage 3: Specialist analysis ───────────────────────────────────
-    stages["specialist_analysis"] = _execute_stage(
-        db, deal_id, "specialist_analysis",
-        lambda: _stage_specialist_analysis(deal_id, db, llm, classifications),
-    )
+    execute("specialist_analysis",
+            lambda: _stage_specialist_analysis(deal_id, db, llm, classifications),
+            ("document_routing",))
+    # These specialists discover their inputs independently of routing.
+    execute("corporate_analysis", lambda: _stage_corporate_analysis(deal_id, db, llm), ("intake",))
+    execute("corporate_intro_extraction",
+            lambda: _stage_corporate_intro_extraction(deal_id, db, llm), ("intake",))
+    execute("tax_analysis", lambda: _stage_tax_analysis(deal_id, db, llm, classifications),
+            ("document_routing",))
+    execute("financial_analysis",
+            lambda: _stage_financial_analysis(deal_id, db, llm, classifications),
+            ("document_routing",))
 
-    # ── Stage 4: Corporate governance analysis ─────────────────────────
-    stages["corporate_analysis"] = _execute_stage(
-        db, deal_id, "corporate_analysis",
-        lambda: _stage_corporate_analysis(deal_id, db, llm),
-    )
-
-    # Stage 4b — Corporate Introductory Information extraction
-    stages["corporate_intro_extraction"] = _execute_stage(
-        db, deal_id, "corporate_intro_extraction",
-        lambda: _stage_corporate_intro_extraction(deal_id, db, llm),
-    )
-
-    # Stage 4c — Tax documentary review
-    stages["tax_analysis"] = _execute_stage(
-        db, deal_id, "tax_analysis",
-        lambda: _stage_tax_analysis(deal_id, db, llm, classifications),
-    )
-
-    # Stage 4d — Financial documentary review
-    stages["financial_analysis"] = _execute_stage(
-        db, deal_id, "financial_analysis",
-        lambda: _stage_financial_analysis(deal_id, db, llm, classifications),
-    )
-
-    # ── Stage 5: Red-flag aggregation ──────────────────────────────────
-    stages["red_flag_aggregation"] = _execute_stage(
-        db, deal_id, "red_flag_aggregation",
-        lambda: _stage_red_flag_aggregation(deal_id, db, llm),
-    )
-
-    # ── Stage 6: Report generation ─────────────────────────────────────
-    # The report still runs even if an earlier stage failed (pipeline
-    # resilience is a deliberate design contract). The falsely-clean-report
-    # risk from a failed red-flag stage is mitigated by _execute_stage's
-    # rollback: a failed aggregation no longer wipes the previous run's
-    # RedFlag rows, and a deal with any failed stage is left in `draft`
-    # (not `reviewed`) to signal the analysis is incomplete.
-    stages["report_generation"] = _execute_stage(
-        db, deal_id, "report_generation",
-        lambda: _stage_report_generation(deal_id, db, llm),
-    )
+    # Aggregation and publication require a complete analysis. Leave the
+    # previous findings/report intact when any prerequisite fails.
+    execute("red_flag_aggregation", lambda: _stage_red_flag_aggregation(deal_id, db, llm),
+            tuple(stages))
+    execute("report_generation", lambda: _stage_report_generation(deal_id, db, llm),
+            tuple(stages))
 
     # ── Finalise deal status ───────────────────────────────────────────
     all_ok = all("error" not in s for s in stages.values())

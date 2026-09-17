@@ -39,7 +39,8 @@ from sqlalchemy.orm import Session
 from packages.agents.deal_analysis_agent import (
     LLMProvider,
     get_llm_provider,
-    _safe_json,
+    _parse_llm_items,
+    LLMResponseError,
     _VALID_CLAUSE_TYPES,
     DealAnalysisAgent,
     is_grounded,
@@ -511,18 +512,10 @@ class ContractAgent:
             text=text[:8000],
         )
 
-        try:
-            raw = self._llm.complete(prompt, max_tokens=4096)
-            items = _safe_json(raw)
-        except Exception as exc:
-            logger.warning(
-                "[%s] doc=%d '%s' — CCNL compliance check failed (%s); skipping",
-                self.AGENT_NAME, document_id, filename, exc,
-            )
-            return []
-
-        if not isinstance(items, list):
-            return []
+        raw = self._llm.complete(prompt, max_tokens=4096)
+        items = _parse_llm_items(
+            raw, context=f"CCNL compliance, document {document_id}"
+        )
 
         payloads: list[dict] = []
         for item in items:
@@ -582,8 +575,8 @@ class ContractAgent:
         Kept payloads get ``relevance_score`` and ``relevance_reason`` keys;
         low-relevance payloads are dropped.
 
-        If classification fails for any reason, all clauses are retained
-        (fail-open). PURE — safe to run on a worker thread.
+        Missing or invalid decisions fail the stage, preserving the previous
+        results through the orchestrator. PURE — safe to run on a worker thread.
         """
         from packages.prompts.deal_prompts import CLAUSE_RELEVANCE_PROMPT
 
@@ -607,34 +600,25 @@ class ContractAgent:
             clauses_json=json.dumps(clauses_input, ensure_ascii=False, indent=2),
         )
 
-        try:
-            raw = self._llm.complete(prompt, max_tokens=4096)
-            items = _safe_json(raw)
-        except Exception as exc:
-            logger.warning(
-                "[%s] doc='%s' — relevance classification failed (%s); keeping all clauses",
-                self.AGENT_NAME, filename, exc,
-            )
-            for p in payloads:
-                p["relevance_score"] = "high"
-                p["relevance_reason"] = "Relevance classification unavailable (kept by default)"
-            return payloads
-
-        # Build index → (relevance, reason) map from LLM response.
+        raw = self._llm.complete(prompt, max_tokens=4096)
+        items = _parse_llm_items(raw, context="Clause relevance")
         relevance_map: dict[int, tuple[str, str]] = {}
-        if isinstance(items, list):
-            for item in items:
-                idx = item.get("clause_index")
-                if isinstance(idx, int):
-                    rel = item.get("relevance", "medium")
-                    if rel not in ("high", "medium", "low"):
-                        rel = "medium"
-                    relevance_map[idx] = (rel, str(item.get("reason", ""))[:500])
+        for item in items:
+            idx = item.get("clause_index")
+            rel = item.get("relevance")
+            if (
+                type(idx) is not int or idx < 0 or idx >= len(payloads)
+                or idx in relevance_map or rel not in ("high", "medium", "low")
+            ):
+                raise LLMResponseError("Clause relevance: invalid or duplicate decision")
+            relevance_map[idx] = (rel, str(item.get("reason", ""))[:500])
+        if len(relevance_map) != len(payloads):
+            raise LLMResponseError("Clause relevance: response omitted one or more clauses")
 
         to_keep: list[dict] = []
         removed = 0
         for i, p in enumerate(payloads):
-            relevance, reason = relevance_map.get(i, ("low", ""))
+            relevance, reason = relevance_map[i]
             if relevance in ("high", "medium"):
                 p["relevance_score"] = relevance
                 p["relevance_reason"] = reason
@@ -683,17 +667,11 @@ class ContractAgent:
             )
             raw = self._llm.complete(prompt, max_tokens=8192)
 
-            try:
-                items = _safe_json(raw)
-            except Exception as exc:
-                logger.warning(
-                    "[%s] doc=%d batch=%d — clause parse error (%s); "
-                    "last 300 chars of response: %r",
-                    self.AGENT_NAME, document_id, batch_idx, exc, raw[-300:],
-                )
-                items = []
+            items = _parse_llm_items(
+                raw, context=f"Contract document {document_id}, batch {batch_idx + 1}"
+            )
 
-            for item in items if isinstance(items, list) else []:
+            for item in items:
                 content = item.get("content", "")
                 confidence = item.get("confidence")
 
