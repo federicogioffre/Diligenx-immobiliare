@@ -142,6 +142,20 @@ _CONTRACT_TYPES = {"contract", "agreement", "legal"}
 
 # ── LLM Provider abstraction ───────────────────────────────────────────────
 
+# Model families that still accept ``temperature`` / ``top_p`` / ``top_k``:
+# the Claude 4.6 / 4.5 line (Opus 4.6, Sonnet 4.6, Opus 4.5, Sonnet 4.5,
+# Haiku 4.5) and everything older. Opus 4.7+, Sonnet 5 and the Claude 5
+# family (Opus 5, Fable, Mythos) return a 400 for any sampling parameter.
+_SAMPLING_PARAM_MODELS = re.compile(
+    r"claude-(?:(?:opus|sonnet|haiku)-(?:4-[0-6]|4(?:-\d{8})?$|3(?:-\d)?)|3-)"
+)
+
+
+def _accepts_sampling_params(model: str) -> bool:
+    """True when *model* still honours ``temperature`` (see above)."""
+    return bool(_SAMPLING_PARAM_MODELS.match(model))
+
+
 class LLMProvider(ABC):
     """Abstract interface for LLM completion providers."""
 
@@ -164,6 +178,14 @@ class AnthropicLLMProvider(LLMProvider):
     prompt prefix. For prompts shorter than the model's minimum cache size
     (1024 tokens on Sonnet/Opus) the ``cache_control`` marker is silently
     ignored by the API, so flagging every prompt is safe.
+
+    Sampling: ``temperature=0`` keeps the analysis output as repeatable as
+    possible across re-runs. The 1.x Anthropic SDK removed ``temperature``
+    from the ``messages.create()`` signature (passing it is a ``TypeError``),
+    so it is sent through ``extra_body`` — and only for the model families
+    that still accept sampling parameters (the Claude 4.6 / 4.5 line and
+    older). Claude Opus 4.7+, Sonnet 5 and the Claude 5 family reject the
+    parameter with a 400, so for those the request carries no temperature.
     """
 
     def __init__(self, api_key: str, model: str = "claude-sonnet-4-6"):
@@ -171,11 +193,16 @@ class AnthropicLLMProvider(LLMProvider):
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model
 
+    def _extra_body(self) -> dict | None:
+        if _accepts_sampling_params(self._model):
+            return {"temperature": 0}
+        return None
+
     def complete(self, prompt: str, max_tokens: int = 2048) -> str:
         msg = self._client.messages.create(
             model=self._model,
             max_tokens=max_tokens,
-            temperature=0,  # deterministic — minimises hallucination
+            extra_body=self._extra_body(),
             messages=[
                 {
                     "role": "user",
