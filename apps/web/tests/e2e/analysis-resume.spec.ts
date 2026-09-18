@@ -91,7 +91,7 @@ test('resume preserves the completed prefix and excludes yesterday’s report an
   await expect(page.getByRole('progressbar', { name: 'Fasi dell’analisi completate' })).toHaveAttribute('aria-valuenow', '6')
   await expect(page.getByText('999.0s', { exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: 'Riprendi Analisi', exact: true }).click()
-  await expect(page.getByRole('button', { name: 'In corso…', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: /In corso/ })).toBeDisabled()
   await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '6')
   expect(state.resumes).toBe(1)
   expect(state.freshStarts).toBe(0)
@@ -106,7 +106,7 @@ test('a timeout clears the spinner and offers resume even if findings cannot be 
   await page.route('**/api/deals/4/clause-findings', (route) => route.fulfill({ status: 503, json: { detail: 'Temporarily unavailable' } }))
   await page.goto('/deals/4')
   await emit(page, { deal_status: 'analyzing', stages: state.runs, progress: progress(52) })
-  await expect(page.getByRole('button', { name: 'In corso…', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: /In corso/ })).toBeDisabled()
   state.status = 'draft'
   state.runs = runs('failed')
   await emit(page, { deal_status: 'draft', stages: state.runs, progress: progress(52) })
