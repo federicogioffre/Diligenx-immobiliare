@@ -5,6 +5,7 @@ job. Unlike a thread, a timed-out subprocess cannot continue publishing results
 after the queue's in-progress lease expires.
 """
 import asyncio
+from datetime import datetime, timezone
 import logging
 import os
 from pathlib import Path
@@ -22,6 +23,10 @@ from sqlalchemy.exc import OperationalError
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class JobTerminationError(RuntimeError):
+    """The child could not be proven inactive; database cleanup is unsafe."""
 
 
 async def _stop_process(process: asyncio.subprocess.Process) -> None:
@@ -66,14 +71,27 @@ async def _run_command(*command: str) -> int:
                 process = await asyncio.shield(spawn)
             except asyncio.CancelledError:
                 continue
-        stop = asyncio.create_task(_stop_process(process))
-        while not stop.done():
-            try:
-                await asyncio.shield(stop)
-            except asyncio.CancelledError:
-                continue
-        stop.result()
+        await _reap_process(process)
         raise
+    except Exception:
+        if process is not None and process.returncode is None:
+            await _reap_process(process)
+        raise
+
+
+async def _reap_process(process: asyncio.subprocess.Process) -> None:
+    stop = asyncio.create_task(_stop_process(process))
+    while not stop.done():
+        try:
+            await asyncio.shield(stop)
+        except asyncio.CancelledError:
+            continue
+        except Exception as exc:
+            raise JobTerminationError("Unable to confirm analysis process termination") from exc
+    try:
+        stop.result()
+    except Exception as exc:
+        raise JobTerminationError("Unable to confirm analysis process termination") from exc
 
 
 def _job_command(kind: str, entity_id: int, user_id: int) -> tuple[str, ...]:
@@ -99,22 +117,27 @@ class JobProcessError(RuntimeError):
 
 
 def _run_pipeline(deal_id: int, user_id: int) -> None:
+    _run_analysis_pipeline(deal_id, user_id, resume=False)
+
+
+def _run_resume_pipeline(deal_id: int, user_id: int) -> None:
+    _run_analysis_pipeline(deal_id, user_id, resume=True)
+
+
+def _run_analysis_pipeline(deal_id: int, user_id: int, *, resume: bool) -> None:
     from app.db.session import SessionLocal
     from app.db.tenant_context import set_tenant_context
-    from app.models.deal import Deal, DealStatus
     from packages.agents.orchestrator import run_deal_analysis_pipeline
 
     db = SessionLocal()
     try:
         set_tenant_context(db, user_id)
-        run_deal_analysis_pipeline(deal_id, db)
-    except Exception:
-        db.rollback()
-        deal = db.query(Deal).filter(Deal.id == deal_id).first()
-        if deal is not None:
-            deal.status = DealStatus.draft
-            db.commit()
-        raise
+        if resume:
+            run_deal_analysis_pipeline(deal_id, db, resume=True)
+        else:
+            run_deal_analysis_pipeline(deal_id, db)
+        # Exceptions, hard exits and cancellation are reconciled by the parent
+        # after the child exits, using the same admission guard in every case.
     finally:
         db.close()
 
@@ -154,9 +177,95 @@ def _is_transient(exc: Exception) -> bool:
 
 
 async def run_pipeline_for_deal(ctx: dict[str, Any], deal_id: int, user_id: int) -> None:
-    code = await _run_command(*_job_command("analysis", deal_id, user_id))
-    if code:
-        raise JobProcessError(f"Analysis process failed for deal {deal_id} (exit {code})")
+    await _run_analysis_job("analysis", deal_id, user_id)
+
+
+async def run_resume_pipeline_for_deal(ctx: dict[str, Any], deal_id: int, user_id: int) -> None:
+    await _run_analysis_job("resume", deal_id, user_id)
+
+
+def _capture_analysis_admission(deal_id: int, user_id: int) -> datetime | None:
+    from app.db.session import SessionLocal
+    from app.db.tenant_context import set_tenant_context
+    from app.models.deal import Deal, DealStatus
+
+    with SessionLocal() as db:
+        set_tenant_context(db, user_id)
+        deal = db.query(Deal).filter(
+            Deal.id == deal_id, Deal.workspace.has(owner_id=user_id),
+            Deal.status == DealStatus.analyzing,
+        ).first()
+        return (deal.updated_at or deal.created_at) if deal is not None else None
+
+
+def _persist_analysis_failure(deal_id: int, user_id: int, admission: datetime,
+                              invocation_started_at: datetime, reason: str) -> None:
+    from app.db.session import SessionLocal
+    from app.services.analysis_failure import mark_analysis_failed
+
+    with SessionLocal() as db:
+        mark_analysis_failed(db, deal_id, user_id, reason,
+                             expected_admission=admission,
+                             invocation_started_at=invocation_started_at)
+        db.commit()
+
+
+async def _cleanup_analysis_failure(deal_id: int, user_id: int, admission: datetime,
+                                    invocation_started_at: datetime, reason: str) -> None:
+    # The child is already reaped. Finish the short DB transaction even if Arq
+    # repeats cancellation during shutdown; never release the job beforehand.
+    cleanup = asyncio.create_task(asyncio.to_thread(
+        _persist_analysis_failure, deal_id, user_id, admission, invocation_started_at, reason,
+    ))
+    try:
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                continue
+        cleanup.result()
+    except Exception:
+        logger.exception("Could not reconcile interrupted analysis for deal %d", deal_id)
+
+
+async def _run_analysis_job(kind: str, deal_id: int, user_id: int) -> None:
+    invocation_started_at = datetime.now(timezone.utc)
+    capture = asyncio.create_task(asyncio.to_thread(_capture_analysis_admission, deal_id, user_id))
+    try:
+        admission = await asyncio.shield(capture)
+    except asyncio.CancelledError:
+        # Even cancellation before spawn must not cause an automatic restart.
+        # Finish the read so we can safely release this specific admission.
+        while not capture.done():
+            try:
+                await asyncio.shield(capture)
+            except asyncio.CancelledError:
+                continue
+        admission = capture.result()
+        if admission is not None:
+            await _cleanup_analysis_failure(
+                deal_id, user_id, admission, invocation_started_at,
+                "Analisi interrotta prima dell’avvio. Le fasi completate sono state conservate.",
+            )
+        raise JobProcessError(f"Analysis cancelled before spawn for deal {deal_id}") from None
+    if admission is None:
+        raise JobProcessError(f"Analysis admission is no longer active for deal {deal_id}")
+    try:
+        code = await _run_command(*_job_command(kind, deal_id, user_id))
+        if code:
+            raise JobProcessError(f"Analysis process failed for deal {deal_id} (exit {code})")
+    except JobTerminationError:
+        # A possibly live child must retain the admission lock. Maintenance may
+        # reconcile it later, once process/queue inactivity can be established.
+        raise
+    except (Exception, asyncio.CancelledError) as exc:
+        reason = "Analisi interrotta o terminata oltre il tempo massimo. Le fasi completate sono state conservate."
+        await _cleanup_analysis_failure(deal_id, user_id, admission, invocation_started_at, reason)
+        if isinstance(exc, asyncio.CancelledError):
+            # Arq retries CancelledError automatically. Analysis retries must be
+            # explicit, after inspecting the checkpoint, never start from zero.
+            raise JobProcessError(f"Analysis cancelled for deal {deal_id}") from None
+        raise
 
 
 async def run_ingestion_for_document(ctx: dict[str, Any], document_id: int, user_id: int) -> None:
@@ -177,7 +286,7 @@ async def _startup(ctx: dict[str, Any]) -> None:
 class WorkerSettings:
     on_startup = _startup
     redis_settings = RedisSettings.from_dsn(settings.REDIS_URL) if settings.REDIS_URL else None
-    functions = [run_pipeline_for_deal, run_ingestion_for_document]
+    functions = [run_pipeline_for_deal, run_resume_pipeline_for_deal, run_ingestion_for_document]
     max_jobs = settings.WORKER_MAX_JOBS
     job_timeout = settings.WORKER_JOB_TIMEOUT_SECONDS
     max_tries = settings.WORKER_MAX_TRIES

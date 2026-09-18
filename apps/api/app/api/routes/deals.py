@@ -104,6 +104,10 @@ def update_deal(
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
 
+    deal = db.query(Deal).filter(Deal.id == deal_id).with_for_update().populate_existing().one()
+    if deal.status == 'analyzing':
+        raise HTTPException(409, 'Attendi la fine dell’analisi prima di modificare la pratica.')
+
     if payload.title is not None:
         deal.title = payload.title
     if payload.description is not None:
@@ -140,11 +144,15 @@ def delete_deal(
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
 
+    deal = db.query(Deal).filter(Deal.id == deal_id).with_for_update().populate_existing().one()
+    if deal.status == 'analyzing':
+        raise HTTPException(409, 'Attendi la fine dell’analisi prima di eliminare la pratica.')
+
     db.delete(deal)
     db.commit()
 
 
-def _run_pipeline_background(deal_id: int, user_id: int) -> None:
+def _run_analysis_background(deal_id: int, user_id: int, *, resume: bool = False) -> None:
     """Run the analysis pipeline in a background task with its own DB session.
 
     *user_id* is the deal owner; it binds the RLS tenant context on the
@@ -158,23 +166,47 @@ def _run_pipeline_background(deal_id: int, user_id: int) -> None:
     db = SessionLocal()
     try:
         set_tenant_context(db, user_id)
-        run_deal_analysis_pipeline(deal_id, db)
+        if resume:
+            run_deal_analysis_pipeline(deal_id, db, resume=True)
+        else:
+            run_deal_analysis_pipeline(deal_id, db)
     except Exception:
         logger.exception("Background analysis pipeline failed for deal %d", deal_id)
         # The pipeline sets the deal to `analyzing` up front; if it crashes
         # before finalising status, reset it so the deal doesn't stay stuck.
         try:
             db.rollback()
-            from app.models.deal import Deal, DealStatus
-            deal = db.query(Deal).filter(Deal.id == deal_id).first()
-            if deal and deal.status == DealStatus.analyzing:
-                deal.status = DealStatus.draft
-                db.commit()
+            from app.services.analysis_failure import mark_analysis_failed
+            mark_analysis_failed(db, deal_id, user_id, "Analisi interrotta. Le fasi completate sono state conservate.")
+            db.commit()
         except Exception:
             logger.exception("Failed to reset stuck status for deal %d", deal_id)
             db.rollback()
     finally:
         db.close()
+
+
+def _run_pipeline_background(deal_id: int, user_id: int) -> None:
+    _run_analysis_background(deal_id, user_id, resume=False)
+
+
+def _run_resume_background(deal_id: int, user_id: int) -> None:
+    _run_analysis_background(deal_id, user_id, resume=True)
+
+
+async def _require_inactive_analysis_job(request: Request, deal_id: int) -> None:
+    from arq.jobs import Job, JobStatus
+    from app.core.config import settings
+    pool = getattr(request.app.state, "arq_pool", None)
+    if pool is not None:
+        try:
+            state = await asyncio.wait_for(Job(f"analysis:{deal_id}", pool).status(), timeout=5)
+        except Exception:
+            raise HTTPException(503, "Impossibile verificare la coda di analisi.") from None
+        if state != JobStatus.not_found:
+            raise HTTPException(409, "Analysis still exists in the queue")
+    elif settings.REDIS_URL:
+        raise HTTPException(503, "Coda di analisi non disponibile.")
 
 
 @router.post("/{deal_id}/analyze", response_model=DealAnalysisResponse, status_code=202)
@@ -229,6 +261,7 @@ async def analyze_deal(
             "documents": incomplete,
         })
     previous_status = deal.status
+    await _require_inactive_analysis_job(request, deal_id)
     user_id = current_user.id
     # Compare-and-set also protects SQLite, where FOR UPDATE is ignored.
     claimed = db.query(Deal).filter(
@@ -270,6 +303,84 @@ async def analyze_deal(
     )
 
 
+@router.get("/{deal_id}/analysis-checkpoint")
+def analysis_checkpoint(
+    deal_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    from packages.agents.analysis_checkpoint import CheckpointError, STAGES, validate_resume
+    deal = db.query(Deal).filter(Deal.id == deal_id, Deal.workspace.has(owner_id=current_user.id)).first()
+    if deal is None:
+        raise HTTPException(404, "Deal not found")
+    if deal.status == "analyzing":
+        return {"available": False, "reason": "Analisi in corso."}
+    try:
+        plan = validate_resume(db, deal_id)
+        return {"available": True, "completed_stages": len(plan.completed),
+                "next_stage": STAGES[len(plan.completed)][1]}
+    except CheckpointError as exc:
+        return {"available": False, "reason": str(exc)}
+
+
+@router.post("/{deal_id}/resume-analysis", response_model=DealAnalysisResponse, status_code=202)
+@limiter.limit("5/minute")
+async def resume_analysis(
+    request: Request, deal_id: int, background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    from arq.jobs import Job, JobStatus
+    from app.core.config import settings
+    from app.models.deal import DealStatus
+    from app.services.jobs import enqueue_or_run
+    from packages.agents.analysis_checkpoint import CheckpointError, validate_resume
+
+    deal = db.query(Deal).filter(
+        Deal.id == deal_id, Deal.workspace.has(owner_id=current_user.id),
+    ).with_for_update().populate_existing().first()
+    if deal is None:
+        raise HTTPException(404, "Deal not found")
+    if deal.status == DealStatus.analyzing:
+        raise HTTPException(409, "Analysis is already running")
+    await _require_inactive_analysis_job(request, deal_id)
+    try:
+        validate_resume(db, deal_id)
+    except CheckpointError as exc:
+        raise HTTPException(409, str(exc)) from None
+    previous_status, user_id = deal.status, current_user.id
+    claimed = db.query(Deal).filter(Deal.id == deal_id, Deal.status != DealStatus.analyzing).update(
+        {Deal.status: DealStatus.analyzing}, synchronize_session=False,
+    )
+    if claimed != 1:
+        db.rollback()
+        raise HTTPException(409, "Analysis is already running")
+    db.commit()
+    try:
+        await enqueue_or_run(request, background_tasks, "run_resume_pipeline_for_deal",
+                             _run_resume_background, deal_id, user_id, job_id=f"analysis:{deal_id}")
+    except HTTPException as exc:
+        if not getattr(exc, "may_have_enqueued", False):
+            db.query(Deal).filter(Deal.id == deal_id, Deal.status == DealStatus.analyzing).update(
+                {Deal.status: previous_status}, synchronize_session=False)
+            db.commit()
+        raise
+    return DealAnalysisResponse(deal_id=deal_id, status=DealStatus.analyzing, completed=False,
+                                documents_analyzed=0, clause_findings_count=0, red_flags_count=0,
+                                open_questions_count=0, report_id=None, stages=None)
+
+
+@router.get("/{deal_id}/analysis-progress")
+async def analysis_progress(
+    request: Request, deal_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    from packages.agents.analysis_progress import read_progress
+    deal = db.query(Deal).filter(Deal.id == deal_id, Deal.workspace.has(owner_id=current_user.id)).first()
+    if deal is None:
+        raise HTTPException(404, "Deal not found")
+    run = db.query(AgentRun).filter_by(deal_id=deal_id, agent_name="financial_analysis", status="running").first()
+    run_id = run.id if deal.status == "analyzing" and run else None
+    db.rollback()  # Do not hold a transaction while waiting for Redis.
+    return await read_progress(getattr(request.app.state, "arq_pool", None), deal_id, run_id)
+
+
 @router.post("/{deal_id}/recover-analysis", response_model=DealRead)
 async def recover_analysis(
     request: Request,
@@ -307,7 +418,9 @@ async def recover_analysis(
         raise HTTPException(503, "Unable to verify whether the analysis is running") from None
     if state != JobStatus.not_found:
         raise HTTPException(409, "Analysis still exists in the queue")
-    deal.status = DealStatus.draft
+    from app.services.analysis_failure import mark_analysis_failed
+    mark_analysis_failed(db, deal_id, current_user.id,
+                         "Analisi interrotta: il lavoro non è più presente nella coda.")
     db.commit()
     db.refresh(deal)
     return deal
@@ -340,6 +453,7 @@ def generate_report(
     )
     from app.models.deal import DealStatus
 
+    deal = db.query(Deal).filter(Deal.id == deal_id).with_for_update().populate_existing().one()
     if deal.status == DealStatus.analyzing:
         raise HTTPException(status_code=409, detail="Analisi in corso: attendi il completamento.")
 
@@ -391,6 +505,15 @@ def ask_deal_question(
     return result
 
 
+def _current_pipeline_runs(runs):
+    from packages.agents.analysis_checkpoint import utc
+    starts = [run.started_at for run in runs if run.agent_name == "intake" and run.started_at]
+    if not starts:
+        return runs
+    latest = max(utc(value) for value in starts)
+    return [run for run in runs if utc(run.started_at or run.created_at) >= latest]
+
+
 @router.get("/{deal_id}/agent-runs", response_model=list[AgentRunRead])
 def list_agent_runs(
     deal_id: int,
@@ -420,7 +543,7 @@ def list_agent_runs(
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
 
-    return (
+    return _current_pipeline_runs(
         db.query(AgentRun)
         .filter(AgentRun.deal_id == deal_id)
         .order_by(AgentRun.started_at.asc().nulls_last())
@@ -862,7 +985,7 @@ async def stream_analysis_progress(
                     .order_by(AgentRun.started_at.asc().nulls_last())
                     .all()
                 )
-                run_by_name = {r.agent_name: r for r in runs}
+                run_by_name = {r.agent_name: r for r in _current_pipeline_runs(runs)}
 
                 stages = []
                 for name in _PIPELINE_STAGES:
@@ -900,7 +1023,11 @@ async def stream_analysis_progress(
                     "deal_status": fresh_deal.status.value,
                     "stages": stages,
                 }
+                financial_run = run_by_name.get("financial_analysis")
+                progress_run_id = financial_run.id if financial_run and financial_run.status == "running" and fresh_deal.status == "analyzing" else None
             # Close before yielding or sleeping, even for a slow/disconnected reader.
+            from packages.agents.analysis_progress import read_progress
+            payload["progress"] = await read_progress(getattr(request.app.state, "arq_pool", None), deal_id, progress_run_id)
             yield f"data: {json.dumps(payload)}\n\n"
             if payload["deal_status"] != "analyzing":
                 break

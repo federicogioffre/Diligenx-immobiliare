@@ -259,6 +259,10 @@ def _stage_intake(deal_id: int, db: Session) -> dict:
                 + ", ".join(str(d.id) for d in incomplete[:20])
             )
 
+        from packages.agents.analysis_checkpoint import corpus_fingerprint
+        if docs:
+            run.input_hash, _ = corpus_fingerprint(db, deal_id)
+
         logger.info(
             "[%s] deal=%d — %d total documents, %d processed",
             agent, deal_id, len(docs), len(processed),
@@ -658,6 +662,7 @@ def run_deal_analysis_pipeline(
     db: Session,
     *,
     provider: LLMProvider | None = None,
+    resume: bool = False,
 ) -> dict:
     """Run the full multi-agent analysis pipeline for a deal.
 
@@ -691,6 +696,8 @@ def run_deal_analysis_pipeline(
     if db.query(Deal).filter(Deal.id == deal_id).first() is None:
         raise ValueError(f"Deal {deal_id} not found")
 
+    from packages.agents.analysis_checkpoint import validate_resume
+    checkpoint = validate_resume(db, deal_id) if resume else None
     llm = provider or get_llm_provider()
 
     logger.info("=== Pipeline START for deal %d ===", deal_id)
@@ -698,6 +705,12 @@ def run_deal_analysis_pipeline(
     stages: dict[str, dict] = {}
 
     def execute(key, fn, dependencies):
+        if checkpoint and key in checkpoint.completed:
+            stages[key] = {"resumed_from_checkpoint": True}
+            if key == "document_routing":
+                stages[key]["classifications"] = checkpoint.classifications
+            logger.info("[%s] deal=%d — reusing completed checkpoint", key, deal_id)
+            return
         failed = [name for name in dependencies if "error" in stages[name]]
         if failed:
             error = "Analysis incomplete; prerequisite stages failed: " + ", ".join(failed)

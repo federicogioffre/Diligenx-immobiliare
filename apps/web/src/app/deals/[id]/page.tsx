@@ -8,6 +8,7 @@ import {
   AgentRunRead,
   AnalysisStageEvent,
   AnalysisStreamEvent,
+  AnalysisBatchProgress,
   DealRead,
   DocumentRead,
   MissingDocumentRead,
@@ -71,6 +72,17 @@ interface StageRow {
   error_message: string | null
 }
 
+function currentAnalysisRuns<T extends Pick<AnalysisStageEvent, 'agent_name' | 'started_at' | 'status'>>(runs: T[]): T[] {
+  const intakeStarts = runs.filter((run) => run.agent_name === 'intake')
+    .map((run) => Date.parse(run.started_at ?? '')).filter(Number.isFinite)
+  if (intakeStarts.length === 0) return runs
+  const latestIntake = Math.max(...intakeStarts)
+  // A resumed run keeps its original intake and completed stages. Rows from
+  // an earlier run (often the old report/aggregation) cannot count as current.
+  return runs.filter((run) => (run.status === 'pending' && !run.started_at)
+    || Date.parse(run.started_at ?? '') >= latestIntake)
+}
+
 // ── Stage progress bar ─────────────────────────────────────────────────────
 
 function StageIcon({ status }: { status: string }) {
@@ -98,8 +110,8 @@ function StageIcon({ status }: { status: string }) {
   return <div className="w-4 h-4 border-2 border-slate-200 rounded-full" />
 }
 
-function AnalysisProgress({ stages, analyzing, previous, completedAt }: {
-  stages: StageRow[]; analyzing: boolean; previous: boolean; completedAt?: string
+function AnalysisProgress({ stages, analyzing, previous, completedAt, progress }: {
+  stages: StageRow[]; analyzing: boolean; previous: boolean; completedAt?: string; progress: AnalysisBatchProgress | null
 }) {
   const completedCount = stages.filter((s) => s.status === 'completed').length
   const pct = Math.round((completedCount / TOTAL_STAGES) * 100)
@@ -136,7 +148,7 @@ function AnalysisProgress({ stages, analyzing, previous, completedAt }: {
           prima di considerare aggiornati i rilievi e il report.
         </p>
       )}
-      <div className="w-full bg-slate-100 rounded-full h-1.5 mb-5">
+      <div role="progressbar" aria-label="Fasi dell’analisi completate" aria-valuemin={0} aria-valuemax={TOTAL_STAGES} aria-valuenow={completedCount} className="w-full bg-slate-100 rounded-full h-1.5 mb-5">
         <div
           className="bg-blue-600 h-1.5 rounded-full transition-all duration-700"
           style={{ width: `${pct}%` }}
@@ -144,6 +156,12 @@ function AnalysisProgress({ stages, analyzing, previous, completedAt }: {
       </div>
 
       {/* Stage list */}
+      {analyzing && progress && (
+        <p role="status" className="mb-4 text-sm text-blue-700">
+          Analisi finanziaria: {progress.completed_batches} / {progress.total_batches} segmenti elaborati.
+          <span className="block text-xs text-slate-500">Ultimo avanzamento: {new Date(progress.updated_at).toLocaleTimeString('it-IT')}</span>
+        </p>
+      )}
       <div className="space-y-3">
         {stages.map((stage, i) => (
           <div key={stage.agent_name} className="flex items-center gap-3">
@@ -567,6 +585,8 @@ export default function DealPage() {
   const [analyzing, setAnalyzing]   = useState(false)
   const [startingAnalysis, setStartingAnalysis] = useState(false)
   const [analysisStartFailed, setAnalysisStartFailed] = useState(false)
+  const [canResume, setCanResume] = useState(false)
+  const [batchProgress, setBatchProgress] = useState<AnalysisBatchProgress | null>(null)
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [retryingId, setRetryingId] = useState<number | null>(null)
   const [error, setError]           = useState('')
@@ -594,6 +614,9 @@ export default function DealPage() {
         api.deals.agentRuns(dealId),
       ])
       setDeal(d); setDocs(docList); setAgentRuns(runs)
+      if (d.status !== 'analyzing') {
+        try { setCanResume((await api.deals.analysisCheckpoint(dealId)).available) } catch { setCanResume(false) }
+      }
       scheduleDocPoll(docList)
       if (d.status === 'analyzing') { setAnalyzing(true); startAnalysisStream() }
       if (d.status === 'reviewed' || d.status === 'closed') {
@@ -627,18 +650,21 @@ export default function DealPage() {
     if (sseCleanupRef.current)   { sseCleanupRef.current(); sseCleanupRef.current = null }
     if (analysisPollRef.current) { clearInterval(analysisPollRef.current); analysisPollRef.current = null }
     setAnalyzing(false)
+    setBatchProgress(null)
     try {
       const [d, runs, clauses, flags, score, questions, missing, profiles] = await Promise.all([
         api.deals.get(dealId),
         api.deals.agentRuns(dealId),
-        api.deals.clauseFindings(dealId),
-        api.deals.redFlags(dealId),
+        api.deals.clauseFindings(dealId).catch(() => []),
+        api.deals.redFlags(dealId).catch(() => [] as RedFlagRead[]),
         api.deals.getRiskScore(dealId).catch(() => null),
         api.deals.openQuestions(dealId).catch(() => [] as OpenQuestionRead[]),
         api.deals.missingDocuments(dealId).catch(() => [] as MissingDocumentRead[]),
         api.deals.companyProfiles(dealId).catch(() => [] as CompanyProfileRead[]),
       ])
       setDeal(d); setAgentRuns(runs); setRedFlags(flags)
+      setBatchProgress(null)
+      try { setCanResume((await api.deals.analysisCheckpoint(dealId)).available) } catch { setCanResume(false) }
       setOpenQuestions(questions); setMissingDocs(missing); setCompanyProfiles(profiles)
       if (score) setRiskScore(score)
       setSummary({ clauseCount: clauses.length, redFlagCount: flags.length, documentCount: docs.filter((d) => d.status === 'processed').length })
@@ -651,6 +677,7 @@ export default function DealPage() {
       dealId,
       (payload: AnalysisStreamEvent) => {
         setStreamStages(payload.stages)
+        setBatchProgress(payload.progress ?? null)
         if (payload.deal_status !== 'analyzing') onAnalysisComplete()
       },
       () => onAnalysisComplete(),
@@ -659,11 +686,15 @@ export default function DealPage() {
   }
 
   function startAnalysisPoll() {
+    // Otherwise a previously received SSE snapshot takes precedence over the
+    // fresh agentRuns returned by polling and freezes the displayed stages.
+    setStreamStages([])
     if (analysisPollRef.current) clearInterval(analysisPollRef.current)
     analysisPollRef.current = setInterval(async () => {
       try {
         const [d, runs] = await Promise.all([api.deals.get(dealId), api.deals.agentRuns(dealId)])
         setDeal(d); setAgentRuns(runs)
+        try { setBatchProgress(await api.deals.analysisProgress(dealId)) } catch { /* retain last known progress */ }
         if (d.status !== 'analyzing') { clearInterval(analysisPollRef.current!); onAnalysisComplete() }
       } catch { /* keep polling */ }
     }, 8000)
@@ -678,6 +709,7 @@ export default function DealPage() {
     const fresh = await api.documents.list(dealId)
     setDocs(fresh)
     scheduleDocPoll(fresh)
+    setCanResume(false)
   }
 
   async function handleDelete(docId: number, filename: string) {
@@ -687,6 +719,7 @@ export default function DealPage() {
       await api.documents.delete(docId)
       const fresh = await api.documents.list(dealId)
       setDocs(fresh); scheduleDocPoll(fresh)
+      setCanResume(false)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Eliminazione fallita')
     } finally { setDeletingId(null) }
@@ -695,8 +728,11 @@ export default function DealPage() {
   async function handleAnalyze() {
     setStartingAnalysis(true); setError(''); setAnalysisStartFailed(false)
     try {
-      await api.deals.analyze(dealId)
-      setAnalyzing(true); setSummary(null); setRiskScore(null); setStreamStages([]); setAgentRuns([])
+      if (canResume) await api.deals.resumeAnalysis(dealId)
+      else await api.deals.analyze(dealId)
+      setAnalyzing(true); setSummary(null); setRiskScore(null); setStreamStages([]); setBatchProgress(null)
+      if (!canResume) setAgentRuns([])
+      setCanResume(false)
       startAnalysisStream()
       try { setDeal(await api.deals.get(dealId)) } catch { /* The stream will refresh the accepted run. */ }
     } catch (err: unknown) {
@@ -735,14 +771,9 @@ export default function DealPage() {
 
   function buildStageRows(): StageRow[] {
     const STAGE_ORDER = Object.keys(STAGE_LABELS)
-    if (analyzing && streamStages.length > 0) {
-      return streamStages.map((s) => ({
-        agent_name: s.agent_name, label: STAGE_LABELS[s.agent_name] ?? s.agent_name,
-        status: s.status, duration_seconds: s.duration_seconds, error_message: s.error_message,
-      }))
-    }
-    if (agentRuns.length > 0) {
-      const runByName = Object.fromEntries(agentRuns.map((r) => [r.agent_name, r]))
+    const source = analyzing && streamStages.length > 0 ? streamStages : agentRuns
+    if (source.length > 0) {
+      const runByName = Object.fromEntries(currentAnalysisRuns(source).map((run) => [run.agent_name, run]))
       return STAGE_ORDER.map((name) => {
         const run = runByName[name]
         return run
@@ -769,7 +800,8 @@ export default function DealPage() {
   const processedCount = docs.filter((d) => d.status === 'processed').length
   const blockedDocs = docs.filter((d) => !d.analysis_ready)
   const readyCount = docs.length - blockedDocs.length
-  const completedAt = agentRuns.map((run) => run.completed_at).filter((value): value is string => !!value).sort().at(-1)
+  const completedAt = currentAnalysisRuns(agentRuns).map((run) => run.completed_at)
+    .filter((value): value is string => !!value).sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1)
 
   return (
     <div>
@@ -904,7 +936,7 @@ export default function DealPage() {
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
                 </svg>
-                Avvia Analisi
+                {canResume ? 'Riprendi Analisi' : 'Avvia Analisi'}
               </>
             )}
           </button>
@@ -935,7 +967,7 @@ export default function DealPage() {
           </div>
         )}
 
-        {showProgress && <AnalysisProgress stages={stageRows} analyzing={analyzing} previous={analysisStartFailed || blockedDocs.length > 0} completedAt={completedAt} />}
+        {showProgress && <AnalysisProgress stages={stageRows} analyzing={analyzing} previous={analysisStartFailed || blockedDocs.length > 0} completedAt={completedAt} progress={batchProgress} />}
 
         {riskScore && <RiskScoreWidget rs={riskScore} />}
 

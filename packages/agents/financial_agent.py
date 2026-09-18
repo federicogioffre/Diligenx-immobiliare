@@ -670,7 +670,8 @@ class FinancialAgent:
             heuristic_count = 0
             findings_by_document: list[dict] = []
 
-            # LLM+parse per document is pure → fan out on a bounded pool;
+            # LLM+parse batches are pure; one bounded queue serves all documents
+            # so a large ledger does not become a sequential tail of the stage.
             # ORM persistence happens below on this thread, in input order.
             # Plain values for the workers: after the commit below the ORM
             # instances are expired and must not be touched off-thread.
@@ -685,15 +686,27 @@ class FinancialAgent:
                         self.AGENT_NAME, deal_id, doc.id,
                     )
 
-            from packages.agents.concurrency import run_llm_tasks
+            from app.core.config import settings
+            from packages.agents.analysis_progress import publish_progress
+            from packages.agents.document_coverage import collect_documents_payloads
             from packages.agents.stage_tx import release_connection_before_llm
 
             # No transaction may stay open across the LLM phase.
+            progress_run_id = run.id
             release_connection_before_llm(db)
 
-            payload_lists = run_llm_tasks(
-                to_analyse,
-                lambda item: self._financial_payloads(item[2], item[3], item[1]),
+            filenames = {document_id: filename for _, document_id, filename, _ in to_analyse}
+            batch_workers = max(1, min(2, settings.LLM_MAX_CONCURRENCY, settings.LLM_MAX_IN_FLIGHT))
+            payload_lists = collect_documents_payloads(
+                [(document_id, text) for _, document_id, _, text in to_analyse],
+                lambda document_id, batch: self._financial_payloads_batch(
+                    filenames[document_id], batch, document_id,
+                ),
+                max_workers=batch_workers,
+                progress_context=self.AGENT_NAME,
+                on_progress=lambda done, total, document_id: publish_progress(
+                    deal_id, progress_run_id, done, total, document_id,
+                ),
             )
 
             # Idempotency: wipe the previous run's outputs in the same
