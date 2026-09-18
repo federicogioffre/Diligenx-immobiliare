@@ -451,6 +451,17 @@ def _stage_specialist_analysis(
         for c in classifications
         if c.get("document_type") in _CONTRACT_TYPES
     }
+    # The upload role is authoritative even if classification says "other".
+    # These IDs still pass through ContractAgent's deal/status filter and full
+    # ordinary document windows; shared context excerpts never replace them.
+    from app.models.document import Document, DocumentStatus
+    contract_doc_ids.update(
+        doc_id for (doc_id,) in db.query(Document.id).filter(
+            Document.deal_id == deal_id,
+            Document.document_role == "loi",
+            Document.status == DocumentStatus.processed,
+        )
+    )
 
     logger.info(
         "[%s] deal=%d — %d contract document(s) identified from routing",
@@ -698,7 +709,8 @@ def run_deal_analysis_pipeline(
 
     from packages.agents.analysis_checkpoint import validate_resume
     checkpoint = validate_resume(db, deal_id) if resume else None
-    llm = provider or get_llm_provider()
+    from packages.agents.deal_context import with_deal_context
+    llm = with_deal_context(provider or get_llm_provider(), db, deal_id)
 
     logger.info("=== Pipeline START for deal %d ===", deal_id)
 

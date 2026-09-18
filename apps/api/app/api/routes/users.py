@@ -67,6 +67,7 @@ def export_my_data(
             "filename": d.filename,
             "mime_type": d.mime_type,
             "file_size": d.file_size,
+            "document_role": d.document_role,
             "status": d.status.value if d.status else None,
             "language": d.language,
             "page_count": d.page_count,

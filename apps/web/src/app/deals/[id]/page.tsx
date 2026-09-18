@@ -367,8 +367,8 @@ function CompanyScopeEditor({ deal, disabled, onChanged }: {
         Società nel perimetro
       </label>
       <p id="company-scope-help" className="text-xs text-slate-500 mb-3">
-        Una ragione sociale completa per riga, inclusa la forma giuridica. La sezione societaria del report includerà solo queste società.
-        Il campo è facoltativo; se vuoto, la sezione chiederà di definire il perimetro.
+        Una ragione sociale completa per riga, inclusa la forma giuridica. Queste società definiscono il perimetro per gli agenti e per la sezione societaria del report.
+        Per le operazioni già create senza perimetro, inseriscilo prima di avviare l’analisi.
       </p>
       <textarea
         id="target-company-names"
@@ -967,6 +967,7 @@ export default function DealPage() {
                     <tr key={doc.id} className="flex flex-col py-2 md:table-row md:py-0 hover:bg-slate-50 transition-colors">
                       <td className="block px-4 pt-2 pb-1 md:py-3 md:table-cell font-medium text-slate-800 break-words" title={doc.filename}>
                         {doc.filename}
+                        {doc.document_role === 'loi' && <span className="ml-2 inline-flex rounded-md bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">LOI</span>}
                       </td>
                       <td className="block px-4 py-2 md:py-3 md:table-cell">
                         <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full ${ds.cls}`}>

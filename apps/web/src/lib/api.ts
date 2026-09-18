@@ -195,6 +195,7 @@ export interface DocumentRead {
   id: number
   deal_id: number
   filename: string
+  document_role?: 'data_room' | 'loi'
   mime_type: string
   file_size: number
   status: 'pending' | 'processing' | 'processed' | 'failed'
@@ -208,6 +209,7 @@ export interface DocumentRead {
 export interface DocumentUploadResponse {
   id: number
   filename: string
+  document_role?: 'data_room' | 'loi'
   status: string
   file_size: number
   language: string | null
@@ -279,6 +281,21 @@ export interface AnalysisBatchProgress {
 // Auth travels in the HttpOnly session cookie set by the backend at login.
 // Every call below goes through the same-origin /api proxy, so the browser
 // attaches the cookie automatically — no Authorization header needed.
+
+// Some browsers leave the MIME type empty for otherwise supported files.
+// Preserve their bytes/name and infer only a missing generic type; explicit
+// unsupported types still reach the API validation unchanged.
+function fileWithUploadType(file: File): File {
+  if (file.type && file.type !== 'application/octet-stream') return file
+  const extension = file.name.split('.').pop()?.toLowerCase()
+  const types: Record<string, string> = {
+    pdf: 'application/pdf',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    txt: 'text/plain',
+  }
+  const type = extension ? types[extension] : undefined
+  return type ? new File([file], file.name, { type, lastModified: file.lastModified }) : file
+}
 
 /**
  * Handle an expired/invalid session response from the backend.
@@ -523,10 +540,10 @@ export const api = {
     list(dealId: number): Promise<DocumentRead[]> {
       return request(`/documents/deals/${dealId}/documents`)
     },
-    async upload(dealId: number, file: File): Promise<DocumentUploadResponse> {
+    async upload(dealId: number, file: File, documentRole: 'data_room' | 'loi' = 'data_room'): Promise<DocumentUploadResponse> {
       const form = new FormData()
-      form.append('file', file)
-      const res = await fetch(`${BASE}/documents/upload?deal_id=${dealId}`, {
+      form.append('file', fileWithUploadType(file))
+      const res = await fetch(`${BASE}/documents/upload?deal_id=${dealId}&document_role=${documentRole}`, {
         method: 'POST',
         body: form,
       })
@@ -548,12 +565,13 @@ export const api = {
       onProgress: (bytesSent: number, bytesTotal: number) => void,
       signal?: AbortSignal,
       onRetry?: (seconds: number) => void,
+      documentRole: 'data_room' | 'loi' = 'data_room',
     ): Promise<DocumentUploadResponse> {
       // The server identifies repeated named file content, so a timeout after
       // saving the file is safe to retry. Do not retry validation/auth errors.
       const attemptUpload = () => new Promise<DocumentUploadResponse>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
-        xhr.open('POST', `${BASE}/documents/upload?deal_id=${dealId}`)
+        xhr.open('POST', `${BASE}/documents/upload?deal_id=${dealId}&document_role=${documentRole}`)
         xhr.timeout = 120_000
         const abort = () => xhr.abort()
         const fail = (message: string, retryable: boolean, retryAfter = 0) =>
@@ -588,7 +606,7 @@ export const api = {
         if (signal?.aborted) { fail('Upload annullato', false); return }
         signal?.addEventListener('abort', abort, { once: true })
         const form = new FormData()
-        form.append('file', file)
+        form.append('file', fileWithUploadType(file))
         xhr.send(form)
       })
       for (let attempt = 0; ; attempt++) {

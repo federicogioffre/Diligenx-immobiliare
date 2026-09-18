@@ -30,6 +30,7 @@ def utc(value: datetime) -> datetime:
 def corpus_fingerprint(db, deal_id: int) -> tuple[str, set[int]]:
     from app.models.deal import Deal
     from app.models.document import Document
+    from packages.agents.deal_context import DEAL_CONTEXT_VERSION
 
     deal = db.query(Deal).filter_by(id=deal_id).one()
     digest = hashlib.sha256()
@@ -42,14 +43,20 @@ def corpus_fingerprint(db, deal_id: int) -> tuple[str, set[int]]:
     if deal.target_company_names:
         add({"target_company_names": deal.target_company_names})
     ids = set()
+    has_loi = False
     for doc in db.query(Document).filter_by(deal_id=deal_id).order_by(Document.id).yield_per(10):
         if not doc.analysis_ready:
             raise CheckpointError("Tutti i documenti devono essere pronti prima di riprendere l'analisi.")
         ids.add(doc.id)
         add([doc.id, doc.filename, doc.file_path, doc.mime_type, doc.file_size,
              doc.page_count, doc.language, hashlib.sha256(doc.raw_text.encode("utf-8")).hexdigest()])
+        if doc.document_role == "loi":
+            add({"document_id": doc.id, "document_role": "loi"})
+            has_loi = True
     if not ids:
         raise CheckpointError("Nessun documento disponibile per la ripresa.")
+    if deal.target_company_names or has_loi:
+        add({"deal_context_version": DEAL_CONTEXT_VERSION})
     return digest.hexdigest(), ids
 
 

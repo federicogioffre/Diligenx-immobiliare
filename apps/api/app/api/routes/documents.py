@@ -4,7 +4,7 @@ import logging
 import threading
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile, File
 from app.core.limiter import limiter
 from typing import List
 from sqlalchemy.orm import Session
@@ -16,7 +16,7 @@ from app.db.session import SessionLocal, get_db
 from app.models.document import Document, DocumentStatus
 from app.models.deal import Deal, DealStatus
 from app.models.user import User
-from app.schemas.document import DocumentRead, DocumentUploadResponse
+from app.schemas.document import DocumentRead, DocumentRole, DocumentUploadResponse
 from app.services.auth import get_current_user
 from app.services.storage import save_file, delete_file
 
@@ -85,7 +85,10 @@ def _upload_rate_key(request: Request) -> str:
     return f"upload-user:{user_id}" if user_id is not None else get_remote_address(request)
 
 
-def _prepare_upload(deal_id: int, user_id: int, file: UploadFile, db: Session) -> DocumentUploadResponse:
+def _prepare_upload(
+    deal_id: int, user_id: int, file: UploadFile, db: Session,
+    document_role: DocumentRole = "data_room",
+) -> DocumentUploadResponse:
     """Serialize changes to a deal's inventory; called outside the event loop.
 
     The PostgreSQL deal lock protects content-based idempotency across API
@@ -101,6 +104,8 @@ def _prepare_upload(deal_id: int, user_id: int, file: UploadFile, db: Session) -
     )
     if deal is None:
         raise HTTPException(status_code=404, detail="Deal not found")
+    if document_role not in ("data_room", "loi"):
+        raise HTTPException(status_code=422, detail="Unsupported document role")
     if file.content_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.content_type}")
     try:
@@ -110,6 +115,9 @@ def _prepare_upload(deal_id: int, user_id: int, file: UploadFile, db: Session) -
     base_name = (file.filename or "unknown").replace("\\", "/").split("/")[-1]
     key = _storage_key(deal_id, base_name, content)
     doc = db.query(Document).filter(Document.deal_id == deal_id, Document.file_path == key).first()
+    promote_to_loi = doc is not None and document_role == "loi" and doc.document_role != "loi"
+    if promote_to_loi and deal.status == DealStatus.analyzing:
+        raise HTTPException(status_code=409, detail="Analisi in corso: attendere prima di modificare il ruolo del documento.")
     if doc is None:
         if deal.status == DealStatus.analyzing:
             raise HTTPException(status_code=409, detail="Analisi in corso: attendere prima di modificare i documenti.")
@@ -117,6 +125,7 @@ def _prepare_upload(deal_id: int, user_id: int, file: UploadFile, db: Session) -
         doc = Document(
             deal_id=deal_id, filename=base_name, file_path=key,
             mime_type=file.content_type, file_size=len(content), status=DocumentStatus.pending,
+            document_role=document_role,
         )
         db.add(doc)
         db.flush()
@@ -125,6 +134,10 @@ def _prepare_upload(deal_id: int, user_id: int, file: UploadFile, db: Session) -
             raise HTTPException(status_code=409, detail="Analisi in corso: attendere prima di riprovare il documento.")
         save_file(content, key)  # Also recover an object lost during a prior attempt.
         doc.status = DocumentStatus.pending
+    if promote_to_loi:
+        # Generic uploads (including batches and retries) never demote a LOI.
+        # The deal lock also serializes this metadata change against analysis.
+        doc.document_role = "loi"
     response = DocumentUploadResponse.model_validate(doc)
     db.commit()
     return response
@@ -195,13 +208,14 @@ async def upload_document(
     deal_id: int,
     file: UploadFile,
     background_tasks: BackgroundTasks,
+    document_role: DocumentRole = Query("data_room"),
     db: Session = Depends(get_db),
     current_user: User = Depends(_upload_user),
 ):
     from app.services.jobs import enqueue_or_run
 
     user_id = current_user.id
-    doc = await run_in_threadpool(_prepare_upload, deal_id, user_id, file, db)
+    doc = await run_in_threadpool(_prepare_upload, deal_id, user_id, file, db, document_role)
     if doc.status in (DocumentStatus.pending, DocumentStatus.processing):
         await enqueue_or_run(
             request, background_tasks, "run_ingestion_for_document",
