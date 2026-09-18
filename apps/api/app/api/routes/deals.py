@@ -209,16 +209,25 @@ async def analyze_deal(
     # Lock the inventory while admitting a run; upload/delete take the same
     # deal-row lock, so the document set cannot change underneath this check.
     from app.models.deal import DealStatus
-    from app.models.document import Document, DocumentStatus
+    from app.models.document import Document
     deal = db.query(Deal).filter(Deal.id == deal_id).with_for_update().populate_existing().one()
     if deal.status == DealStatus.analyzing:
         raise HTTPException(status_code=409, detail="Analysis is already running")
-    incomplete = db.query(Document.id).filter(
-        Document.deal_id == deal_id,
-        (Document.status != DocumentStatus.processed) | (Document.raw_text.is_(None)) | (Document.raw_text == ""),
-    ).first()
+    incomplete = []
+    # Bound memory while checking extracted text across a large inventory.
+    for document in db.query(Document).filter(Document.deal_id == deal_id).populate_existing().yield_per(20):
+        reason = document.processing_issue
+        if reason is not None:
+            incomplete.append({
+                "id": document.id, "filename": document.filename,
+                "status": document.status, "reason": reason,
+            })
     if incomplete:
-        raise HTTPException(status_code=409, detail="All documents must finish processing successfully before analysis")
+        raise HTTPException(status_code=409, detail={
+            "code": "documents_not_ready",
+            "message": "Alcuni documenti non sono pronti. Attendi il completamento o riprova l'elaborazione dei documenti indicati.",
+            "documents": incomplete,
+        })
     previous_status = deal.status
     user_id = current_user.id
     # Compare-and-set also protects SQLite, where FOR UPDATE is ignored.

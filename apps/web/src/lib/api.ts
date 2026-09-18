@@ -1,4 +1,5 @@
 import { clearAuth } from './auth'
+import { parseApiError } from './api-error'
 
 const BASE = '/api'
 
@@ -192,6 +193,8 @@ export interface DocumentRead {
   mime_type: string
   file_size: number
   status: 'pending' | 'processing' | 'processed' | 'failed'
+  analysis_ready: boolean
+  processing_issue: 'pending' | 'processing' | 'failed' | 'missing_text' | null
   page_count: number | null
   language: string | null
   created_at: string
@@ -300,7 +303,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(text || `HTTP ${res.status}`)
+    throw parseApiError(text, res.status)
   }
   return res.json()
 }
@@ -316,7 +319,7 @@ export const api = {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
       })
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw parseApiError(await res.text(), res.status)
       return res.json()
     },
 
@@ -339,7 +342,7 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
       })
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw parseApiError(await res.text(), res.status)
     },
 
     /** Complete the reset with the token from the email link. */
@@ -351,7 +354,7 @@ export const api = {
       })
       if (res.status === 400) throw new Error('Link non valido o scaduto. Richiedi un nuovo link.')
       if (res.status === 422) throw new Error('La password deve avere almeno 8 caratteri.')
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw parseApiError(await res.text(), res.status)
     },
   },
 
@@ -363,7 +366,7 @@ export const api = {
     async exportData(): Promise<Blob> {
       const res = await fetch(`${BASE}/users/me/export`)
       if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw parseApiError(await res.text(), res.status)
       return res.blob()
     },
     /** GDPR art. 17 — erase the account. Requires the password as a
@@ -376,7 +379,7 @@ export const api = {
       })
       if (res.status === 403) throw new Error('Password errata')
       if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw parseApiError(await res.text(), res.status)
     },
   },
 
@@ -405,7 +408,7 @@ export const api = {
     async delete(id: number): Promise<void> {
       const res = await fetch(`${BASE}/workspaces/${id}`, { method: 'DELETE' })
       if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw parseApiError(await res.text(), res.status)
     },
     insights(id: number): Promise<WorkspaceInsights> {
       return request(`/workspaces/${id}/insights`)
@@ -458,7 +461,7 @@ export const api = {
     async downloadReport(id: number, format: 'pdf' | 'docx'): Promise<Blob> {
       const res = await fetch(`${BASE}/deals/${id}/report/export?format=${format}`)
       if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw parseApiError(await res.text(), res.status)
       return res.blob()
     },
     getRiskScore(id: number): Promise<RiskScoreResponse> {
@@ -487,7 +490,7 @@ export const api = {
     async delete(id: number): Promise<void> {
       const res = await fetch(`${BASE}/deals/${id}`, { method: 'DELETE' })
       if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw parseApiError(await res.text(), res.status)
     },
   },
 
@@ -503,7 +506,7 @@ export const api = {
         body: form,
       })
       if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw parseApiError(await res.text(), res.status)
       return res.json()
     },
     /**
@@ -551,8 +554,7 @@ export const api = {
           const retryAfter = header
             ? (/^\d+$/.test(header) ? Number(header) * 1000 : Math.max(0, Date.parse(header) - Date.now()))
             : 0
-          let message = `Caricamento non riuscito (HTTP ${xhr.status})`
-          try { message = JSON.parse(xhr.responseText).detail || message } catch { /* keep concise message */ }
+          const message = parseApiError(xhr.responseText, xhr.status).message
           fail(message, [408, 429, 500, 502, 503, 504].includes(xhr.status), retryAfter)
         }
         xhr.onerror = () => fail('Connessione interrotta durante il caricamento', true)
@@ -586,10 +588,13 @@ export const api = {
         }
       }
     },
+    retry(documentId: number): Promise<DocumentRead> {
+      return request(`/documents/${documentId}/retry`, { method: 'POST' })
+    },
     async delete(documentId: number): Promise<void> {
       const res = await fetch(`${BASE}/documents/${documentId}`, { method: 'DELETE' })
       if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) throw parseApiError(await res.text(), res.status)
     },
   },
 }

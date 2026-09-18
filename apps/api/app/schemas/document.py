@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from app.models.document import DocumentStatus
+from app.services.document_readiness import ProcessingIssue
 
 
 class DocumentRead(BaseModel):
@@ -12,6 +13,8 @@ class DocumentRead(BaseModel):
     mime_type: str
     file_size: int
     status: DocumentStatus
+    analysis_ready: bool
+    processing_issue: ProcessingIssue | None
     page_count: int | None
     language: str | None
     created_at: datetime

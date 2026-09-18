@@ -5,6 +5,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
 from app.models.base import TimestampMixin
+from app.services.document_readiness import ProcessingIssue, document_processing_issue
 
 
 class DocumentStatus(str, enum.Enum):
@@ -29,6 +30,14 @@ class Document(TimestampMixin, Base):
     page_count: Mapped[int | None] = mapped_column(Integer)
     language: Mapped[str | None] = mapped_column(String(10))
     raw_text: Mapped[str | None] = mapped_column(Text)
+
+    @property
+    def processing_issue(self) -> ProcessingIssue | None:
+        return document_processing_issue(self.status, self.raw_text)
+
+    @property
+    def analysis_ready(self) -> bool:
+        return self.processing_issue is None
 
     deal = relationship("Deal", back_populates="documents")
     chunks = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")

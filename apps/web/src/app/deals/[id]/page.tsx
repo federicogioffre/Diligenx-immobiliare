@@ -23,6 +23,7 @@ import UploadZone from '@/components/UploadZone'
 import ErrorAlert from '@/components/ui/ErrorAlert'
 import Spinner from '@/components/ui/Spinner'
 import StatusBadge from '@/components/ui/StatusBadge'
+import { ApiError, getBlockedDocuments } from '@/lib/api-error'
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -31,6 +32,13 @@ const DOC_STATUS: Record<string, { label: string; cls: string }> = {
   processing: { label: 'Elaborazione', cls: 'bg-amber-50 text-amber-600' },
   processed:  { label: 'Completato',   cls: 'bg-emerald-50 text-emerald-600' },
   failed:     { label: 'Errore',       cls: 'bg-red-50 text-red-600' },
+}
+
+const DOC_ISSUE: Record<string, string> = {
+  pending: 'In attesa di elaborazione. Se l’attesa persiste, riprova.',
+  processing: 'Elaborazione in corso. Se non prosegue, riprova.',
+  failed: 'Elaborazione non riuscita. Riprova il documento.',
+  missing_text: 'Nessun testo disponibile per l’analisi. Riprova l’elaborazione; se il problema persiste, carica una copia leggibile.',
 }
 
 const STAGE_LABELS: Record<string, string> = {
@@ -90,7 +98,9 @@ function StageIcon({ status }: { status: string }) {
   return <div className="w-4 h-4 border-2 border-slate-200 rounded-full" />
 }
 
-function AnalysisProgress({ stages, analyzing }: { stages: StageRow[]; analyzing: boolean }) {
+function AnalysisProgress({ stages, analyzing, previous, completedAt }: {
+  stages: StageRow[]; analyzing: boolean; previous: boolean; completedAt?: string
+}) {
   const completedCount = stages.filter((s) => s.status === 'completed').length
   const pct = Math.round((completedCount / TOTAL_STAGES) * 100)
   const incomplete = !analyzing && completedCount < TOTAL_STAGES
@@ -101,13 +111,22 @@ function AnalysisProgress({ stages, analyzing }: { stages: StageRow[]; analyzing
         <div className="flex items-center gap-2">
           {analyzing && <div className="w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />}
           <span className="text-sm font-semibold text-slate-800">
-            {analyzing ? 'Analisi in corso…' : incomplete ? 'Analisi incompleta' : 'Pipeline completata'}
+            {analyzing ? 'Analisi in corso…' : incomplete ? 'Ultima analisi incompleta' : 'Ultima analisi completata'}
           </span>
         </div>
         <span className="text-xs font-medium text-slate-400 tabular-nums">
           {completedCount} / {TOTAL_STAGES}
         </span>
       </div>
+
+      {!analyzing && completedAt && (
+        <p className="mb-3 text-xs text-slate-500">{new Date(completedAt).toLocaleString('it-IT')}</p>
+      )}
+      {!analyzing && previous && (
+        <p className="mb-4 text-sm text-amber-800">
+          Questi risultati appartengono all’analisi precedente. La nuova analisi non è ancora partita.
+        </p>
+      )}
 
       {/* Progress bar */}
       {incomplete && (
@@ -546,7 +565,10 @@ export default function DealPage() {
   const [streamStages, setStreamStages] = useState<AnalysisStageEvent[]>([])
 
   const [analyzing, setAnalyzing]   = useState(false)
+  const [startingAnalysis, setStartingAnalysis] = useState(false)
+  const [analysisStartFailed, setAnalysisStartFailed] = useState(false)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [retryingId, setRetryingId] = useState<number | null>(null)
   const [error, setError]           = useState('')
 
   const docPollRef      = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -590,11 +612,14 @@ export default function DealPage() {
     if (docPollRef.current) clearInterval(docPollRef.current)
     if (!docList.some((d) => d.status === 'pending' || d.status === 'processing')) return
     docPollRef.current = setInterval(async () => {
-      const fresh = await api.documents.list(dealId)
-      setDocs(fresh)
-      if (!fresh.some((d) => d.status === 'pending' || d.status === 'processing')) {
-        clearInterval(docPollRef.current!)
-      }
+      try {
+        const fresh = await api.documents.list(dealId)
+        setDocs(fresh)
+        if (!fresh.some((d) => d.status === 'pending' || d.status === 'processing')) {
+          clearInterval(docPollRef.current!)
+          docPollRef.current = null
+        }
+      } catch { /* Keep the last known status and try again on the next tick. */ }
     }, 3000)
   }
 
@@ -668,15 +693,38 @@ export default function DealPage() {
   }
 
   async function handleAnalyze() {
-    setAnalyzing(true); setError(''); setSummary(null); setRiskScore(null); setStreamStages([])
+    setStartingAnalysis(true); setError(''); setAnalysisStartFailed(false)
     try {
       await api.deals.analyze(dealId)
-      const d = await api.deals.get(dealId)
-      setDeal(d); startAnalysisStream()
+      setAnalyzing(true); setSummary(null); setRiskScore(null); setStreamStages([]); setAgentRuns([])
+      startAnalysisStream()
+      try { setDeal(await api.deals.get(dealId)) } catch { /* The stream will refresh the accepted run. */ }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Analisi fallita')
-      setAnalyzing(false)
-    }
+      setAnalysisStartFailed(true)
+      // A different tab may have changed the document inventory after our read.
+      if (err instanceof ApiError && err.status === 409) {
+        const blockers = getBlockedDocuments(err)
+        setDocs((previous) => previous.map((doc) => {
+          const blocked = blockers.find((item) => item.id === doc.id)
+          return blocked ? { ...doc, analysis_ready: false, processing_issue: blocked.reason as DocumentRead['processing_issue'] } : doc
+        }))
+        try { await handleUploaded() } catch { /* Retain the server's known blockers. */ }
+      }
+    } finally { setStartingAnalysis(false) }
+  }
+
+  async function handleRetry(docId: number) {
+    setRetryingId(docId); setError('')
+    try {
+      const updated = await api.documents.retry(docId)
+      setDocs((previous) => previous.map((doc) => doc.id === updated.id ? updated : doc))
+      scheduleDocPoll(docs.map((doc) => doc.id === updated.id ? updated : doc))
+      await handleUploaded()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Impossibile riprovare il documento')
+      try { await handleUploaded() } catch { /* Preserve the original error. */ }
+    } finally { setRetryingId(null) }
   }
 
   function fmtSize(bytes: number) {
@@ -719,6 +767,9 @@ export default function DealPage() {
   const stageRows = buildStageRows()
   const showProgress = analyzing || agentRuns.length > 0
   const processedCount = docs.filter((d) => d.status === 'processed').length
+  const blockedDocs = docs.filter((d) => !d.analysis_ready)
+  const readyCount = docs.length - blockedDocs.length
+  const completedAt = agentRuns.map((run) => run.completed_at).filter((value): value is string => !!value).sort().at(-1)
 
   return (
     <div>
@@ -732,9 +783,9 @@ export default function DealPage() {
       </div>
 
       {/* Deal header */}
-      <div className="flex items-start justify-between mb-2">
+      <div className="flex flex-col sm:flex-row items-start justify-between gap-3 mb-2">
         <h1 className="text-xl font-bold text-slate-900 leading-tight">{deal.title}</h1>
-        <div className="shrink-0 ml-3 flex items-center gap-2">
+        <div className="shrink-0 sm:ml-3 flex items-center gap-2">
           <ReportLanguageSelect deal={deal} onChanged={(d) => setDeal(d)} />
           <StatusBadge status={deal.status} />
         </div>
@@ -747,7 +798,7 @@ export default function DealPage() {
       <section className="mb-8">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-base font-semibold text-slate-800">Documenti</h2>
-          <span className="text-xs text-slate-400">{docs.length} totali · {processedCount} elaborati</span>
+          <span className="text-xs text-slate-400">{docs.length} totali · {readyCount} pronti per l’analisi</span>
         </div>
 
         <UploadZone
@@ -765,10 +816,10 @@ export default function DealPage() {
           </div>
         ) : (
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <table className="min-w-full text-sm">
-              <thead>
+            <table className="block w-full text-sm md:table md:table-fixed">
+              <thead className="hidden md:table-header-group">
                 <tr className="border-b border-slate-100">
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide">Documento</th>
+                  <th className="w-[30%] text-left px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide">Documento</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide">Stato</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide">Lingua</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide">Dim.</th>
@@ -776,36 +827,54 @@ export default function DealPage() {
                   <th className="px-4 py-3" />
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="block divide-y divide-slate-100 md:table-row-group">
                 {docs.map((doc) => {
-                  const ds = DOC_STATUS[doc.status] ?? { label: doc.status, cls: 'bg-slate-100 text-slate-500' }
+                  const ds = doc.processing_issue === 'missing_text'
+                    ? { label: 'Testo non disponibile', cls: 'bg-red-50 text-red-600' }
+                    : DOC_STATUS[doc.status] ?? { label: doc.status, cls: 'bg-slate-100 text-slate-500' }
                   return (
-                    <tr key={doc.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-4 py-3 font-medium text-slate-800 max-w-xs truncate" title={doc.filename}>
+                    <tr key={doc.id} className="flex flex-col py-2 md:table-row md:py-0 hover:bg-slate-50 transition-colors">
+                      <td className="block px-4 pt-2 pb-1 md:py-3 md:table-cell font-medium text-slate-800 break-words" title={doc.filename}>
                         {doc.filename}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="block px-4 py-2 md:py-3 md:table-cell">
                         <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full ${ds.cls}`}>
                           {doc.status === 'processing' && (
                             <span className="w-1.5 h-1.5 bg-amber-400 rounded-full animate-pulse" />
                           )}
                           {ds.label}
                         </span>
+                        {doc.processing_issue && (
+                          <p className="mt-1 text-xs text-slate-500 break-words">{DOC_ISSUE[doc.processing_issue] ?? 'Documento non pronto per l’analisi.'}</p>
+                        )}
                       </td>
-                      <td className="px-4 py-3 text-slate-500 uppercase text-xs font-medium">{doc.language ?? '—'}</td>
-                      <td className="px-4 py-3 text-slate-400 text-xs">{fmtSize(doc.file_size)}</td>
-                      <td className="px-4 py-3 text-slate-400 text-xs">{doc.page_count ?? '—'}</td>
-                      <td className="px-4 py-3">
+                      <td className="hidden md:table-cell px-4 py-3 text-slate-500 uppercase text-xs font-medium">{doc.language ?? '—'}</td>
+                      <td className="hidden md:table-cell px-4 py-3 text-slate-400 text-xs">{fmtSize(doc.file_size)}</td>
+                      <td className="hidden md:table-cell px-4 py-3 text-slate-400 text-xs">{doc.page_count ?? '—'}</td>
+                      <td className="block px-4 py-2 md:py-3 md:table-cell">
+                        <div className="flex items-center justify-between gap-3 md:flex-wrap">
+                        {!doc.analysis_ready && (
+                          <button
+                            onClick={() => handleRetry(doc.id)}
+                            disabled={retryingId !== null || analyzing || startingAnalysis || deletingId === doc.id}
+                            className="text-xs font-semibold text-blue-700 hover:text-blue-900 disabled:opacity-50 text-left"
+                            aria-label={`Riprova elaborazione di ${doc.filename}`}
+                          >
+                            {retryingId === doc.id ? 'Riavvio…' : 'Riprova elaborazione'}
+                          </button>
+                        )}
                         <button
                           onClick={() => handleDelete(doc.id, doc.filename)}
-                          disabled={deletingId === doc.id}
+                          disabled={deletingId === doc.id || analyzing || startingAnalysis || retryingId === doc.id}
                           className="text-slate-300 hover:text-red-500 transition-colors disabled:opacity-40"
                           title="Elimina documento"
+                          aria-label={`Elimina ${doc.filename}`}
                         >
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                           </svg>
                         </button>
+                        </div>
                       </td>
                     </tr>
                   )
@@ -822,13 +891,13 @@ export default function DealPage() {
           <h2 className="text-base font-semibold text-slate-800">Analisi AI</h2>
           <button
             onClick={handleAnalyze}
-            disabled={analyzing || processedCount === 0}
+            disabled={analyzing || startingAnalysis || retryingId !== null || docs.length === 0 || blockedDocs.length > 0}
             className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors shadow-sm"
           >
-            {analyzing ? (
+            {analyzing || startingAnalysis ? (
               <>
                 <Spinner size="sm" tone="white" />
-                In corso…
+                {startingAnalysis ? 'Avvio…' : 'In corso…'}
               </>
             ) : (
               <>
@@ -843,6 +912,20 @@ export default function DealPage() {
 
         <ErrorAlert error={error} className="mb-4" />
 
+        {blockedDocs.length > 0 && (
+          <div role="status" className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <p className="font-semibold">{blockedDocs.length} {blockedDocs.length === 1 ? 'documento non è pronto' : 'documenti non sono pronti'} per l’analisi.</p>
+            <p className="mt-1">Attendi l’elaborazione. Per un documento in errore o fermo in attesa, usa “Riprova elaborazione” nella lista.</p>
+            <ul className="mt-2 list-disc pl-5 max-h-48 overflow-y-auto space-y-1">
+              {blockedDocs.map((doc) => (
+                <li key={doc.id} className="break-words">
+                  <span className="font-medium">{doc.filename}</span> — {doc.processing_issue === 'missing_text' ? 'testo non disponibile' : DOC_STATUS[doc.status]?.label ?? 'non pronto'}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {!showProgress && !analyzing && processedCount === 0 && (
           <div className="text-center py-10 bg-white rounded-2xl border border-slate-200 border-dashed">
             <svg className="w-8 h-8 text-slate-300 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -852,7 +935,7 @@ export default function DealPage() {
           </div>
         )}
 
-        {showProgress && <AnalysisProgress stages={stageRows} analyzing={analyzing} />}
+        {showProgress && <AnalysisProgress stages={stageRows} analyzing={analyzing} previous={analysisStartFailed || blockedDocs.length > 0} completedAt={completedAt} />}
 
         {riskScore && <RiskScoreWidget rs={riskScore} />}
 
