@@ -37,6 +37,10 @@ def corpus_fingerprint(db, deal_id: int) -> tuple[str, set[int]]:
         digest.update(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8"))
         digest.update(b"\n")
     add([deal.id, deal.title, deal.description, deal.value, deal.report_language])
+    # Preserve existing fingerprints for unconfigured legacy deals, but any
+    # explicit perimeter change must invalidate the old analysis checkpoint.
+    if deal.target_company_names:
+        add({"target_company_names": deal.target_company_names})
     ids = set()
     for doc in db.query(Document).filter_by(deal_id=deal_id).order_by(Document.id).yield_per(10):
         if not doc.analysis_ready:

@@ -1,17 +1,43 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from typing import Annotated
+
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 from app.models.deal import DealStatus
 
 
-class DealCreate(BaseModel):
+CompanyName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+
+
+class TargetScope(BaseModel):
+    target_company_names: list[CompanyName] | None = Field(default=None, max_length=20)
+
+    @field_validator("target_company_names")
+    @classmethod
+    def distinct_names(cls, names):
+        if names is None:
+            return None
+        from packages.agents.company_identity import normalize_company_name
+        seen = set()
+        result = []
+        for name in names:
+            key = normalize_company_name(name)
+            if not key or not any(char.isalnum() for char in key):
+                raise ValueError("Inserisci una ragione sociale valida.")
+            if key not in seen:
+                seen.add(key)
+                result.append(name)
+        return result
+
+
+class DealCreate(TargetScope):
     title: str
     description: str | None = None
     value: float | None = None
 
 
-class DealUpdate(BaseModel):
+class DealUpdate(TargetScope):
     title: str | None = None
     description: str | None = None
     value: float | None = None
@@ -26,6 +52,7 @@ class DealRead(BaseModel):
     value: float | None
     status: DealStatus
     report_language: str | None
+    target_company_names: list[str] | None = None
     created_at: datetime
     updated_at: datetime | None
 

@@ -28,6 +28,12 @@ def _fake_llm():
     set_llm_provider(FakeLLMProvider())
 
 
+@pytest.fixture(autouse=True)
+def _confirmed_target(db, test_deal):
+    test_deal.target_company_names = ["TargetCo S.p.A."]
+    db.commit()
+
+
 def _make_doc(
     db: Session,
     deal: Deal,
@@ -158,7 +164,7 @@ class TestDegradedInput:
             def complete(self, prompt: str, max_tokens: int = 2048) -> str:
                 if "CORPORATE INTRODUCTORY INFORMATION" in prompt.upper():
                     return json.dumps([{
-                        "company_name": "Maybe Co",
+                        "company_name": "TargetCo S.p.A.",
                         "confidence": 0.30,
                     }])
                 return super().complete(prompt, max_tokens)
@@ -191,3 +197,118 @@ class TestDegradedInput:
 
         with pytest.raises(LLMResponseError):
             CorporateIntroAgent(provider=BrokenLLM()).run(test_deal.id, db)
+
+
+def test_missing_scope_skips_all_llm_calls_and_keeps_raw_prior_evidence(db, test_deal):
+    doc = _make_doc(db, test_deal, filename="visura.pdf")
+    previous = CompanyProfile(deal_id=test_deal.id, company_name="Previous Srl", source_document_id=doc.id)
+    db.add(previous)
+    test_deal.target_company_names = None
+    db.commit()
+
+    class NeverCalled(FakeLLMProvider):
+        def complete(self, *args, **kwargs):
+            raise AssertionError("Missing target scope must not invoke a provider")
+
+    result = CorporateIntroAgent(provider=NeverCalled()).run(test_deal.id, db, document_ids={doc.id})
+    assert result["documents_analysed"] == 0
+    assert result["company_profiles_count"] == 0
+    assert db.query(CompanyProfile).filter_by(deal_id=test_deal.id).one().id == previous.id
+
+
+def test_scope_is_in_every_batch_and_counterparties_are_hard_filtered(db, test_deal):
+    _make_doc(db, test_deal, filename="visura.pdf", raw_text="Corporate facts.\n" * 1700)
+    prompts = []
+
+    class MultipleCompanies(FakeLLMProvider):
+        def complete(self, prompt, max_tokens=2048):
+            prompts.append(prompt)
+            assert max_tokens == 6144
+            return json.dumps([
+                {"company_name": "TARGETCO SPA", "confidence": 0.9, "shareholders": "Holding Srl — 100%"},
+                {"company_name": "Customer Srl", "confidence": 0.99},
+                {"company_name": "Holding Srl", "confidence": 0.99},
+                {"company_name": "TargetCo Servizi Spa", "confidence": 0.99},
+                {"company_name": "TargetCo Srl", "confidence": 0.99},
+            ])
+
+    result = CorporateIntroAgent(provider=MultipleCompanies()).run(test_deal.id, db)
+    assert len(prompts) >= 3
+    assert all('["TargetCo S.p.A."]' in prompt for prompt in prompts)
+    assert result["company_profiles_count"] == 1
+    saved = db.query(CompanyProfile).filter_by(deal_id=test_deal.id).one()
+    assert saved.company_name == "TARGETCO SPA"
+    assert saved.shareholders == "Holding Srl — 100%"
+
+
+def test_persistence_rechecks_scope_even_if_batch_layer_returns_foreign_company(db, test_deal, monkeypatch):
+    _make_doc(db, test_deal, filename="visura.pdf")
+    agent = CorporateIntroAgent()
+    monkeypatch.setattr(agent, "_profile_payloads", lambda *args: [
+        {"company_name": "Supplier Srl", "confidence": 0.99},
+        {"company_name": "TargetCo S.P.A.", "confidence": 0.9},
+    ])
+    assert agent.run(test_deal.id, db)["company_profiles_count"] == 1
+    assert db.query(CompanyProfile).filter_by(deal_id=test_deal.id).one().company_name == "TargetCo S.P.A."
+
+
+def test_distinct_target_companies_and_per_document_evidence_are_retained(db, test_deal):
+    from packages.agents.company_identity import consolidate_company_profiles
+
+    test_deal.target_company_names = ["TargetCo S.p.A.", "Second Srl"]
+    db.commit()
+    docs = [_make_doc(db, test_deal, filename="visura.pdf"), _make_doc(db, test_deal, filename="statuto.pdf")]
+
+    class TwoTargets(FakeLLMProvider):
+        def complete(self, prompt, max_tokens=2048):
+            return json.dumps([{"company_name": "TargetCo SPA", "confidence": 0.9},
+                               {"company_name": "Second S.R.L.", "confidence": 0.9}])
+
+    agent = CorporateIntroAgent(provider=TwoTargets())
+    assert agent.run(test_deal.id, db)["company_profiles_count"] == 4
+    rows = db.query(CompanyProfile).filter_by(deal_id=test_deal.id).all()
+    assert len(rows) == 4
+    views = consolidate_company_profiles(rows, test_deal.target_company_names)
+    assert len(views) == 2
+    assert all(view.source_document_ids == sorted(doc.id for doc in docs) for view in views)
+    assert agent.run(test_deal.id, db)["company_profiles_count"] == 4
+    assert db.query(CompanyProfile).filter_by(deal_id=test_deal.id).count() == 4
+
+
+def test_failed_scoped_extraction_preserves_prior_profiles(db, test_deal):
+    _make_doc(db, test_deal, filename="visura.pdf")
+    run_corporate_intro_extraction(test_deal.id, db)
+    previous_id = db.query(CompanyProfile).filter_by(deal_id=test_deal.id).one().id
+
+    class FailingProvider(FakeLLMProvider):
+        def complete(self, *args, **kwargs):
+            raise RuntimeError("Synthetic provider failure")
+
+    with pytest.raises(RuntimeError, match="Synthetic provider failure"):
+        CorporateIntroAgent(provider=FailingProvider()).run(test_deal.id, db)
+    assert db.query(CompanyProfile).filter_by(deal_id=test_deal.id).one().id == previous_id
+
+
+def test_conflicting_values_in_one_long_document_remain_distinct_evidence(db, test_deal):
+    from packages.agents.company_identity import consolidate_company_profiles
+
+    doc = _make_doc(db, test_deal, filename="statuto.pdf", raw_text=(
+        "FIRST_CAPITAL\n" + "Corporate facts.\n" * 1800 + "LAST_CAPITAL"))
+
+    class ConflictingParts(FakeLLMProvider):
+        def complete(self, prompt, max_tokens=2048):
+            if "FIRST_CAPITAL" in prompt:
+                return json.dumps([{"company_name": "TargetCo S.p.A.", "confidence": 0.9,
+                                    "corporate_capital": "EUR 10,000", "registered_office": "Milano"}])
+            if "LAST_CAPITAL" in prompt:
+                return json.dumps([{"company_name": "TargetCo S.p.A.", "confidence": 0.9,
+                                    "corporate_capital": "EUR 20,000", "registered_office": "Roma"}])
+            return "[]"
+
+    CorporateIntroAgent(provider=ConflictingParts()).run(test_deal.id, db)
+    rows = db.query(CompanyProfile).filter_by(deal_id=test_deal.id).all()
+    assert len(rows) == 2
+    view = consolidate_company_profiles(rows, test_deal.target_company_names)[0]
+    assert set(view.conflicting_fields) == {"corporate_capital", "registered_office"}
+    assert {item["value"] for item in view.field_sources["corporate_capital"]} == {"EUR 10,000", "EUR 20,000"}
+    assert all(item["source_document_ids"] == [doc.id] for item in view.field_sources["corporate_capital"])

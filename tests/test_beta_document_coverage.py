@@ -174,7 +174,7 @@ def test_specialists_analyze_tail_past_old_prefix_limits(kind):
     elif kind == "ccnl":
         items = ContractAgent(provider=provider)._ccnl_compliance_payloads(1, "ccnl.txt", text)
     else:
-        items = CorporateIntroAgent(provider=provider)._profile_payloads("visura.txt", text, 1)
+        items = CorporateIntroAgent(provider=provider)._profile_payloads("visura.txt", text, 1, ["TailCo"])
     assert len(prompts) >= 3
     assert len(items) == 1
     assert items[0]["source_spans"][-1]["end"] == len(text)
@@ -250,6 +250,7 @@ def test_later_aggregation_batch_failure_preserves_prior_flags(db, test_deal, mo
 
 
 def test_long_profile_merges_fields_from_first_and_last_parts():
+    from packages.agents.company_identity import consolidate_company_profiles
     class Profiles(FakeLLMProvider):
         def complete(self, prompt, max_tokens=2048):
             item = {"company_name": "Company A", "confidence": 0.9}
@@ -260,10 +261,11 @@ def test_long_profile_merges_fields_from_first_and_last_parts():
             return json.dumps([item])
 
     text = "FIRST_MARKER\n" + "Other content.\n" * 2200 + "LAST_MARKER"
-    items = CorporateIntroAgent(provider=Profiles())._profile_payloads("visura.txt", text, 1)
-    assert len(items) == 1
-    assert items[0]["registered_office"] == "Milan"
-    assert items[0]["corporate_capital"] == "EUR 250000"
+    items = CorporateIntroAgent(provider=Profiles())._profile_payloads("visura.txt", text, 1, ["Company A"])
+    views = consolidate_company_profiles([SimpleNamespace(**item) for item in items], ["Company A"])
+    assert len(views) == 1
+    assert views[0].registered_office == "Milan"
+    assert views[0].corporate_capital == "EUR 250000"
 
 
 def test_relevance_processes_all_clauses_in_bounded_requests():

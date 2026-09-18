@@ -145,16 +145,18 @@ Documents reviewed: {documents_count}
 
 CORPORATE_INTRO_EXTRACTION_PROMPT = """You are an M&A paralegal extracting the CORPORATE INTRODUCTORY INFORMATION of a target company from Italian corporate documents (visura camerale, atto costitutivo, statuto, patto parasociale).
 
-EXTRACT the fields listed below for EACH distinct company described in the document.
+EXTRACT the fields listed below ONLY for the companies in this confirmed transaction scope:
+{target_company_names}
 
 CRITICAL RULES:
 1. Extract ONLY facts EXPLICITLY present in the document text. Do NOT infer, guess, or supplement from general knowledge.
 2. If a field is not present in the document, set it to null. Do NOT fabricate.
-3. The document may describe one company (typical visura) or several (group statute, holding structure). Return one JSON object per distinct company found.
+3. Return one JSON object per confirmed target actually described in this text. Customers, suppliers, shareholders, lenders, advisers, auditors and other group companies are NOT additional targets unless explicitly listed in the confirmed scope. Their names may appear in the relevant fields of the target, such as shareholders or auditing_company, but never as separate profiles outside that scope.
 4. Quote names, addresses, capital figures and dates verbatim where possible — preserve Italian formatting (e.g. "Euro 1.000.000,00").
 5. For shareholders: produce a concise human-readable list, one per line: "Name — N shares (class) — % of capital". When a percentage is missing, omit it.
 6. For the managing body: list each director with role: "Mr X (Chairman), Mr Y (Managing Director), ...". Include the date of appointment and the term if stated.
 7. For the auditors: list each statutory auditor with role (President / Statutory / Alternate). Include the date of appointment and the term if stated.
+8. Keep the company's actual legal name and suffix from the document. Case, spacing and punctuation in legal-form abbreviations may differ from the confirmed name; do not rename an unrelated company to make it match, drop the legal suffix, or transfer a counterparty's facts to a target. If no confirmed target is described, return [].
 
 FIELDS to populate (set to null if absent):
 - company_name: legal name with corporate suffix (S.p.A. / S.r.l. / etc.) [REQUIRED, MUST NOT BE NULL]
@@ -182,7 +184,7 @@ Document text:
 Return ONLY a JSON array (no markdown fences, no explanation):
 [{{"company_name": "...", "legal_form": null, "incorporation_date": null, "registered_office": null, "corporate_capital": null, "shareholders": null, "pledge": null, "managing_body": null, "auditors": null, "auditing_company": null, "business": null, "fiscal_year": null, "duration": null, "confidence": 0.0, "source_document_id": null}}, ...]
 
-If the document is not a corporate document and contains no extractable company data, return: []
+If the document contains no extractable corporate data for a confirmed target, return: []
 """
 
 CORPORATE_GOVERNANCE_PROMPT = """You are a corporate governance expert specialising in legal due diligence.

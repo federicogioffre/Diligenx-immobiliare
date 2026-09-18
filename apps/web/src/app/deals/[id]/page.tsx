@@ -329,6 +329,74 @@ function ReportLanguageSelect({
   )
 }
 
+function CompanyScopeEditor({ deal, disabled, onChanged }: {
+  deal: DealRead
+  disabled: boolean
+  onChanged: (deal: DealRead) => Promise<void>
+}) {
+  const savedValue = (deal.target_company_names ?? []).join('\n')
+  const [value, setValue] = useState(savedValue)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [saved, setSaved] = useState(false)
+  useEffect(() => { setValue(savedValue) }, [savedValue])
+
+  async function save() {
+    const names = Array.from(new Set(value.split(/\r?\n/).map((name) => name.trim()).filter(Boolean)))
+    setError('')
+    setSaved(false)
+    if (names.length > 20 || names.some((name) => name.length > 500)) {
+      setError('Inserisci al massimo 20 ragioni sociali, ciascuna di massimo 500 caratteri.')
+      return
+    }
+    setSaving(true)
+    try {
+      const updated = await api.deals.update(deal.id, { target_company_names: names })
+      await onChanged(updated)
+      setSaved(true)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Errore nel salvataggio del perimetro')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+      <label htmlFor="target-company-names" className="block text-sm font-semibold text-slate-800 mb-1">
+        Società nel perimetro
+      </label>
+      <p id="company-scope-help" className="text-xs text-slate-500 mb-3">
+        Una ragione sociale completa per riga, inclusa la forma giuridica. La sezione societaria del report includerà solo queste società.
+        Il campo è facoltativo; se vuoto, la sezione chiederà di definire il perimetro.
+      </p>
+      <textarea
+        id="target-company-names"
+        aria-describedby="company-scope-help"
+        value={value}
+        onChange={(event) => { setValue(event.target.value); setSaved(false); setError('') }}
+        disabled={disabled || saving}
+        rows={3}
+        placeholder="Esempio S.r.l."
+        className="block w-full rounded-xl border border-slate-200 p-3 text-sm text-slate-800 focus:outline-none focus:border-blue-400 disabled:bg-slate-50 disabled:text-slate-500"
+      />
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={save}
+          disabled={disabled || saving || value === savedValue}
+          className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {saving ? 'Salvataggio…' : 'Salva perimetro'}
+        </button>
+        {disabled && <p className="text-xs text-slate-500">Modificabile al termine dell’analisi.</p>}
+        {saved && <p role="status" className="text-xs text-emerald-700">Perimetro salvato. Sezione societaria aggiornata nei report disponibili.</p>}
+      </div>
+      {error && <div className="mt-3"><ErrorAlert error={error} /></div>}
+    </section>
+  )
+}
+
 function CorporateIntroCard({ profiles }: { profiles: CompanyProfileRead[] }) {
   // Rows we surface in the deal-page summary table — short, scannable.
   // The full per-field detail (Pledge, Business, Duration, ...) is in
@@ -376,6 +444,12 @@ function CorporateIntroCard({ profiles }: { profiles: CompanyProfileRead[] }) {
                 )
               })}
             </dl>
+            {!!p.source_filenames?.length && (
+              <p className="mt-3 text-xs text-slate-500 break-words">Fonti: {p.source_filenames.join('; ')}</p>
+            )}
+            {!!p.conflicting_fields?.length && (
+              <p className="mt-2 text-xs text-amber-800">Le fonti riportano valori diversi. Le alternative sono conservate e richiedono verifica nel report.</p>
+            )}
           </div>
         ))}
       </div>
@@ -580,6 +654,7 @@ export default function DealPage() {
   const [openQuestions, setOpenQuestions]       = useState<OpenQuestionRead[]>([])
   const [missingDocs, setMissingDocs]           = useState<MissingDocumentRead[]>([])
   const [companyProfiles, setCompanyProfiles]   = useState<CompanyProfileRead[]>([])
+  const [companyProfilesLoaded, setCompanyProfilesLoaded] = useState(false)
   const [streamStages, setStreamStages] = useState<AnalysisStageEvent[]>([])
 
   const [analyzing, setAnalyzing]   = useState(false)
@@ -624,7 +699,10 @@ export default function DealPage() {
         try { setRedFlags(await api.deals.redFlags(dealId)) } catch { /* ok */ }
         try { setOpenQuestions(await api.deals.openQuestions(dealId)) } catch { /* ok */ }
         try { setMissingDocs(await api.deals.missingDocuments(dealId)) } catch { /* ok */ }
-        try { setCompanyProfiles(await api.deals.companyProfiles(dealId)) } catch { /* ok */ }
+        try {
+          setCompanyProfiles(await api.deals.companyProfiles(dealId))
+          setCompanyProfilesLoaded(true)
+        } catch { /* ok */ }
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Errore nel caricamento')
@@ -660,12 +738,13 @@ export default function DealPage() {
         api.deals.getRiskScore(dealId).catch(() => null),
         api.deals.openQuestions(dealId).catch(() => [] as OpenQuestionRead[]),
         api.deals.missingDocuments(dealId).catch(() => [] as MissingDocumentRead[]),
-        api.deals.companyProfiles(dealId).catch(() => [] as CompanyProfileRead[]),
+        api.deals.companyProfiles(dealId).catch(() => null),
       ])
       setDeal(d); setAgentRuns(runs); setRedFlags(flags)
       setBatchProgress(null)
       try { setCanResume((await api.deals.analysisCheckpoint(dealId)).available) } catch { setCanResume(false) }
-      setOpenQuestions(questions); setMissingDocs(missing); setCompanyProfiles(profiles)
+      setOpenQuestions(questions); setMissingDocs(missing); setCompanyProfiles(profiles ?? [])
+      setCompanyProfilesLoaded(profiles !== null)
       if (score) setRiskScore(score)
       setSummary({ clauseCount: clauses.length, redFlagCount: flags.length, documentCount: docs.filter((d) => d.status === 'processed').length })
     } catch { /* best-effort */ }
@@ -800,6 +879,7 @@ export default function DealPage() {
   const processedCount = docs.filter((d) => d.status === 'processed').length
   const blockedDocs = docs.filter((d) => !d.analysis_ready)
   const readyCount = docs.length - blockedDocs.length
+  const unmatchedCompanies = (deal.target_company_names ?? []).filter((name) => !companyProfiles.some((profile) => profile.company_name === name))
   const completedAt = currentAnalysisRuns(agentRuns).map((run) => run.completed_at)
     .filter((value): value is string => !!value).sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1)
 
@@ -825,6 +905,25 @@ export default function DealPage() {
       {deal.description && <p className="text-sm text-slate-500 mb-5">{deal.description}</p>}
 
       <DealTabs dealId={dealId} />
+
+      <CompanyScopeEditor
+        deal={deal}
+        disabled={analyzing || startingAnalysis || deal.status === 'analyzing'}
+        onChanged={async (updated) => {
+          setDeal(updated)
+          // Do not retain cards from the previous perimeter while refreshing.
+          setCompanyProfiles([])
+          setCompanyProfilesLoaded(false)
+          setCanResume(false)
+          const [profiles, checkpoint] = await Promise.all([
+            api.deals.companyProfiles(dealId).catch(() => null),
+            api.deals.analysisCheckpoint(dealId).catch(() => ({ available: false })),
+          ])
+          setCompanyProfiles(profiles ?? [])
+          setCompanyProfilesLoaded(profiles !== null)
+          setCanResume(checkpoint.available)
+        }}
+      />
 
       {/* Documents section */}
       <section className="mb-8">
@@ -988,8 +1087,13 @@ export default function DealPage() {
 
         {summary && redFlags.length > 0 && <RedFlagSeverityWidget flags={redFlags} />}
 
-        {summary && companyProfiles.length > 0 && (
+        {companyProfiles.length > 0 && (
           <CorporateIntroCard profiles={companyProfiles} />
+        )}
+        {!analyzing && companyProfilesLoaded && unmatchedCompanies.length > 0 && (
+          <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            Nessun profilo estratto corrisponde a: {unmatchedCompanies.join('; ')}. Verifica le ragioni sociali e i documenti societari disponibili.
+          </p>
         )}
 
         {summary && (openQuestions.length > 0 || missingDocs.length > 0) && (

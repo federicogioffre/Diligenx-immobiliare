@@ -19,6 +19,7 @@ Idempotency
 Re-running for the same deal deletes this agent's previous ``AgentRun``
 and ``CompanyProfile`` rows before writing fresh results.
 """
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -29,6 +30,7 @@ from packages.agents.deal_analysis_agent import (
     get_llm_provider,
     _parse_llm_items,
 )
+from packages.agents.company_identity import normalize_company_name
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +127,14 @@ class CorporateIntroAgent:
         started = datetime.now(timezone.utc)
 
         try:
-            documents = self._resolve_documents(db, deal_id, document_ids)
+            # Scope is explicit user input, never inferred from a deal title or
+            # from counterparties mentioned in its documents. Capture it before
+            # releasing the session so worker threads only see plain values.
+            target_company_names = tuple(
+                name for name in (getattr(deal, "target_company_names", None) or [])
+                if normalize_company_name(name)
+            )
+            documents = self._resolve_documents(db, deal_id, document_ids) if target_company_names else []
 
             # LLM+parse per document is pure → fan out on a bounded pool;
             # ORM persistence happens below on this thread, in input order.
@@ -141,19 +150,20 @@ class CorporateIntroAgent:
 
             payload_lists = run_llm_tasks(
                 work,
-                lambda item: self._profile_payloads(item[0], item[1], item[2]),
+                lambda item: self._profile_payloads(item[0], item[1], item[2], target_company_names),
             )
 
             # Idempotency: wipe the previous run's profiles in the same
             # transaction as the new ones.
-            db.query(CompanyProfile).filter(
-                CompanyProfile.deal_id == deal_id,
-            ).delete(synchronize_session="fetch")
-            db.flush()
+            if target_company_names:
+                db.query(CompanyProfile).filter(
+                    CompanyProfile.deal_id == deal_id,
+                ).delete(synchronize_session="fetch")
+                db.flush()
 
             profiles: list = []
             for doc, payloads in zip(documents, payload_lists):
-                profiles.extend(self._persist_profiles(doc, payloads, deal_id, db))
+                profiles.extend(self._persist_profiles(doc, payloads, deal_id, db, target_company_names))
 
             db.flush()
 
@@ -200,7 +210,7 @@ class CorporateIntroAgent:
         )
         if document_ids is not None:
             q = q.filter(Document.id.in_(document_ids))
-        docs = q.all()
+        docs = q.order_by(Document.id).all()
 
         if document_ids is None:
             docs = [d for d in docs if self._looks_corporate(d)]
@@ -216,39 +226,24 @@ class CorporateIntroAgent:
         )
         return any(kw in haystack for kw in _CORPORATE_INTRO_KEYWORDS)
 
-    def _profile_payloads(self, filename: str, raw_text: str, document_id: int) -> list[dict]:
+    def _profile_payloads(self, filename: str, raw_text: str, document_id: int,
+                          target_company_names: list[str] | tuple[str, ...] | None = None) -> list[dict]:
         from packages.agents.document_coverage import collect_document_payloads
 
+        if not target_company_names:
+            return []
         parts = collect_document_payloads(
             raw_text,
-            lambda batch: self._profile_payloads_batch(filename, batch, document_id),
+            lambda batch: self._profile_payloads_batch(filename, batch, document_id, target_company_names),
             max_chars=_TEXT_MAX_CHARS,
         )
-        # Profile fields may appear in different parts of the same document.
-        # Preserve differing values rather than silently letting the last part win.
-        merged: dict[str, dict] = {}
-        for item in parts:
-            key = " ".join(item["company_name"].casefold().split())
-            if key not in merged:
-                merged[key] = dict(item)
-                continue
-            previous = merged[key]
-            confidence = item.get("confidence")
-            if confidence is not None:
-                existing = previous.get("confidence")
-                previous["confidence"] = min(existing, confidence) if existing is not None else confidence
-            for field, value in item.items():
-                if field in {"company_name", "confidence", "source_spans"} or value in (None, ""):
-                    continue
-                old = previous.get(field)
-                if old in (None, ""):
-                    previous[field] = value
-                elif str(value) not in str(old).split("\n"):
-                    previous[field] = f"{old}\n{value}"
-            previous["source_spans"].extend(item["source_spans"])
-        return list(merged.values())
+        # Keep differing chunk payloads as separate evidence rows. Concatenating
+        # them here would hide conflicts within one document from the shared
+        # consolidation layer. Identical overlap payloads are already deduped.
+        return parts
 
-    def _profile_payloads_batch(self, filename: str, raw_text: str, document_id: int) -> list[dict]:
+    def _profile_payloads_batch(self, filename: str, raw_text: str, document_id: int,
+                                target_company_names: list[str] | tuple[str, ...] | None = None) -> list[dict]:
         """Call the LLM and return validated profile payload dicts.
 
         PURE with respect to the database — safe to run on a worker thread
@@ -258,11 +253,14 @@ class CorporateIntroAgent:
         from packages.prompts.deal_prompts import CORPORATE_INTRO_EXTRACTION_PROMPT
 
         text = raw_text
-        if not text.strip():
+        allowed = {normalize_company_name(name) for name in (target_company_names or ())}
+        allowed.discard("")
+        if not text.strip() or not allowed:
             return []
 
         prompt = CORPORATE_INTRO_EXTRACTION_PROMPT.format(
             filename=filename, text=text,
+            target_company_names=json.dumps(target_company_names, ensure_ascii=False),
         )
         raw = self._llm.complete(prompt, max_tokens=6144)
         items = _parse_llm_items(
@@ -271,9 +269,10 @@ class CorporateIntroAgent:
 
         payloads: list[dict] = []
         for item in items:
-            name = (item.get("company_name") or "").strip()
-            if not name:
-                continue  # mandatory field — drop entry
+            raw_name = item.get("company_name")
+            name = raw_name.strip() if isinstance(raw_name, str) else ""
+            if normalize_company_name(name) not in allowed:
+                continue  # Never trust the model to enforce the deal scope.
             conf = item.get("confidence")
             if conf is not None and conf < _MIN_PROFILE_CONFIDENCE:
                 logger.debug(
@@ -284,12 +283,17 @@ class CorporateIntroAgent:
             payloads.append({**item, "company_name": name, "confidence": conf})
         return payloads
 
-    def _persist_profiles(self, doc, payloads: list[dict], deal_id: int, db: Session) -> list:
+    def _persist_profiles(self, doc, payloads: list[dict], deal_id: int, db: Session,
+                          target_company_names: list[str] | tuple[str, ...] | None = None) -> list:
         """Create one ``CompanyProfile`` per payload. Main-thread only."""
         from app.models.company_profile import CompanyProfile
 
+        allowed = {normalize_company_name(name) for name in (target_company_names or ())}
+        allowed.discard("")
         profiles: list = []
         for item in payloads:
+            if normalize_company_name(item.get("company_name")) not in allowed:
+                continue
             cp = CompanyProfile(
                 deal_id=deal_id,
                 company_name=item["company_name"][:500],
