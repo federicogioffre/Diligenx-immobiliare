@@ -257,6 +257,16 @@ export interface AnalysisStageEvent {
 export interface AnalysisStreamEvent {
   deal_status: 'draft' | 'analyzing' | 'reviewed' | 'closed'
   stages: AnalysisStageEvent[]
+  progress?: AnalysisBatchProgress | null
+}
+
+export interface AnalysisBatchProgress {
+  agent_name: string
+  run_id: number
+  completed_batches: number
+  total_batches: number
+  document_id: number
+  updated_at: string
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -433,6 +443,15 @@ export const api = {
     },
     analyze(id: number): Promise<DealAnalysisResponse> {
       return request(`/deals/${id}/analyze`, { method: 'POST' })
+    },
+    resumeAnalysis(id: number): Promise<DealAnalysisResponse> {
+      return request(`/deals/${id}/resume-analysis`, { method: 'POST' })
+    },
+    analysisCheckpoint(id: number): Promise<{ available: boolean; completed_stages?: number; next_stage?: string; reason?: string }> {
+      return request(`/deals/${id}/analysis-checkpoint`)
+    },
+    analysisProgress(id: number): Promise<AnalysisBatchProgress | null> {
+      return request(`/deals/${id}/analysis-progress`)
     },
     agentRuns(id: number): Promise<AgentRunRead[]> {
       return request(`/deals/${id}/agent-runs`)
