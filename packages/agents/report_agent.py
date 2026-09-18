@@ -722,7 +722,7 @@ def generate_due_diligence_report(
         if len(summary_prompt) > 24000:
             executive_summary = _large_report_summary(len(documents), red_flags, len(observations), lang)
         else:
-            executive_summary = llm.complete(summary_prompt, max_tokens=1024).strip()
+            executive_summary = llm.complete(summary_prompt, max_tokens=1536).strip()
         if not executive_summary:
             from packages.agents.deal_analysis_agent import LLMResponseError
 

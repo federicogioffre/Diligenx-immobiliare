@@ -16,7 +16,7 @@ class DealAnalysisResult:
 class DealAnalysisAgent(BaseAgent):
     """Analyzes deals using Claude AI."""
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6"):
+    def __init__(self, api_key: str, model: str = "claude-sonnet-5"):
         super().__init__(model)
         self.client = anthropic.Anthropic(api_key=api_key)
 
@@ -27,13 +27,28 @@ class DealAnalysisAgent(BaseAgent):
             value=f"${value:,.2f}" if value else "Not specified",
         )
 
+        thinking_options = (
+            {"thinking": {"type": "disabled"}}
+            if self.model == "claude-sonnet-5" or self.model.startswith("claude-sonnet-5-")
+            else {}
+        )
         message = self.client.messages.create(
             model=self.model,
-            max_tokens=1024,
+            max_tokens=1536,
+            **thinking_options,
             messages=[{"role": "user", "content": prompt}],
         )
 
-        raw = message.content[0].text
+        from .deal_analysis_agent import LLMResponseError
+
+        if message.stop_reason in {"max_tokens", "refusal"}:
+            raise LLMResponseError(f"AI response stopped with {message.stop_reason}")
+        raw = "".join(
+            block.text for block in message.content
+            if isinstance(getattr(block, "text", None), str)
+        )
+        if not raw.strip():
+            raise LLMResponseError("AI response contained no text")
 
         # Simple parsing — extend with structured output as needed
         return DealAnalysisResult(

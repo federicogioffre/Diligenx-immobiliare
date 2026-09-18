@@ -5,7 +5,7 @@ from typing import Any
 class BaseAgent(ABC):
     """Base class for all Diligenx agents."""
 
-    def __init__(self, model: str = "claude-sonnet-4-6"):
+    def __init__(self, model: str = "claude-sonnet-5"):
         self.model = model
 
     @abstractmethod

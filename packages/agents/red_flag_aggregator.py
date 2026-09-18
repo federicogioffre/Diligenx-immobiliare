@@ -571,7 +571,7 @@ class RedFlagAggregationAgent:
                 legal_rules_context=build_legal_rules_context(),
                 language_instruction=lang_instruction,
             )
-            raw = self._llm.complete(prompt, max_tokens=8192)
+            raw = self._llm.complete(prompt, max_tokens=12288)
             results.extend(_parse_llm_items(
                 raw, context=f"Red flags for deal {deal_id}, batch {index}"
             ))
@@ -798,4 +798,3 @@ def run_red_flag_aggregation(
 ) -> dict:
     """Create a :class:`RedFlagAggregationAgent` and run aggregation."""
     return RedFlagAggregationAgent(provider=provider).run(deal_id, db)
-
