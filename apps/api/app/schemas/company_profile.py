@@ -1,6 +1,13 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class CompanyFieldSource(BaseModel):
+    value: str
+    source_document_ids: list[int] = Field(default_factory=list)
+    source_filenames: list[str] = Field(default_factory=list)
+    profile_ids: list[int] = Field(default_factory=list)
 
 
 class CompanyProfileRead(BaseModel):
@@ -23,6 +30,10 @@ class CompanyProfileRead(BaseModel):
 
     confidence: float | None
     source_document_id: int | None
+    source_document_ids: list[int] = Field(default_factory=list)
+    source_filenames: list[str] = Field(default_factory=list)
+    conflicting_fields: list[str] = Field(default_factory=list)
+    field_sources: dict[str, list[CompanyFieldSource]] = Field(default_factory=dict)
     created_at: datetime
 
     model_config = {"from_attributes": True}

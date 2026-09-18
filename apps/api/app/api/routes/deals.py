@@ -1,12 +1,13 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from app.core.limiter import limiter
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.db.session import get_db
 from app.models.agent_run import AgentRun
@@ -114,6 +115,38 @@ def update_deal(
         deal.description = payload.description
     if payload.value is not None:
         deal.value = payload.value
+    if "target_company_names" in payload.model_fields_set:
+        deal.target_company_names = payload.target_company_names
+        # Rebuild only the introductory section from existing source evidence;
+        # the financial analysis, findings and executive summary stay intact.
+        from app.models.company_profile import CompanyProfile
+        from app.models.report import Report, ReportType
+        from packages.agents.report_agent import refresh_corporate_intro_section
+        profiles = (
+            db.query(CompanyProfile)
+            .options(selectinload(CompanyProfile.source_document))
+            .filter(CompanyProfile.deal_id == deal_id)
+            .order_by(CompanyProfile.id)
+            .all()
+        )
+        reports = db.query(Report).filter(
+            Report.deal_id == deal_id, Report.report_type == ReportType.due_diligence,
+        ).all()
+        for report in reports:
+            if not report.content:
+                continue
+            language = "it" if re.search(
+                r"^## (?:2\.\s+)?Informazioni Societarie[ \t]*\r?$", report.content, re.MULTILINE,
+            ) else "en"
+            try:
+                report.content = refresh_corporate_intro_section(
+                    report.content, profiles, deal.target_company_names, language,
+                )
+            except ValueError:
+                db.rollback()
+                raise HTTPException(
+                    409, "Il report esistente ha una struttura non riconosciuta: rigeneralo prima di modificare il perimetro.",
+                ) from None
     if payload.report_language is not None:
         lang = payload.report_language.lower().strip()
         if lang not in ("it", "en", "auto"):
@@ -713,12 +746,15 @@ def list_company_profiles(
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
 
-    return (
+    profiles = (
         db.query(CompanyProfile)
+        .options(selectinload(CompanyProfile.source_document))
         .filter(CompanyProfile.deal_id == deal_id)
         .order_by(CompanyProfile.id.asc())
         .all()
     )
+    from packages.agents.company_identity import consolidate_company_profiles
+    return consolidate_company_profiles(profiles, deal.target_company_names)
 
 
 @router.get("/{deal_id}/report", response_model=ReportGenerateResponse)

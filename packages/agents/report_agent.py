@@ -23,8 +23,9 @@ replaces the previous due-diligence report (idempotent).
 import logging
 from datetime import date
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
+from packages.agents.company_identity import consolidate_company_profiles, normalize_company_name
 from packages.agents.deal_analysis_agent import LLMProvider, get_llm_provider
 
 logger = logging.getLogger(__name__)
@@ -440,16 +441,47 @@ _INTRO_FIELDS: dict[str, list[tuple[str, str]]] = {
 }
 
 
-def _render_corporate_intro(profiles: list, lang: str) -> str:
+def _render_corporate_intro(
+    profiles: list, lang: str, target_company_names: list[str] | None = None,
+) -> str:
+    if not target_company_names:
+        message = (
+            "Specify the legal names in 'Companies in scope' on the deal page "
+            "to include their corporate information."
+            if lang == "en" else
+            "Indicare le ragioni sociali in 'Società nel perimetro' nella pagina "
+            "del deal per includere le relative informazioni societarie."
+        )
+        return f"{_L10N[lang]['corp_info_heading']}\n\n_{message}_\n"
+
+    profiles = consolidate_company_profiles(profiles, target_company_names)
+    matched_names = {normalize_company_name(profile.company_name) for profile in profiles}
+    missing_names = list(dict.fromkeys(name for name in target_company_names
+                                      if normalize_company_name(name) not in matched_names))
+    missing_notice = ""
+    if missing_names:
+        label = "Companies without matching information" if lang == "en" else "Società senza informazioni corrispondenti"
+        missing_notice = f"**{label}:** {'; '.join(_md_cell(name) for name in missing_names)}.\n"
     if not profiles:
+        message = (
+            "No corporate information matching the companies in scope was "
+            "found in the available extractions. Verify the legal names and "
+            "the corporate documents."
+            if lang == "en" else
+            "Nessuna informazione societaria corrispondente alle società nel "
+            "perimetro è presente nelle estrazioni disponibili. Verificare le "
+            "ragioni sociali e i documenti societari."
+        )
         return (
             f"{_L10N[lang]['corp_info_heading']}\n\n"
-            f"{_L10N[lang]['corp_info_placeholder']}\n"
+            f"_{message}_\n\n{missing_notice}"
         )
 
     parts: list[str] = [f"{_L10N[lang]['corp_info_heading']}\n"]
+    if missing_notice:
+        parts.append(missing_notice)
     for p in profiles:
-        parts.append(f"### {p.company_name}\n")
+        parts.append(f"### {_md_cell(p.company_name)}\n")
         parts.append(f"| {_L10N[lang]['field']} | {_L10N[lang]['value']} |")
         parts.append("|-------|-------|")
         for attr, label in _INTRO_FIELDS[lang]:
@@ -457,7 +489,76 @@ def _render_corporate_intro(profiles: list, lang: str) -> str:
             if value:
                 parts.append(f"| {label} | {_md_cell(value)} |")
         parts.append("")
+        sources = getattr(p, "source_filenames", [])
+        if not sources:
+            document_label = "Document" if lang == "en" else "Documento"
+            sources = [f"{document_label} #{doc_id}" for doc_id in getattr(p, "source_document_ids", [])]
+        if sources:
+            label = "Sources" if lang == "en" else "Fonti"
+            parts.append(f"**{label}:** {'; '.join(_md_cell(source) for source in sources)}.\n")
+        conflicts = set(getattr(p, "conflicting_fields", []))
+        if conflicts:
+            fields = ", ".join(label for attr, label in _INTRO_FIELDS[lang] if attr in conflicts)
+            message = (
+                f"Different values appear in the sources for: {fields}. "
+                "The alternatives are retained above and require verification."
+                if lang == "en" else
+                f"Le fonti riportano valori diversi per: {fields}. "
+                "Le alternative sono conservate sopra e richiedono verifica."
+            )
+            parts.append(f"_{message}_\n")
+            for attr, label in _INTRO_FIELDS[lang]:
+                if attr not in conflicts:
+                    continue
+                for evidence in getattr(p, "field_sources", {}).get(attr, []):
+                    evidence_sources = evidence.get("source_filenames", [])
+                    if not evidence_sources:
+                        document_label = "Document" if lang == "en" else "Documento"
+                        evidence_sources = [f"{document_label} #{doc_id}" for doc_id in evidence.get("source_document_ids", [])]
+                    source_text = "; ".join(_md_cell(source) for source in evidence_sources)
+                    if not source_text:
+                        source_text = "source unavailable" if lang == "en" else "fonte non disponibile"
+                    parts.append(f"- **{label}:** {_md_cell(evidence.get('value'))} ({source_text}).")
+            parts.append("")
     return "\n".join(parts)
+
+
+def refresh_corporate_intro_section(
+    content: str, profiles: list, target_names: list[str] | None, lang: str,
+) -> str:
+    """Replace only a recognized section 2, preserving the rest verbatim.
+
+    Legacy unnumbered report templates are supported. Unknown or ambiguous
+    layouts raise ValueError so callers can roll back instead of overwriting
+    another section or silently retaining an incorrect corporate profile.
+    """
+    headings = list(_re.finditer(r"^## [^\r\n]+", content, _re.MULTILINE))
+    corporate_heading = _re.compile(
+        r"## (?:(?P<number>\d+)\.\s+)?"
+        r"(?:Corporate Introductory Information|Informazioni Societarie)[ \t]*$"
+    )
+    matches = [(index, heading, corporate_heading.fullmatch(heading.group()))
+               for index, heading in enumerate(headings)
+               if corporate_heading.fullmatch(heading.group())]
+    if len(matches) != 1:
+        raise ValueError("Corporate introductory section is missing or ambiguous")
+    index, heading, match = matches[0]
+    if index != 1 or match.group("number") not in (None, "2") or index + 1 >= len(headings):
+        raise ValueError("Corporate introductory section is not a recognized section 2")
+
+    replacement = _render_corporate_intro(profiles, lang, target_names)
+    if match.group("number"):
+        lines = replacement.splitlines()
+        lines[0] = lines[0].replace("## ", "## 2. ", 1)
+        subsection = 0
+        for line_index, line in enumerate(lines):
+            if line.startswith("### "):
+                subsection += 1
+                lines[line_index] = f"### 2.{subsection} {line[4:]}"
+        replacement = "\n".join(lines)
+    newline = "\r\n" if "\r\n" in content else "\n"
+    replacement = replacement.rstrip("\r\n").replace("\n", newline) + newline * 2
+    return content[:heading.start()] + replacement + content[headings[index + 1].start():]
 
 
 def _render_information_requests(
@@ -668,6 +769,7 @@ def generate_due_diligence_report(
 
         company_profiles = (
             db.query(CompanyProfile)
+            .options(joinedload(CompanyProfile.source_document))
             .filter(CompanyProfile.deal_id == deal_id)
             .order_by(CompanyProfile.id.asc())
             .all()
@@ -776,7 +878,7 @@ def generate_due_diligence_report(
             f"_{_format_report_date(date.today(), lang)}_",
             "",
             _render_introduction(deal.title, areas_reviewed, lang),
-            _render_corporate_intro(company_profiles, lang),
+            _render_corporate_intro(company_profiles, lang, deal.target_company_names),
             "## Executive Summary",
             "",
             executive_summary,

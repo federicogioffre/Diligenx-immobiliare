@@ -112,6 +112,7 @@ def test_deal(db: Session, test_workspace: Workspace) -> Deal:
         title="Test Deal",
         description="A test deal",
         value=100_000.0,
+        target_company_names=["TargetCo S.p.A."],
     )
     db.add(deal)
     db.commit()

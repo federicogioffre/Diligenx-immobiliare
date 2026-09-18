@@ -50,6 +50,7 @@ export interface DealRead {
   value: number | null
   status: 'draft' | 'analyzing' | 'reviewed' | 'closed'
   report_language: 'it' | 'en' | null
+  target_company_names?: string[] | null
   created_at: string
   updated_at: string | null
 }
@@ -183,6 +184,10 @@ export interface CompanyProfileRead {
   duration: string | null
   confidence: number | null
   source_document_id: number | null
+  source_document_ids?: number[]
+  source_filenames?: string[]
+  conflicting_fields?: string[]
+  field_sources?: Record<string, { value: string; source_document_ids: number[]; source_filenames: string[]; profile_ids: number[] }[]>
   created_at: string
 }
 
@@ -431,7 +436,7 @@ export const api = {
     },
     create(
       workspaceId: number,
-      data: { title: string; description?: string; value?: number }
+      data: { title: string; description?: string; value?: number; target_company_names?: string[] | null }
     ): Promise<DealRead> {
       return request(`/deals?workspace_id=${workspaceId}`, {
         method: 'POST',
@@ -499,6 +504,7 @@ export const api = {
         description?: string
         value?: number | null
         report_language?: 'it' | 'en' | 'auto'
+        target_company_names?: string[] | null
       }
     ): Promise<DealRead> {
       return request(`/deals/${id}`, {

@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import String, Float, Text, ForeignKey, Enum
+from sqlalchemy import String, Float, Text, ForeignKey, Enum, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -28,6 +28,9 @@ class Deal(TimestampMixin, Base):
     # Output language for LLM prose and report boilerplate: "it" | "en".
     # None = auto-detect from the majority language of processed documents.
     report_language: Mapped[str | None] = mapped_column(String(10))
+    # Explicit legal entities in the introductory section; no inference from
+    # deal titles, document frequency, or customer/supplier references.
+    target_company_names: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
     workspace = relationship("Workspace", back_populates="deals")
     documents = relationship("Document", back_populates="deal", cascade="all, delete-orphan")
