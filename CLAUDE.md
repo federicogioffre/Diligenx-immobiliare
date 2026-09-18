@@ -6,7 +6,7 @@
 - **Auth:** JWT via HttpOnly session cookie (browser) or Bearer header (API clients) → `python-jose` + `bcrypt` (no passlib); SSE authenticated by short-lived deal-scoped tickets
 - **Migrations:** Alembic (`apps/api/alembic/`)
 - **Embeddings:** OpenAI `text-embedding-3-small` (1536 dims); `FakeEmbeddingProvider` for tests
-- **LLM:** Anthropic Claude (`claude-sonnet-4-6` by default); `FakeLLMProvider` for tests
+- **LLM:** Anthropic Claude (`claude-sonnet-5` by default); `FakeLLMProvider` for tests
 - **Storage:** S3-compatible (Cloudflare R2 in prod); local disk fallback when `S3_BUCKET` empty
 - **Rate limiting:** `slowapi` (in-memory); disabled in tests via autouse fixture
 - **Background jobs:** `BackgroundTasks` by default; **Arq + Redis** opt-in via `REDIS_URL` for durable jobs
@@ -219,6 +219,7 @@ python -m pytest ../../tests -q   # 1009 passed
 - MIME types allowed: `application/pdf`, `text/plain`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`
 - **Durable jobs**: when `REDIS_URL` is set, `/analyze` and `/upload` enqueue jobs to an Arq pool (managed via FastAPI lifespan); a separate worker process consumes them (`arq app.worker.WorkerSettings`). When unset, jobs run in-process via FastAPI `BackgroundTasks` — same behaviour as before. Enqueue failures fall back transparently.
 - **Tax rules are versioned, never prompted**: `packages/agents/tax_rules_registry.py` holds Italian tax rules keyed by `rule_id` with `valid_from`/`valid_to` in **fiscal years**, a citation and a short bilingual gloss, plus `assessment_period(fiscal_year)` (four years up to FY2015, five from FY2016, longer where no return was filed) and `open_fiscal_years()`. It deliberately carries **no penalty rate, interest rate or reduction fraction** — those depend on the year *and* the procedure and have been amended repeatedly (D.Lgs. 158/2015, D.Lgs. 87/2024), so quantification is left to the client's tax advisers and the report prints a provision rather than arithmetic. `TAX_ANALYSIS_PROMPT` forbids the model from computing taxes, penalties or interest; a test asserts the registry's glosses contain no percentages or fractions.
+- **Sonnet 5 migration**: the default is `claude-sonnet-5`. Sonnet 5 requests explicitly disable thinking to keep answer budgets available for structured extraction. Answer ceilings have extra tokenizer headroom; refusals and truncated output are failures, not analysis evidence. `ANALYSIS_MODEL` overrides still take precedence on both API and worker.
 - **Anthropic prompt caching**: every LLM prompt is sent with `cache_control={"type":"ephemeral"}` so the idempotent `/analyze` re-runs hit Anthropic's cache (~90% input-cost reduction within the 5-minute TTL).
 - **Anthropic SDK 1.x**: `requirements.txt` pins `anthropic>=1,<2`. The 1.x SDK removed `temperature`/`top_p`/`top_k` from the `messages.create()` signature (passing them is a `TypeError`), so `AnthropicLLMProvider` sends `temperature=0` through `extra_body`, and only for model families that still accept sampling parameters (Claude 4.6/4.5 line and older — `_accepts_sampling_params`). Opus 4.7+, Sonnet 5 and the Claude 5 family reject sampling parameters with a 400, so for those the request carries none.
 - **Parallel LLM fan-out**: per-document LLM work inside each pipeline stage (routing, contract, corporate, corporate-intro) runs on a bounded thread pool via `packages/agents/concurrency.run_llm_tasks` (`LLM_MAX_CONCURRENCY`, default 4). Worker functions are pure (LLM + parse only — no `Session` access); persistence happens on the caller's thread in input order. Contract analysis now inserts only the clauses that survive filtering (no insert-then-delete churn).
@@ -271,6 +272,6 @@ Enforcement tests live in `tests/test_rls_isolation.py` (opt-in: set `RLS_TEST_D
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI model name |
 | `EMBEDDING_DIMENSION` | `1536` | Vector dimension |
 | `ANTHROPIC_API_KEY` | _(empty)_ | For real LLM calls; omit for FakeLLMProvider |
-| `ANALYSIS_MODEL` | `claude-sonnet-4-6` | Claude model for the analysis pipeline |
+| `ANALYSIS_MODEL` | `claude-sonnet-5` | Claude model for the analysis pipeline |
 | `LLM_MAX_CONCURRENCY` | `4` | Max parallel per-document LLM calls within an analysis stage (`1` = sequential) |
 | `REDIS_URL` | _(empty)_ | If set, `/analyze` and `/upload` enqueue jobs to Arq instead of FastAPI BackgroundTasks. Run a worker alongside the API: `arq app.worker.WorkerSettings`. Format: `redis://default:<pw>@host:port` or `rediss://...` (TLS, recommended on Upstash). |

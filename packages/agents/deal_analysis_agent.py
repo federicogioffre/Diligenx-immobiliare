@@ -164,7 +164,7 @@ class LLMProvider(ABC):
     """Abstract interface for LLM completion providers."""
 
     @abstractmethod
-    def complete(self, prompt: str, max_tokens: int = 2048) -> str:
+    def complete(self, prompt: str, max_tokens: int = 3072) -> str:
         """Return text completion for the given prompt."""
         ...
 
@@ -192,7 +192,7 @@ class AnthropicLLMProvider(LLMProvider):
     parameter with a 400, so for those the request carries no temperature.
     """
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6"):
+    def __init__(self, api_key: str, model: str = "claude-sonnet-5"):
         import anthropic
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model
@@ -202,15 +202,23 @@ class AnthropicLLMProvider(LLMProvider):
             return {"temperature": 0}
         return None
 
-    def complete(self, prompt: str, max_tokens: int = 2048) -> str:
+    def complete(self, prompt: str, max_tokens: int = 3072) -> str:
         from time import monotonic
         from packages.agents.provider_limits import llm_slot
         started = monotonic()
+        # Sonnet 5 enables thinking by default. Preserve the pipeline
+        # contract: max_tokens is reserved for the extracted answer.
+        thinking_options = (
+            {"thinking": {"type": "disabled"}}
+            if self._model == "claude-sonnet-5" or self._model.startswith("claude-sonnet-5-")
+            else {}
+        )
         with llm_slot():
             msg = self._client.messages.create(
                 model=self._model,
                 max_tokens=max_tokens,
                 extra_body=self._extra_body(),
+                **thinking_options,
                 messages=[
                     {
                         "role": "user",
@@ -231,6 +239,8 @@ class AnthropicLLMProvider(LLMProvider):
             getattr(usage, "input_tokens", None), getattr(usage, "output_tokens", None),
             getattr(usage, "cache_read_input_tokens", None), getattr(usage, "cache_creation_input_tokens", None),
         )
+        if msg.stop_reason == "refusal":
+            raise LLMResponseError("AI provider refused the analysis request")
         if msg.stop_reason == "max_tokens":
             raise LLMResponseError("AI response was truncated at the output token limit")
         text = "".join(
@@ -250,7 +260,7 @@ class FakeLLMProvider(LLMProvider):
     CLAUSES``, ``RED FLAGS``, ``CORPORATE GOVERNANCE``).
     """
 
-    def complete(self, prompt: str, max_tokens: int = 2048) -> str:
+    def complete(self, prompt: str, max_tokens: int = 3072) -> str:
         p = prompt.upper()
         # Order matters — prompts may contain keywords from other branches.
         # DUE DILIGENCE REPORT must come before RED FLAGS.
@@ -613,7 +623,7 @@ def get_llm_provider() -> LLMProvider:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
     if api_key:
-        model = "claude-sonnet-4-6"
+        model = "claude-sonnet-5"
         try:
             from app.core.config import settings as _settings
             model = _settings.ANALYSIS_MODEL or model
@@ -889,8 +899,8 @@ class DealAnalysisAgent:
     # ── Step helpers ──────────────────────────────────────────────────── #
 
     # Maximum characters sent to the LLM per extraction batch.
-    # claude-sonnet-4-6 has a 200k-token context window; 80k chars ≈ 20k tokens,
-    # leaving ample room for the prompt template and the JSON response.
+    # Keep batches bounded independently of the model context window,
+    # leaving room for the prompt template and the structured response.
     _BATCH_CHARS = 80_000
 
     def _get_document_text(self, doc) -> str:
@@ -933,7 +943,7 @@ class DealAnalysisAgent:
             filename=filename,
             text=text[:4000],
         )
-        raw = self._llm.complete(prompt, max_tokens=256)
+        raw = self._llm.complete(prompt, max_tokens=512)
         return _parse_classification(raw)
 
     def _extract_clauses(
@@ -960,7 +970,7 @@ class DealAnalysisAgent:
                     else ""
                 ),
             )
-            raw = self._llm.complete(prompt, max_tokens=8192)
+            raw = self._llm.complete(prompt, max_tokens=12288)
             items = _parse_llm_items(
                 raw, context=f"Contract document {document_id}, batch {batch_idx + 1}"
             )
@@ -1022,7 +1032,7 @@ class DealAnalysisAgent:
         )
 
         prompt = RED_FLAG_DETECTION_PROMPT.format(findings=findings_text)
-        raw = self._llm.complete(prompt, max_tokens=2048)
+        raw = self._llm.complete(prompt, max_tokens=3072)
         items = _parse_llm_items(raw, context=f"Red flags for deal {deal_id}")
 
         red_flags = []

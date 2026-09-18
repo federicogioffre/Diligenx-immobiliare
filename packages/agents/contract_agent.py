@@ -519,7 +519,7 @@ class ContractAgent:
             text=text,
         )
 
-        raw = self._llm.complete(prompt, max_tokens=4096)
+        raw = self._llm.complete(prompt, max_tokens=6144)
         items = _parse_llm_items(
             raw, context=f"CCNL compliance, document {document_id}"
         )
@@ -616,7 +616,7 @@ class ContractAgent:
             clauses_json=json.dumps(clauses_input, ensure_ascii=False, indent=2),
         )
 
-        raw = self._llm.complete(prompt, max_tokens=4096)
+        raw = self._llm.complete(prompt, max_tokens=6144)
         items = _parse_llm_items(raw, context="Clause relevance")
         relevance_map: dict[int, tuple[str, str]] = {}
         for item in items:
@@ -681,7 +681,7 @@ class ContractAgent:
                     else ""
                 ),
             )
-            raw = self._llm.complete(prompt, max_tokens=8192)
+            raw = self._llm.complete(prompt, max_tokens=12288)
 
             items = _parse_llm_items(
                 raw, context=f"Contract document {document_id}, batch {batch_idx + 1}"

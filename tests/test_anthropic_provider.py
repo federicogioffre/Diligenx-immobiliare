@@ -6,13 +6,16 @@ sent with a ``cache_control`` breakpoint so prompt caching is in effect.
 """
 
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 
 import pytest
 
-from packages.agents.deal_analysis_agent import AnthropicLLMProvider
+from packages.agents.deal_analysis_agent import AnthropicLLMProvider, LLMResponseError
 
 
-def _make_provider_with_mock_client(response_text: str = "ok") -> tuple[AnthropicLLMProvider, MagicMock]:
+def _make_provider_with_mock_client(
+    response_text: str = "ok", *, model: str | None = None,
+) -> tuple[AnthropicLLMProvider, MagicMock]:
     """Construct an AnthropicLLMProvider whose .messages.create is mocked."""
     fake_msg = MagicMock()
     fake_msg.content = [MagicMock(text=response_text)]
@@ -21,7 +24,7 @@ def _make_provider_with_mock_client(response_text: str = "ok") -> tuple[Anthropi
     mock_client.messages.create.return_value = fake_msg
 
     with patch("anthropic.Anthropic", return_value=mock_client):
-        provider = AnthropicLLMProvider(api_key="sk-test", model="claude-sonnet-4-6")
+        provider = AnthropicLLMProvider(api_key="sk-test", **({"model": model} if model else {}))
     return provider, mock_client
 
 
@@ -67,15 +70,16 @@ def test_complete_uses_configured_model_and_temperature():
     unexpected keyword argument 'temperature'`` and every LLM stage of the
     pipeline fails). It must travel in ``extra_body`` instead.
     """
-    provider, mock_client = _make_provider_with_mock_client()
+    provider, mock_client = _make_provider_with_mock_client(model="claude-sonnet-4-6")
     provider.complete("x", max_tokens=512)
 
     kwargs = mock_client.messages.create.call_args.kwargs
     assert kwargs["model"] == "claude-sonnet-4-6"
     assert kwargs["max_tokens"] == 512
     assert "temperature" not in kwargs
-    # temperature=0 keeps the analysis output deterministic across re-runs.
+    # Older models retain their existing sampling behavior for rollback.
     assert kwargs["extra_body"] == {"temperature": 0}
+    assert "thinking" not in kwargs
 
 
 def test_complete_matches_real_sdk_signature():
@@ -133,3 +137,72 @@ def test_temperature_kept_for_models_that_accept_it(model):
     provider.complete("x")
 
     assert mock_client.messages.create.call_args.kwargs["extra_body"] == {"temperature": 0}
+
+
+def test_sonnet5_default_reserves_output_budget_for_answer():
+    provider, client = _make_provider_with_mock_client()
+    provider.complete("Extract clauses", max_tokens=12288)
+    kwargs = client.messages.create.call_args.kwargs
+    assert kwargs["model"] == "claude-sonnet-5"
+    assert kwargs["thinking"] == {"type": "disabled"}
+    assert kwargs["max_tokens"] == 12288
+    assert kwargs["extra_body"] is None
+    assert not {"temperature", "top_p", "top_k"} & kwargs.keys()
+
+
+def test_response_ignores_thinking_and_combines_text_blocks():
+    provider, client = _make_provider_with_mock_client()
+    client.messages.create.return_value = SimpleNamespace(
+        stop_reason="end_turn",
+        content=[
+            SimpleNamespace(type="thinking", thinking="internal reasoning"),
+            SimpleNamespace(type="text", text='[{"title":'),
+            SimpleNamespace(type="text", text='"Termination"}]'),
+        ],
+    )
+    assert provider.complete("Extract clauses") == '[{"title":"Termination"}]'
+
+
+@pytest.mark.parametrize("stop_reason", ["refusal", "max_tokens"])
+def test_sonnet5_rejects_unusable_response_even_when_text_looks_valid(stop_reason):
+    provider, client = _make_provider_with_mock_client("[]")
+    client.messages.create.return_value.stop_reason = stop_reason
+    with pytest.raises(LLMResponseError):
+        provider.complete("Extract clauses")
+
+
+@pytest.mark.parametrize("override", [None, "claude-sonnet-4-6", "claude-opus-5"])
+def test_factory_uses_sonnet5_default_and_respects_environment_override(monkeypatch, override):
+    from app.core.config import Settings
+    import app.core.config as config
+    from packages.agents import deal_analysis_agent as llm
+
+    monkeypatch.delenv("ANALYSIS_MODEL", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    if override is not None:
+        monkeypatch.setenv("ANALYSIS_MODEL", override)
+    settings = Settings(_env_file=None)
+    monkeypatch.setattr(config, "settings", settings)
+    monkeypatch.setattr(llm, "_llm_provider", None)
+    with patch("anthropic.Anthropic"):
+        provider = llm.get_llm_provider()
+    assert provider._model == (override or "claude-sonnet-5")
+
+
+def test_legacy_agent_uses_sonnet5_and_handles_non_text_blocks():
+    import asyncio
+    from packages.agents.deal_agent import DealAnalysisAgent
+
+    client = MagicMock()
+    client.messages.create.return_value = SimpleNamespace(
+        stop_reason="end_turn",
+        content=[SimpleNamespace(type="thinking"), SimpleNamespace(text="Summary")],
+    )
+    with patch("anthropic.Anthropic", return_value=client):
+        agent = DealAnalysisAgent(api_key="test-key")
+    result = asyncio.run(agent.run("Test deal", "Test description"))
+    assert result.summary == "Summary"
+    kwargs = client.messages.create.call_args.kwargs
+    assert kwargs["model"] == "claude-sonnet-5"
+    assert kwargs["thinking"] == {"type": "disabled"}
+    assert kwargs["max_tokens"] == 1536

@@ -264,7 +264,7 @@ class CorporateIntroAgent:
         prompt = CORPORATE_INTRO_EXTRACTION_PROMPT.format(
             filename=filename, text=text,
         )
-        raw = self._llm.complete(prompt, max_tokens=4096)
+        raw = self._llm.complete(prompt, max_tokens=6144)
         items = _parse_llm_items(
             raw, context=f"{self.AGENT_NAME}, document {document_id}"
         )

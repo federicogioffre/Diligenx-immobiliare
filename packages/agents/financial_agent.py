@@ -863,7 +863,7 @@ class FinancialAgent:
             filename=filename,
             text=text,
         )
-        raw = self._llm.complete(prompt, max_tokens=8192)
+        raw = self._llm.complete(prompt, max_tokens=12288)
 
         items = _parse_llm_items(
             raw, context=f"{self.AGENT_NAME}, document {document_id}"

@@ -8,7 +8,7 @@ AI-powered deal intelligence platform. Analyze, score, and track deals using Cla
 |-------|------|
 | Backend | FastAPI + SQLAlchemy + Pydantic v2 |
 | Frontend | Next.js 15 (App Router) |
-| AI | Anthropic Claude (claude-sonnet-4-6) |
+| AI | Anthropic Claude (claude-sonnet-5) |
 | Database | SQLite (dev) / PostgreSQL (prod) |
 | Containers | Docker + docker-compose |
 
@@ -43,6 +43,14 @@ cp apps/api/.env.example .env
 docker-compose up --build
 ```
 
+## Analysis model
+
+The default model is `claude-sonnet-5`. Sonnet 5 calls explicitly disable
+thinking so the output budget remains available for extraction and report text.
+Answer limits include additional headroom for its tokenizer; actual usage is
+recorded in the `llm_usage` logs. Existing `ANALYSIS_MODEL` environment overrides
+still take precedence: update both the API and worker environments if set.
+
 ## Project Structure
 
 ```
@@ -63,6 +71,7 @@ tests/          → pytest test suite
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Claude API key |
+| `ANALYSIS_MODEL` | Claude model, default `claude-sonnet-5` |
 | `SECRET_KEY` | JWT signing key |
 | `DATABASE_URL` | DB connection string |
 | `ALLOWED_ORIGINS` | CORS origins (JSON array) |

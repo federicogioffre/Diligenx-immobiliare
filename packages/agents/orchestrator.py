@@ -365,7 +365,7 @@ def _stage_document_routing(
                 filename=filename,
                 text=text,
             )
-            raw = llm.complete(prompt, max_tokens=256)
+            raw = llm.complete(prompt, max_tokens=512)
 
             return _parse_classification(raw)
 
