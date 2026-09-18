@@ -129,7 +129,7 @@ def _run_ingestion(document_id: int, user_id: int) -> None:
     try:
         set_tenant_context(db, user_id)
         doc = db.query(Document).filter(Document.id == document_id).first()
-        if doc is None or doc.status == DocumentStatus.processed:
+        if doc is None or doc.analysis_ready:
             return
         process_document(document_id, db)
     except Exception:

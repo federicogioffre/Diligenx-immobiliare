@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 import threading
@@ -242,6 +243,81 @@ async def upload_documents_batch(
             )
         results.append(doc)
     return results
+
+
+@router.post("/{document_id}/retry", response_model=DocumentRead, status_code=202)
+@limiter.limit(lambda: settings.UPLOAD_RATE_LIMIT, key_func=_upload_rate_key)
+async def retry_document(
+    request: Request,
+    document_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_upload_user),
+):
+    """Retry a saved document only after excluding an active ingestion job.
+
+    Keep the original object, extracted text and chunks until ingestion replaces
+    them successfully. The deal lock serializes retries against analysis/upload.
+    """
+    from arq.jobs import Job, JobStatus
+    from app.services.jobs import enqueue_or_run
+
+    doc = db.query(Document).join(Document.deal).filter(
+        Document.id == document_id, Deal.workspace.has(owner_id=current_user.id),
+    ).first()
+    if doc is None:
+        raise HTTPException(404, "Document not found")
+    deal = db.query(Deal).filter(
+        Deal.id == doc.deal_id, Deal.workspace.has(owner_id=current_user.id),
+    ).with_for_update().populate_existing().first()
+    if deal is None:
+        raise HTTPException(404, "Document not found")
+    if deal.status == DealStatus.analyzing:
+        raise HTTPException(409, "Analisi in corso: attendere prima di riprovare il documento.")
+    # Re-read after taking the inventory lock: ingestion/deletion may have
+    # changed the document since the initial ownership lookup.
+    doc = db.query(Document).filter(
+        Document.id == document_id, Document.deal_id == deal.id,
+    ).with_for_update().populate_existing().first()
+    if doc is None:
+        raise HTTPException(404, "Document not found")
+    if doc.analysis_ready:
+        return DocumentRead.model_validate(doc)
+
+    pool = getattr(request.app.state, "arq_pool", None)
+    if pool is not None:
+        try:
+            state = await asyncio.wait_for(Job(f"ingestion:{doc.id}", pool).status(), timeout=5)
+        except Exception:
+            raise HTTPException(503, {
+                "code": "ingestion_status_unavailable",
+                "message": "Impossibile verificare l'elaborazione del documento. Riprova tra poco.",
+            }) from None
+        if state != JobStatus.not_found:
+            raise HTTPException(409, {
+                "code": "ingestion_already_active",
+                "message": "Il documento è già in elaborazione. Attendi il completamento.",
+            })
+    elif settings.REDIS_URL:
+        raise HTTPException(503, {
+            "code": "ingestion_status_unavailable",
+            "message": "Coda di elaborazione non disponibile. Riprova tra poco.",
+        })
+    elif doc.status in (DocumentStatus.pending, DocumentStatus.processing):
+        raise HTTPException(409, {
+            "code": "ingestion_status_unavailable",
+            "message": "Impossibile verificare se il documento è ancora in elaborazione.",
+        })
+
+    doc.status = DocumentStatus.pending
+    response = DocumentRead.model_validate(doc)
+    user_id = current_user.id
+    db.commit()  # The worker must see pending before consuming the queued job.
+    await enqueue_or_run(
+        request, background_tasks, "run_ingestion_for_document",
+        _run_ingestion, document_id, user_id, job_id=f"ingestion:{document_id}",
+    )
+    return response
 
 
 @router.delete("/{document_id}", status_code=204)

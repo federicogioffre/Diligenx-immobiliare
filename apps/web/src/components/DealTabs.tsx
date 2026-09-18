@@ -52,14 +52,14 @@ export default function DealTabs({ dealId }: { dealId: number }) {
   ]
 
   return (
-    <div className="flex items-center gap-0.5 p-1 bg-slate-100 rounded-xl mb-6 w-fit">
+    <div className="flex items-center gap-0.5 p-1 bg-slate-100 rounded-xl mb-6 w-fit max-w-full overflow-x-auto">
       {tabs.map((tab) => {
         const active = pathname === tab.href
         return (
           <Link
             key={tab.href}
             href={tab.href}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all ${
+            className={`flex shrink-0 items-center gap-1.5 px-3 sm:px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all ${
               active
                 ? 'bg-white text-slate-900 shadow-sm'
                 : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/60'
