@@ -152,7 +152,7 @@ def delete_deal(
     db.commit()
 
 
-def _run_pipeline_background(deal_id: int, user_id: int, *, resume: bool = False) -> None:
+def _run_analysis_background(deal_id: int, user_id: int, *, resume: bool = False) -> None:
     """Run the analysis pipeline in a background task with its own DB session.
 
     *user_id* is the deal owner; it binds the RLS tenant context on the
@@ -186,8 +186,12 @@ def _run_pipeline_background(deal_id: int, user_id: int, *, resume: bool = False
         db.close()
 
 
+def _run_pipeline_background(deal_id: int, user_id: int) -> None:
+    _run_analysis_background(deal_id, user_id, resume=False)
+
+
 def _run_resume_background(deal_id: int, user_id: int) -> None:
-    _run_pipeline_background(deal_id, user_id, resume=True)
+    _run_analysis_background(deal_id, user_id, resume=True)
 
 
 async def _require_inactive_analysis_job(request: Request, deal_id: int) -> None:
