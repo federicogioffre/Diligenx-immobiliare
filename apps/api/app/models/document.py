@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import String, Integer, Text, ForeignKey, Enum
+from sqlalchemy import String, Integer, Text, ForeignKey, Enum, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -17,6 +17,9 @@ class DocumentStatus(str, enum.Enum):
 
 class Document(TimestampMixin, Base):
     __tablename__ = "documents"
+    __table_args__ = (
+        CheckConstraint("document_role IN ('data_room', 'loi')", name="ck_documents_document_role"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     deal_id: Mapped[int] = mapped_column(ForeignKey("deals.id"), index=True)
@@ -24,6 +27,11 @@ class Document(TimestampMixin, Base):
     file_path: Mapped[str] = mapped_column(String(1000))
     mime_type: Mapped[str] = mapped_column(String(100))
     file_size: Mapped[int] = mapped_column(Integer)
+    # Only an explicit upload choice identifies a letter of intent. A filename
+    # or a mention in an extracted document must never assign this role.
+    document_role: Mapped[str] = mapped_column(
+        String(20), default="data_room", server_default="data_room", nullable=False,
+    )
     status: Mapped[DocumentStatus] = mapped_column(
         Enum(DocumentStatus), default=DocumentStatus.pending
     )

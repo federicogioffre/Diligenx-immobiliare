@@ -716,12 +716,13 @@ def generate_due_diligence_report(
     from app.models.company_profile import CompanyProfile
     from packages.prompts.deal_prompts import EXECUTIVE_SUMMARY_PROMPT
 
-    llm = provider or get_llm_provider()
-
     # ── Validate deal ─────────────────────────────────────────────────── #
     deal = db.query(Deal).filter(Deal.id == deal_id).first()
     if deal is None:
         raise ValueError(f"Deal {deal_id} not found")
+
+    from packages.agents.deal_context import with_deal_context
+    llm = with_deal_context(provider or get_llm_provider(), db, deal_id)
 
     from app.models.agent_run import AgentRun, AgentRunStatus
 

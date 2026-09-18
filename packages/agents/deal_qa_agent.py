@@ -67,7 +67,8 @@ def answer_deal_question(
     if deal is None:
         raise ValueError(f"Deal {deal_id} not found")
 
-    llm = llm_provider or get_llm_provider()
+    from packages.agents.deal_context import with_deal_context
+    llm = with_deal_context(llm_provider or get_llm_provider(), db, deal_id)
 
     logger.info("Answering question for deal %d.", deal_id)
 

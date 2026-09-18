@@ -1,9 +1,13 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
 from app.models.document import DocumentStatus
 from app.services.document_readiness import ProcessingIssue
+
+
+DocumentRole = Literal["data_room", "loi"]
 
 
 class DocumentRead(BaseModel):
@@ -12,6 +16,7 @@ class DocumentRead(BaseModel):
     filename: str
     mime_type: str
     file_size: int
+    document_role: DocumentRole = "data_room"
     status: DocumentStatus
     analysis_ready: bool
     processing_issue: ProcessingIssue | None
@@ -27,6 +32,7 @@ class DocumentUploadResponse(BaseModel):
     filename: str
     status: DocumentStatus
     file_size: int
+    document_role: DocumentRole = "data_room"
     language: str | None
 
     model_config = {"from_attributes": True}

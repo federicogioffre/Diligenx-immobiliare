@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { toast } from 'sonner'
 import { api, DealRead } from '@/lib/api'
@@ -13,6 +13,17 @@ import StatusBadge from '@/components/ui/StatusBadge'
 const inputClass =
   'w-full border border-slate-200 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow bg-white'
 
+function loiFileError(file: File | null): string {
+  if (!file) return ''
+  if (!/\.(pdf|docx|txt)$/i.test(file.name)) return 'La LOI deve essere un file PDF, DOCX o TXT.'
+  if (file.type && !['application/octet-stream', 'application/pdf', 'text/plain', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.type)) {
+    return 'Il formato della LOI non è supportato. Salvala come PDF, DOCX o TXT e riprova.'
+  }
+  if (file.size > 50 * 1024 * 1024) return 'La LOI non può superare 50 MB.'
+  if (file.size === 0) return 'Il file della LOI è vuoto.'
+  return ''
+}
+
 export default function DashboardPage() {
   const [deals, setDeals] = useState<DealRead[]>([])
   const [loading, setLoading] = useState(true)
@@ -22,8 +33,15 @@ export default function DashboardPage() {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [value, setValue] = useState('')
+  const [targetCompanies, setTargetCompanies] = useState('')
+  const [loiFile, setLoiFile] = useState<File | null>(null)
+  const [createdDeal, setCreatedDeal] = useState<DealRead | null>(null)
+  const [uploadMessage, setUploadMessage] = useState('')
   const [creating, setCreating] = useState(false)
   const [formError, setFormError] = useState('')
+  const creatingRef = useRef(false)
+  const loiInputRef = useRef<HTMLInputElement>(null)
+  const uploadControllerRef = useRef<AbortController | null>(null)
 
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [editDeal, setEditDeal] = useState<DealRead | null>(null)
@@ -40,6 +58,14 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  useEffect(() => () => uploadControllerRef.current?.abort(), [])
+
+  function resetCreateForm() {
+    setTitle(''); setDescription(''); setValue(''); setTargetCompanies('')
+    setLoiFile(null); setCreatedDeal(null); setFormError(''); setUploadMessage('')
+    if (loiInputRef.current) loiInputRef.current.value = ''
+  }
+
   async function fetchDeals() {
     setLoading(true)
     try {
@@ -54,21 +80,55 @@ export default function DashboardPage() {
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
+    if (creatingRef.current) return
     setFormError('')
+    if (!title.trim()) { setFormError('Inserisci un titolo per l’operazione.'); return }
+    const names = Array.from(new Set(targetCompanies.split(/\r?\n/).map((name) => name.trim()).filter(Boolean)))
+    if (!names.length || names.some((name) => !/[\p{L}\p{N}]/u.test(name))) {
+      setFormError('Inserisci la ragione sociale completa di almeno una società target.')
+      return
+    }
+    if (names.length > 20 || names.some((name) => name.length > 500)) {
+      setFormError('Inserisci al massimo 20 ragioni sociali, ciascuna di massimo 500 caratteri.')
+      return
+    }
+    const fileError = loiFileError(loiFile)
+    if (fileError) { setFormError(fileError); return }
+    creatingRef.current = true
     setCreating(true)
+    let deal = createdDeal
     try {
-      const deal = await api.deals.create(getWorkspaceId(), {
-        title,
-        description: description || undefined,
-        value: value ? Number(value) : undefined,
-      })
-      setDeals((prev) => [deal, ...prev])
+      if (!deal) {
+        deal = await api.deals.create(getWorkspaceId(), {
+          title: title.trim(),
+          description: description || undefined,
+          value: value ? Number(value) : undefined,
+          target_company_names: names,
+        })
+        setCreatedDeal(deal)
+        const savedDeal = deal
+        setDeals((prev) => [savedDeal, ...prev.filter((item) => item.id !== savedDeal.id)])
+      }
+      if (loiFile) {
+        const controller = new AbortController()
+        uploadControllerRef.current = controller
+        setUploadMessage('Caricamento LOI…')
+        await api.documents.uploadWithProgress(deal.id, loiFile, (sent, total) => {
+          setUploadMessage(`Caricamento LOI: ${total > 0 ? Math.round(sent / total * 100) : 0}%`)
+        }, controller.signal, (seconds) => {
+          setUploadMessage(`Caricamento LOI in attesa. Nuovo tentativo tra ${seconds} secondi…`)
+        }, 'loi')
+      }
       setShowForm(false)
-      setTitle(''); setDescription(''); setValue('')
-      toast.success(`Deal "${deal.title}" creato`)
+      resetCreateForm()
+      toast.success(loiFile ? `Operazione "${deal.title}" creata. LOI caricata, elaborazione in corso.` : `Operazione "${deal.title}" creata`)
     } catch (err: unknown) {
-      setFormError(err instanceof Error ? err.message : 'Errore nella creazione')
+      const message = err instanceof Error ? err.message : 'Riprova tra poco.'
+      setFormError(deal ? `Operazione creata. Caricamento della LOI non confermato. Riprova lo stesso file o verifica i documenti dell’operazione. ${message}` : `Creazione non riuscita. ${message}`)
     } finally {
+      creatingRef.current = false
+      uploadControllerRef.current = null
+      setUploadMessage('')
       setCreating(false)
     }
   }
@@ -128,15 +188,16 @@ export default function DashboardPage() {
           </p>
         </div>
         <button
-          onClick={() => setShowForm((v) => !v)}
-          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm"
+          onClick={() => { if (showForm && createdDeal) resetCreateForm(); setShowForm((v) => !v) }}
+          disabled={creating}
+          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm disabled:opacity-50"
         >
           {showForm ? (
             <>
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
               </svg>
-              Annulla
+              {createdDeal ? 'Chiudi' : 'Annulla'}
             </>
           ) : (
             <>
@@ -155,9 +216,11 @@ export default function DashboardPage() {
           <h2 className="text-base font-semibold text-slate-900 mb-4">Nuovo Deal</h2>
           <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="sm:col-span-2">
-              <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Titolo *</label>
+              <label htmlFor="new-deal-title" className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Titolo *</label>
               <input
+                id="new-deal-title"
                 required
+                disabled={creating || !!createdDeal}
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="Es. Acquisizione Azienda XYZ"
@@ -165,8 +228,27 @@ export default function DashboardPage() {
               />
             </div>
             <div className="sm:col-span-2">
-              <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Descrizione</label>
+              <label htmlFor="new-deal-targets" className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Società target *</label>
               <textarea
+                id="new-deal-targets"
+                required
+                disabled={creating || !!createdDeal}
+                rows={2}
+                value={targetCompanies}
+                onChange={(e) => setTargetCompanies(e.target.value)}
+                aria-describedby="new-deal-targets-help"
+                placeholder="Esempio S.r.l."
+                className={inputClass + ' resize-y'}
+              />
+              <p id="new-deal-targets-help" className="text-xs text-slate-500 mt-1.5">
+                Inserisci la ragione sociale completa, inclusa la forma giuridica. Per più società, una per riga (massimo 20). Gli agenti useranno questo perimetro per distinguere le società target da clienti, fornitori e altre controparti.
+              </p>
+            </div>
+            <div className="sm:col-span-2">
+              <label htmlFor="new-deal-description" className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Descrizione</label>
+              <textarea
+                id="new-deal-description"
+                disabled={creating || !!createdDeal}
                 rows={2}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
@@ -175,8 +257,10 @@ export default function DashboardPage() {
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Valore deal (€)</label>
+              <label htmlFor="new-deal-value" className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Valore deal (€)</label>
               <input
+                id="new-deal-value"
+                disabled={creating || !!createdDeal}
                 type="number"
                 min="0"
                 step="any"
@@ -186,15 +270,37 @@ export default function DashboardPage() {
                 className={inputClass}
               />
             </div>
-            <div className="flex flex-col justify-end">
-              {formError && <p className="text-red-600 text-xs mb-2">{formError}</p>}
+            <div className="sm:col-span-2">
+              <label htmlFor="new-deal-loi" className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Lettera di intenti (LOI) — facoltativa</label>
+              <input
+                ref={loiInputRef}
+                id="new-deal-loi"
+                type="file"
+                accept=".pdf,.docx,.txt"
+                disabled={creating || !!createdDeal}
+                onChange={(e) => {
+                  const file = e.target.files?.[0] ?? null
+                  setLoiFile(file)
+                  setFormError(loiFileError(file))
+                }}
+                aria-describedby="new-deal-loi-help"
+                className={inputClass + ' min-w-0 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1 file:text-sm'}
+              />
+              <p id="new-deal-loi-help" className="text-xs text-slate-500 mt-1.5">
+                PDF, DOCX o TXT, massimo 50 MB. La LOI aiuta gli agenti a leggere obiettivi e condizioni dell’operazione. Le società target restano quelle indicate sopra. L’analisi si avvia dalla pagina dell’operazione.
+              </p>
+            </div>
+            <div className="sm:col-span-2 flex flex-col items-start gap-3">
+              {formError && <div className="w-full"><ErrorAlert error={formError} /></div>}
+              {uploadMessage && <p role="status" className="text-sm text-blue-700">{uploadMessage}</p>}
               <button
                 type="submit"
                 disabled={creating}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
               >
-                {creating ? 'Creazione…' : 'Crea Deal'}
+                {creating ? (createdDeal ? 'Caricamento LOI…' : 'Creazione…') : createdDeal ? 'Riprova caricamento LOI' : 'Crea Deal'}
               </button>
+              {createdDeal && !creating && <Link href={`/deals/${createdDeal.id}`} className="text-sm font-semibold text-blue-600 hover:underline">Apri operazione</Link>}
             </div>
           </form>
         </div>
