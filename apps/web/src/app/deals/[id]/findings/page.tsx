@@ -100,6 +100,36 @@ function formatFigures(f: RedFlagRead): string | null {
   return bits.length ? bits.join(' · ') : null
 }
 
+/** Preserve all reviewed sources, including evidence with no verified page. */
+function sourceCitations(f: RedFlagRead, docMap: Map<number, string>): { documentId: number; label: string }[] {
+  const sources = new Map<number, Set<number>>()
+  const payload = f.structured_payload_json as Record<string, unknown> | null
+  const add = (documentId: unknown, page: unknown) => {
+    if (typeof documentId !== 'number' || !Number.isInteger(documentId) || !docMap.has(documentId)) return
+    const pages = sources.get(documentId) ?? new Set<number>()
+    if (typeof page === 'number' && Number.isInteger(page) && page > 0) pages.add(page)
+    sources.set(documentId, pages)
+  }
+  if (payload?.grounding_reviewed === true) {
+    for (const [key, pageKey] of [['source_pages', 'page'], ['evidence', 'source_page']]) {
+      const entries = payload[key]
+      if (!Array.isArray(entries)) continue
+      for (const entry of entries) {
+        if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+          add(entry.source_document_id, entry[pageKey])
+        }
+      }
+    }
+  }
+  if (!sources.size) add(f.source_document_id, f.source_page)
+  return [...sources].sort(([a], [b]) => a - b).map(([id, values]) => {
+    const pages = [...values].sort((a, b) => a - b)
+    return { documentId: id, label: docMap.get(id)! + (pages.length
+      ? `, ${pages.length === 1 ? 'pag.' : 'pagg.'} ${pages.join(', ')}`
+      : '') }
+  })
+}
+
 // ── Filter pill ────────────────────────────────────────────────────────────
 
 function FilterPill({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
@@ -165,7 +195,7 @@ function ClauseCard({ c, docMap, index }: { c: ClauseFindingRead; docMap: Map<nu
 
 function RedFlagCard({ f, docMap, index }: { f: RedFlagRead; docMap: Map<number, string>; index: number }) {
   const severity = (f.severity ?? 'medium') as Severity
-  const filename = f.source_document_id != null ? docMap.get(f.source_document_id) : undefined
+  const citations = sourceCitations(f, docMap)
   const figures = formatFigures(f)
 
   return (
@@ -211,13 +241,12 @@ function RedFlagCard({ f, docMap, index }: { f: RedFlagRead; docMap: Map<number,
 
       {/* Footer */}
       <div className="flex flex-wrap items-center gap-3 mt-3 pt-3 border-t border-slate-100 text-xs text-slate-400">
-        {filename && (
-          <span className="flex items-center gap-1">
+        {citations.map(({ documentId, label }) => (
+          <span key={documentId} className="flex items-center gap-1">
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-            {filename}
+            {label}
           </span>
-        )}
-        {f.source_page != null && <span>Pag. {f.source_page}</span>}
+        ))}
         {figures && <span className="font-semibold text-slate-500 tabular-nums">{figures}</span>}
         {f.confidence != null && <span>Conf. {(f.confidence * 100).toFixed(0)}%</span>}
       </div>

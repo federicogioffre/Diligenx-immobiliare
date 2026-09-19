@@ -262,6 +262,28 @@ class FakeLLMProvider(LLMProvider):
 
     def complete(self, prompt: str, max_tokens: int = 3072) -> str:
         p = prompt.upper()
+        if "GROUNDING REVIEW\n" in prompt:
+            # Deterministic protocol stub only. Tests for unsupported prose use
+            # explicit adversarial review responses instead of this provider.
+            payload = json.loads(prompt.rsplit("INPUT_JSON:\n", 1)[1])
+            reviewed = []
+            for item in payload["items"]:
+                candidate = item["candidate"]
+                fields = {
+                    k: candidate.get(k) for k in
+                    (("text",) if payload["kind"] == "text" else
+                     ("title", "issue", "risk", "recommendation"))
+                }
+                documents = payload["documents"]
+                doc = next((d for d in documents if d["document_id"] == candidate.get("source_document_id")),
+                           documents[0] if documents else None)
+                reviewed.append({
+                    "index": item["index"], "supported": True, "fields": fields,
+                    "evidence": ([{"source_document_id": doc["document_id"],
+                                   "quote": doc["text"], "fields": list(fields)}]
+                                 if doc else []),
+                })
+            return json.dumps(reviewed)
         # Order matters — prompts may contain keywords from other branches.
         # DUE DILIGENCE REPORT must come before RED FLAGS.
         # ANSWER THE QUESTION must come before CLASSIFY (QA context may
@@ -273,6 +295,8 @@ class FakeLLMProvider(LLMProvider):
         # EXECUTIVE SUMMARY must come before RED FLAGS — the summary prompt
         # embeds the red-flag findings under a "--- RED FLAGS ---" header.
         if "EXECUTIVE SUMMARY" in p:
+            if "OUTPUT LANGUAGE: WRITE ALL FREE-TEXT OUTPUT IN ITALIAN." in p:
+                return "La revisione riguarda i documenti disponibili per l'operazione. I rilievi e le relative condizioni sono riportati nelle sezioni successive."
             return (
                 "The review covered the documents made available for the deal. "
                 "Analysis identified one high-severity red flag concerning a "
@@ -503,7 +527,9 @@ class FakeLLMProvider(LLMProvider):
                 },
             ])
         if "RED FLAGS" in p:
-            return json.dumps([
+            if "No findings available." in prompt:
+                return "[]"
+            flags = [
                 {
                     "finding_type": "red_flag",
                     "title": "Unilateral Termination Right",
@@ -564,7 +590,22 @@ class FakeLLMProvider(LLMProvider):
                     "confidence": 0.75,
                     "source_document_id": None,
                 },
-            ])
+            ]
+            if "OUTPUT LANGUAGE: WRITE ALL FREE-TEXT OUTPUT IN ITALIAN." in p:
+                localized = [
+                    ("Diritto di recesso unilaterale", "Solo una parte può recedere senza causa.",
+                     "La controparte può interrompere il contratto lasciando la target senza tutela.",
+                     "Prevedere garanzie specifiche del venditore nel contratto di acquisizione."),
+                    ("Avviso fiscale relativo al 2022", "Un avviso contesta EUR 240.000 per imposte, sanzioni e interessi.",
+                     "Se confermata, la pretesa comporta un esborso per la target.",
+                     "Negoziare una garanzia specifica sull'esposizione contestata."),
+                    ("Limitazione di responsabilità", "La responsabilità è limitata al valore del contratto.", None, None),
+                    ("Giurisdizione da verificare", "Non è identificata una clausola sulla giurisdizione applicabile.", None, None),
+                ]
+                for flag, values in zip(flags, localized):
+                    flag.update(dict(zip(("title", "issue", "risk", "recommendation"), values)))
+                    flag.pop("description", None)
+            return json.dumps(flags)
         return json.dumps([])
 
     @staticmethod

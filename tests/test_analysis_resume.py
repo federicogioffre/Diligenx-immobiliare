@@ -135,7 +135,7 @@ def test_legacy_run_is_never_adopted_automatically(db, checkpoint_case):
     assert case.runs["intake"].input_hash is None
 
 
-def test_verified_legacy_adoption_records_fingerprint_and_preserves_stages(db, checkpoint_case):
+def test_verified_legacy_adoption_reuses_only_ingestion_and_routing(db, checkpoint_case):
     case = checkpoint_case
     case.runs["intake"].input_hash = None
     db.commit()
@@ -145,7 +145,9 @@ def test_verified_legacy_adoption_records_fingerprint_and_preserves_stages(db, c
     plan = adopt_legacy_checkpoint(db, case.deal.id,
                                   expected_intake_started_at=case.start, expected_document_count=2)
     db.commit()
-    assert plan.completed == PREFIX
+    assert plan.completed == ("intake", "document_routing")
+    assert validate_resume(db, case.deal.id).completed == plan.completed
+    assert all(case.runs[key].status == "pending" for key, _ in STAGES[2:])
     assert case.runs["intake"].input_hash == case.fingerprint
     assert {key: run.id for key, run in case.runs.items()} == before
 

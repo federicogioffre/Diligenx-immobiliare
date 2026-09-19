@@ -131,6 +131,8 @@ CRITICAL RULES:
 3. No consulting filler ("it is advisable to", "standard market practice suggests", "we recommend monitoring"). Write for a lawyer who knows Italian M&A.
 4. Return ONLY the summary prose. No headings, no lists, no code fences.
 5. PUNCTUATION: do NOT use em-dashes ("—") or hyphens-as-dashes (" - ") to separate clauses. Use commas, semicolons, colons, or full stops as appropriate. This is the single most visible "AI tell" in Italian legal prose; avoid it strictly.
+6. Preserve every condition and uncertainty that changes a conclusion. A missing document is not proof that the underlying fact does not exist. Do not turn "not indicated" into "absent", a disputed claim into an established debt, or a possible remedy into one already exercised.
+7. Keep separate triggers and cure periods separate. A remedy immediate for a change of control does not become immediate for a covenant breach. If you mention a remedy, retain its notice requirements, cure period and conditions; omit the whole matter rather than omit a material qualification to fit the length.
 
 --- DEAL ---
 Title: {deal_title}
@@ -144,7 +146,7 @@ Documents reviewed: {documents_count}
 {observations}
 """
 
-CORPORATE_INTRO_EXTRACTION_PROMPT = """You are an M&A paralegal extracting the CORPORATE INTRODUCTORY INFORMATION of a target company from Italian corporate documents (visura camerale, atto costitutivo, statuto, patto parasociale).
+CORPORATE_INTRO_EXTRACTION_PROMPT = """You are an M&A paralegal extracting the CORPORATE INTRODUCTORY INFORMATION of a target company from Italian corporate documents, including company profiles, information memoranda, visure camerali, atti costitutivi, statuti and patti parasociali.
 
 EXTRACT the fields listed below ONLY for the companies in this confirmed transaction scope:
 {target_company_names}
@@ -158,6 +160,7 @@ CRITICAL RULES:
 6. For the managing body: list each director with role: "Mr X (Chairman), Mr Y (Managing Director), ...". Include the date of appointment and the term if stated.
 7. For the auditors: list each statutory auditor with role (President / Statutory / Alternate). Include the date of appointment and the term if stated.
 8. Keep the company's actual legal name and suffix from the document. Case, spacing and punctuation in legal-form abbreviations may differ from the confirmed name; do not rename an unrelated company to make it match, drop the legal suffix, or transfer a counterparty's facts to a target. If no confirmed target is described, return [].
+9. An informal company profile is a source of stated facts, not an official certificate or proof of legal compliance. Missing corporate books or minutes are information gaps, never evidence that governance is regular. Extract only the stated fields and retain the identity of the source.
 
 FIELDS to populate (set to null if absent):
 - company_name: legal name with corporate suffix (S.p.A. / S.r.l. / etc.) [REQUIRED, MUST NOT BE NULL]
@@ -235,13 +238,12 @@ Every red_flag entry follows the structure of a professional red-flag report:
   ISSUE          — what was found, stated factually, citing the specific article/clause/figure.
   RISK           — what could happen if unaddressed (impact on the transaction or the target).
   RECOMMENDATION — the concrete remedial action, chosen from standard transaction remedies:
-     • "As a condition precedent to Closing, obtain the consent of [counterparty] to the Transaction."
-     • "On or prior to Closing, obtain [the missing document / release of the security / waiver of the right]."
-     • "Insert specific Sellers' representations and warranties in the SPA."
-     • "Insert a special indemnity provision in the SPA."
-     • "Insert an earnout / price-adjustment mechanism in the SPA."
-     • "Prior to the Transaction, verify [the exposure] with a [tax/customs/insurance] specialist."
-     • "Upon completion of the Transaction, [adopt the Modello 231 / carry out a privacy assessment / renegotiate the clause]."
+     condition precedent; waiver or release; representations and warranties;
+     specific indemnity; price adjustment or earn-out; specialist verification;
+     documented post-completion action. These are remedy types, not wording to copy.
+
+RECOMMENDATION EXAMPLES IN THE OUTPUT LANGUAGE (illustrative only; adapt to the sources):
+{recommendation_examples}
 
 SEVERITY CALIBRATION (3-level scale — there is no "critical"):
   high   — affects transfer validity or completion: unreleased pledges on the target's shares; missing share certificates; pre-emption/tag-along/drag-along rights not waived; material unexplained debt exposures; litigation with material quantified exposure; total absence of GDPR/privacy documentation; notified tax assessments (avvisi di accertamento) or tax-collection notices (cartelle) with material quantified exposure; evidence of unpaid taxes or social security contributions; auditor's report with a qualified/adverse opinion or a going-concern emphasis.
@@ -259,6 +261,8 @@ CRITICAL RULES:
 1. Only report findings that are EXPLICITLY evidenced in the specialist data below.
 2. DO NOT invent risks or speculate about issues not supported by the data.
 3. Merge duplicate findings into one entry (keep the highest severity / most informative version).
+   Different triggers are not duplicates: preserve separate remedies, written-notice requirements and cure periods. A change-of-control acceleration clause cannot erase a covenant cure period. Preserve all material qualifications even if this requires separate findings or longer issue/risk text.
+   "Not provided", "not indicated" and "not assessed" describe the limits of the evidence. Never rewrite them as proof of absence or certainty, including in the title. Distinguish a potential remedy from its actual exercise and a disputed claim from an established liability.
 4. Apply the SAFE HARBOUR rules — do not raise standard Italian law defaults as red_flag or observation.
 5. Employment documents: apply a cautious standard. TFR accruals, holiday balances, and CCNL applicability are safe-harboured. Use "information_request" at most for employment items, unless there is explicit evidence of non-compliance.
 6. Do not use consulting filler language ("it is advisable to", "standard market practice", "we recommend monitoring"). Be direct and concise.
@@ -283,28 +287,13 @@ For each item, provide:
 - confidence: 0.0–1.0
 - source_document_id: integer document ID or null
 - source_page: integer page where the item appears, or null. Use ONLY a page shown as "(p. N)" next to the relevant clause finding below; never guess. Null when no page is shown for the item.
-
-EXAMPLES of correctly structured red_flag entries (synthetic — illustrate format and calibration only):
-[
-  {{"finding_type": "red_flag", "title": "Pledge over the Target's shares", "issue": "A pledge over shares representing 81% of the corporate capital of the Target exists in favour of a lender, securing bond payment obligations (Bond Subscription Agreement, art. 10).", "risk": "If the secured debt is not repaid before closing, the Purchaser acquires shares that remain encumbered by the pledge.", "recommendation": "As a condition precedent to Closing, the lender should release the pledge.", "severity": "high", "area": "corporate", "category": "pledge", "confidence": 0.92, "source_document_id": 3, "source_page": 10}},
-  {{"finding_type": "red_flag", "title": "Change-of-control clause in loan agreement", "issue": "Article 5 of the loan agreement provides that the lender may terminate in case of any event negatively affecting the financial or corporate situation of the company.", "risk": "Although unlikely, after the Transaction the lender may claim the change of control qualifies and accelerate repayment.", "recommendation": "As a condition precedent to Closing, obtain the lender's consent to the Transaction.", "severity": "medium", "area": "indebtedness", "category": "change_of_control", "confidence": 0.85, "source_document_id": 7, "source_page": 5}},
-  {{"finding_type": "red_flag", "title": "Rent indexation above legal cap", "issue": "The lease agreement provides annual rent indexation at 100% of the ISTAT variation, while the maximum allowed under Italian law is 75%.", "risk": "The company may pay, or may have paid, amounts not due under applicable law.", "recommendation": "Insert specific Sellers' representations and warranties in the SPA; renegotiate the clause.", "severity": "low", "area": "real_estate", "category": "void_clause", "confidence": 0.80, "source_document_id": 12, "source_page": null}},
-  {{"finding_type": "red_flag", "title": "Notified tax assessment for FY2022", "issue": "An avviso di accertamento notified by the Italian Revenue Agency for FY2022 claims Euro 240,000 in additional IRES, penalties and interest; the appeal is pending before the first-instance tax court.", "risk": "If the assessment is upheld, the target bears the assessed amount plus litigation costs; further fiscal years may be audited on the same grounds.", "recommendation": "Insert a specific indemnity in the SPA covering the assessed exposure, surviving until the expiry of the assessment period for FY2022 plus a grace period; prior to signing, verify the exposure with the Purchaser's tax advisers.", "remedy_type": "indemnity", "impact": "spa", "amount_eur": 240000, "fiscal_years": [2022], "severity": "high", "area": "tax", "category": "tax_assessment", "confidence": 0.90, "source_document_id": 15, "source_page": null}}
-]
+- evidence: list of {{"source_document_id": integer, "quote": "verbatim source text", "fields": ["issue", "risk"]}}. Link each factual assertion to the supporting source passage. Include the passages carrying conditions and qualifications. Never call a page an article; do not attach one page to facts that appear on different pages.
 
 CONSOLIDATING THE SPECIALISTS' FINDINGS:
 - A source finding may carry a bracketed summary of what the specialist agent already established — its defensibility grade, the amount the document stated, the fiscal years, the mitigating factors. **Use it; do not re-derive it and do not contradict it.**
 - `defensibility=actual` means an omission with no available defence, such as a tax shown as due in a filed return and not paid. **A red flag consolidating such a finding is always high severity**, whatever its amount.
 - Where mitigating factors are listed, say so in the risk text — a time-barred year, an instalment plan in force, a guarantee or an insurance policy covering the exposure all change what the buyer should ask for.
 - **One matter, one red flag.** The same fact often surfaces several times: a tax assessment can appear as an act notified to the target, as a payable in the accounts, as a provision for risks, and as a cost normalised out of the earnings. Consolidate them into a single flag and mention the mitigants on it, rather than raising the same matter four times.
-
-RECOMMENDATION PHRASING — these are the forms used in practice; prefer them to free invention:
-- "Insert a specific indemnity in the SPA covering [the exposure], surviving until the expiry of the assessment period for the relevant fiscal years plus a grace period, secured by an escrow or a holdback."
-- "Obtain a full Sellers' warranty covering [returns not yet filed / periods still open to assessment / the matters on which documentation was not provided]."
-- "Treat [the item] as a debt-like item in the net debt definition."
-- "As a condition precedent to Closing, the Seller shall [pay the outstanding liability / obtain the lender's consent / procure the release or replacement of the guarantee / terminate the side agreement]."
-- "Prior to signing, verify [the exposure] with the Purchaser's [tax / customs / employment] advisers."
-- "Upon completion, [regularise the position through a voluntary correction / appoint an auditor / adopt the organisational model]."
 
 Priority order: check all PRIORITY RISKS first, then apply SAFE HARBOUR before raising anything else.
 

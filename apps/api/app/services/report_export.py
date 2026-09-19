@@ -19,12 +19,14 @@ import html
 import io
 import re
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from typing import TYPE_CHECKING
 
 import markdown as md_lib
 from docx import Document as _DocxDocument
 from docx.enum.section import WD_ORIENT, WD_SECTION
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
 from docx.shared import Cm, Emu, Pt, RGBColor
 from xhtml2pdf import pisa
 
@@ -66,6 +68,7 @@ h1 { font-size: 18pt; color: #0f172a; margin-top: 0; text-align: left; }
 h2 { font-size: 14pt; color: #0f172a; border-bottom: 1px solid #e2e8f0; padding-bottom: 4pt; margin-top: 18pt; text-align: left; }
 h3 { font-size: 11pt; color: #334155; margin-top: 10pt; text-align: left; }
 h4 { font-size: 10.5pt; color: #0f172a; margin-top: 10pt; margin-bottom: 4pt; text-align: left; }
+h1, h2, h3, h4 { -pdf-keep-with-next: true; }
 p  { margin: 6pt 0; text-align: justify; }
 ul, ol { margin: 6pt 0; padding-left: 20pt; }
 li { margin: 2pt 0; text-align: justify; }
@@ -334,29 +337,56 @@ _SEVERITY_COLORS: dict[str, RGBColor] = {
     "LOW":      RGBColor(0x47, 0x55, 0x69),
 }
 
-# Split a line into pieces, preserving [SEVERITY] tokens and **bold** segments.
-# Capture groups ensure the delimiters survive re.split().
-_INLINE_SPLIT_RE = re.compile(
-    r"(\[(?:CRITICAL|HIGH|MEDIUM|LOW)\]|\*\*[^*]+\*\*)"
-)
+class _DocxInlineParser(HTMLParser):
+    """Map Markdown's inline HTML to runs, sharing the PDF's emphasis rules.
+
+    Parsing Markdown first handles nested emphasis and escapes while keeping
+    intraword underscores (for example in source filenames) literal.
+    """
+
+    def __init__(self, paragraph) -> None:
+        super().__init__(convert_charrefs=True)
+        self.paragraph = paragraph
+        self.bold_depth = 0
+        self.italic_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"strong", "b"}:
+            self.bold_depth += 1
+        elif tag in {"em", "i"}:
+            self.italic_depth += 1
+        elif tag == "br":
+            self.paragraph.add_run().add_break()
+
+    def handle_endtag(self, tag):
+        if tag in {"strong", "b"}:
+            self.bold_depth = max(0, self.bold_depth - 1)
+        elif tag in {"em", "i"}:
+            self.italic_depth = max(0, self.italic_depth - 1)
+
+    def handle_data(self, data):
+        # Keep the severity styling independent of surrounding emphasis.
+        for piece in re.split(r"(\[(?:CRITICAL|HIGH|MEDIUM|LOW)\])", data):
+            if not piece:
+                continue
+            run = self.paragraph.add_run(piece)
+            # Leave absent emphasis inherited from the paragraph style,
+            # especially when this renderer is used inside a heading.
+            if self.bold_depth:
+                run.bold = True
+            if self.italic_depth:
+                run.italic = True
+            severity = _SEVERITY_RE.fullmatch(piece)
+            if severity:
+                run.bold = True
+                run.font.color.rgb = _SEVERITY_COLORS[severity.group(1)]
 
 
 def _render_inline(paragraph, text: str) -> None:
-    """Append `text` to `paragraph`, styling severity labels and bold runs."""
-    for piece in _INLINE_SPLIT_RE.split(text):
-        if not piece:
-            continue
-        sev_match = _SEVERITY_RE.fullmatch(piece)
-        if sev_match:
-            run = paragraph.add_run(piece)
-            run.bold = True
-            run.font.color.rgb = _SEVERITY_COLORS[sev_match.group(1)]
-            continue
-        if piece.startswith("**") and piece.endswith("**"):
-            run = paragraph.add_run(piece[2:-2])
-            run.bold = True
-            continue
-        paragraph.add_run(piece)
+    """Append Markdown text, retaining emphasis, filenames and severity."""
+    parser = _DocxInlineParser(paragraph)
+    parser.feed(md_lib.markdown(text))
+    parser.close()
 
 
 def _render_table(doc, lines: list[str], start: int) -> int:
@@ -391,6 +421,11 @@ def _render_table(doc, lines: list[str], start: int) -> int:
 
     table = doc.add_table(rows=1 + len(rows), cols=len(headers))
     table.style = "Light Grid Accent 1"
+    # Repeat the column labels on continuation pages. Keep ordinary findings
+    # together; Word still lets a row taller than a page flow onto the next.
+    for row in table.rows:
+        row._tr.get_or_add_trPr().append(OxmlElement("w:cantSplit"))
+    table.rows[0]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
     # On a 5-column Key Findings table, apply the same column proportions the
     # PDF export uses. Widths are computed from the CURRENT section's usable
     # width, so the table fills the page in both portrait and landscape.
@@ -407,6 +442,7 @@ def _render_table(doc, lines: list[str], start: int) -> int:
     for col, text in enumerate(headers):
         hdr_cells[col].text = ""
         p = hdr_cells[col].paragraphs[0]
+        p.paragraph_format.keep_with_next = True
         run = p.add_run(text)
         run.bold = True
     for r, row in enumerate(rows, start=1):

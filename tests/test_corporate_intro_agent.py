@@ -7,6 +7,8 @@ idempotency (re-running clears previous rows).
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.orm import Session
@@ -79,6 +81,80 @@ class TestAutoDetection:
         doc = _make_doc(db, test_deal, filename="something.pdf", raw_text="text")
         result = CorporateIntroAgent().run(test_deal.id, db, document_ids={doc.id})
         assert result["documents_analysed"] == 1
+
+
+@pytest.mark.parametrize("text", [
+    "Sede legale: Milano. Capitale sociale: EUR 100.000. Assetto proprietario: Holding Srl 100%.",
+    "Registered office: London. Share capital: GBP 100,000. Board of directors: Jane Example.",
+    "Sede\nlegale: Roma. Capitale\nsociale: EUR 10.000. Amministratrice\nunica: Elena Esempio.",
+])
+def test_corporate_facts_select_generic_filenames(text):
+    assert CorporateIntroAgent._looks_corporate(SimpleNamespace(filename="documento.pdf", raw_text=text))
+
+
+@pytest.mark.parametrize("text", [
+    "Invoice 100. Company name: TargetCo S.p.A. Amount EUR 100.",
+    "Fattura. Sede legale: Milano. Capitale sociale: EUR 100.000.",
+    "Capitale sociale EUR 10.000. Capitale sociale EUR 10.000. Capitale sociale EUR 10.000.",
+])
+def test_isolated_or_repeated_company_fields_do_not_select_unrelated_files(text):
+    assert not CorporateIntroAgent._looks_corporate(SimpleNamespace(filename="documento.pdf", raw_text=text))
+
+
+def test_late_corporate_profile_is_not_lost_to_excerpt_or_window_boundary():
+    # The heading straddles the end of the first 12k selection window, after
+    # the old 1,500-character excerpt. The overlap must retain the whole label.
+    text = "Introduction. " * 920
+    text = text[:11996] + "Profilo\nsocietario della target. Aurora Collaudo S.r.l."
+    assert CorporateIntroAgent._looks_corporate(SimpleNamespace(filename="allegati.pdf", raw_text=text))
+
+
+def test_late_corporate_fields_select_without_a_profile_heading():
+    text = "Informazioni generali. " * 1400
+    text += "\nSede legale: Milano. Capitale sociale: EUR 100.000. Amministratrice unica: Elena Esempio."
+    assert CorporateIntroAgent._looks_corporate(SimpleNamespace(filename="allegati.pdf", raw_text=text))
+
+
+def test_live_sample_profile_is_extracted_without_promoting_buyer_or_seller(db, test_deal):
+    corpus = json.loads((Path(__file__).parent / "fixtures" / "live_sample_2026_09_19.json").read_text(encoding="utf-8"))
+    test_deal.target_company_names = ["Aurora Collaudo S.r.l."]
+    db.commit()
+    documents = {
+        filename: _make_doc(db, test_deal, filename=filename, raw_text="\n".join(pages))
+        for filename, pages in corpus.items()
+    }
+    prompts = []
+
+    class SampleProvider(FakeLLMProvider):
+        def complete(self, prompt, max_tokens=2048):
+            prompts.append(prompt)
+            assert "Questo profilo non ne attesta la regolarita" in prompt
+            assert '["Aurora Collaudo S.r.l."]' in prompt
+            return json.dumps([
+                {
+                    "company_name": "Aurora Collaudo S.r.l.",
+                    "registered_office": "Milano, Via del Collaudo 10",
+                    "corporate_capital": "EUR 100.000,00 interamente versato",
+                    "shareholders": "Prisma Collaudo Holding S.r.l. — 100%",
+                    "managing_body": "Elena Esempio (amministratrice unica)",
+                    "confidence": 0.95,
+                },
+                {"company_name": "Prisma Collaudo Holding S.r.l.", "confidence": 0.99},
+                {"company_name": "Quercia Collaudo Investimenti S.p.A.", "confidence": 0.99},
+            ])
+
+    result = CorporateIntroAgent(provider=SampleProvider()).run(test_deal.id, db)
+    assert result["documents_analysed"] == 1
+    assert result["company_profiles_count"] == 1
+    assert len(prompts) == 1
+    saved = db.query(CompanyProfile).filter_by(deal_id=test_deal.id).one()
+    assert saved.company_name == "Aurora Collaudo S.r.l."
+    assert saved.source_document_id == documents["01_profilo_societario.pdf"].id
+    assert saved.registered_office == "Milano, Via del Collaudo 10"
+    assert saved.corporate_capital == "EUR 100.000,00 interamente versato"
+    assert saved.shareholders == "Prisma Collaudo Holding S.r.l. — 100%"
+    assert saved.managing_body == "Elena Esempio (amministratrice unica)"
+    assert saved.auditors is None
 
 
 # ── persistence ───────────────────────────────────────────────────────────

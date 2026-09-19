@@ -23,6 +23,9 @@ class RecordingProvider(LLMProvider):
 
     def complete(self, prompt, max_tokens=3072):
         self.calls.append((prompt, max_tokens))
+        if "GROUNDING REVIEW\n" in prompt:
+            from packages.agents.deal_analysis_agent import FakeLLMProvider
+            return FakeLLMProvider().complete(prompt, max_tokens=max_tokens)
         return self.response
 
 
@@ -160,10 +163,10 @@ def old_fingerprint(deal, documents):
     return digest.hexdigest()
 
 
-def test_legacy_default_document_fingerprints_unchanged(db, test_deal):
+def test_legacy_default_documents_require_new_fidelity_analysis(db, test_deal):
     test_deal.target_company_names = None
     doc = document(db, test_deal, role="data_room")
-    assert corpus_fingerprint(db, test_deal.id)[0] == old_fingerprint(test_deal, [doc])
+    assert corpus_fingerprint(db, test_deal.id)[0] != old_fingerprint(test_deal, [doc])
 
 
 def test_role_and_context_version_invalidate_checkpoint(db, test_deal, monkeypatch):
@@ -233,8 +236,8 @@ def test_regenerated_report_and_qa_receive_context_without_double_wrap(db, test_
     from tests.report_fixtures import complete_report_inputs
     complete_report_inputs(db, test_deal)
     generate_due_diligence_report(test_deal.id, db, provider=wrapped)
-    assert len(report_base.calls) == 1
-    assert report_base.calls[0][0].count("<transaction_context_json>") == 1
+    assert len(report_base.calls) == 2
+    assert all(prompt.count("<transaction_context_json>") == 1 for prompt, _ in report_base.calls)
     qa_base = RecordingProvider('{"answer":"The retrieved terms are proposed.","cited_chunks":[0]}')
     monkeypatch.setattr("packages.agents.deal_qa_agent.search_similar_chunks", lambda **kwargs: [
         ChunkMatch(chunk_id=1, document_id=loi.id, content=loi.raw_text, page_number=1, score=1.0)])

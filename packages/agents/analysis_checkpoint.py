@@ -18,6 +18,11 @@ STAGES = (
     ("report_generation", "report_generation"),
 )
 
+# Source-fidelity review and broader corporate selection change what a
+# completed analysis guarantees. Retain old reports, but require new analysis
+# before publishing outputs derived with an older set of rules.
+ANALYSIS_REVISION = 2
+
 
 class CheckpointError(ValueError):
     pass
@@ -69,6 +74,7 @@ def corpus_fingerprint(db, deal_id: int) -> tuple[str, set[int]]:
     def add(value):
         digest.update(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8"))
         digest.update(b"\n")
+    add({"analysis_revision": ANALYSIS_REVISION})
     add([deal.id, deal.title, deal.description, deal.value, deal.report_language])
     # Preserve existing fingerprints for unconfigured legacy deals, but any
     # explicit perimeter change must invalidate the old analysis checkpoint.
@@ -163,7 +169,7 @@ def adopt_legacy_checkpoint(db, deal_id: int, *, expected_intake_started_at: dat
     from app.models.document import Document
 
     deal = db.query(Deal).filter_by(id=deal_id).one()
-    intake, _ = _checkpoint_runs(db, deal_id)
+    intake, by_name = _checkpoint_runs(db, deal_id)
     if deal.status != "analyzing" or utc(intake.started_at) != utc(expected_intake_started_at):
         raise CheckpointError("Legacy admission does not match the verified interrupted run")
     if utc(deal.updated_at or deal.created_at) > utc(intake.started_at):
@@ -177,6 +183,15 @@ def adopt_legacy_checkpoint(db, deal_id: int, *, expected_intake_started_at: dat
     old_hash = intake.input_hash
     if old_hash and old_hash != fingerprint:
         raise CheckpointError("Existing checkpoint must not be overwritten")
+    # A missing fingerprint cannot attest to the current extraction/review
+    # semantics. Maintenance may reuse ingestion/routing, but not old analysis.
+    invalidated = []
+    if not old_hash:
+        for _, name in STAGES[2:]:
+            run = by_name.get(name)
+            if run is not None:
+                invalidated.append((run, run.status))
+                run.status = "pending"
     intake.input_hash = fingerprint
     db.flush()
     try:
@@ -186,5 +201,7 @@ def adopt_legacy_checkpoint(db, deal_id: int, *, expected_intake_started_at: dat
         return plan
     except Exception:
         intake.input_hash = old_hash
+        for run, previous_status in invalidated:
+            run.status = previous_status
         db.flush()
         raise
