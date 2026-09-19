@@ -152,7 +152,7 @@ def test_retry_is_scoped_to_document_owner(client, auth_headers, test_deal, test
     other = User(email="other-retry@example.com", hashed_password=test_user.hashed_password, full_name="Other")
     db.add(other)
     db.commit()
-    other_headers = {"Authorization": f"Bearer {create_access_token(other.email)}"}
+    other_headers = {"Authorization": f"Bearer {create_access_token(other.email, user_id=other.id, hashed_password=other.hashed_password)}"}
     pool, lookup = _redis(monkeypatch)
 
     response = client.post(f"/documents/{document.id}/retry", headers=other_headers)
@@ -175,7 +175,7 @@ def test_readiness_and_analysis_details_are_invisible_to_other_owners(
     other = User(email="other-readiness@example.com", hashed_password=test_user.hashed_password, full_name="Other")
     db.add(other)
     db.commit()
-    other_headers = {"Authorization": f"Bearer {create_access_token(other.email)}"}
+    other_headers = {"Authorization": f"Bearer {create_access_token(other.email, user_id=other.id, hashed_password=other.hashed_password)}"}
     dispatch = AsyncMock()
     monkeypatch.setattr("app.services.jobs.enqueue_or_run", dispatch)
 

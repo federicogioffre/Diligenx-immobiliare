@@ -390,7 +390,7 @@ function CompanyScopeEditor({ deal, disabled, onChanged }: {
           {saving ? 'Salvataggio…' : 'Salva perimetro'}
         </button>
         {disabled && <p className="text-xs text-slate-500">Modificabile al termine dell’analisi.</p>}
-        {saved && <p role="status" className="text-xs text-emerald-700">Perimetro salvato. Sezione societaria aggiornata nei report disponibili.</p>}
+        {saved && <p role="status" className="text-xs text-emerald-700">Perimetro salvato. Esegui una nuova analisi per aggiornare i rilievi e il report.</p>}
       </div>
       {error && <div className="mt-3"><ErrorAlert error={error} /></div>}
     </section>

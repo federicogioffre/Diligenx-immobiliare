@@ -147,11 +147,11 @@ class TestClauseExtraction:
         for cf in _clause_findings(db, doc):
             assert cf.content  # non-empty
 
-    def test_clause_page_number_stored(self, db, test_deal):
+    def test_clause_page_without_ingestion_evidence_is_not_stored(self, db, test_deal):
         doc = _make_doc(db, test_deal)
         ContractAgent().run(test_deal.id, db)
         for cf in _clause_findings(db, doc):
-            assert cf.page_number is not None
+            assert cf.page_number is None
 
     def test_clause_confidence_stored(self, db, test_deal):
         doc = _make_doc(db, test_deal)
@@ -977,4 +977,3 @@ class TestCCNLComplianceAnalysis:
             if f.category == "ccnl_compliance"
         ])
         assert first_count == second_count  # no duplication
-

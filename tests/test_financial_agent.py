@@ -846,7 +846,7 @@ def _fin_single(db: Session, deal: Deal, **overrides) -> AgentFinding:
                 return json.dumps([item])
             return "[]"
 
-    doc = _make_doc(db, deal, raw_text="Bilancio d'esercizio al 31 dicembre.")
+    doc = _make_doc(db, deal, raw_text="Bilancio d'esercizio al 31 dicembre. Finanziamento: EUR 120000.")
     set_llm_provider(_Stub())
     FinancialAgent().run(deal.id, db, document_ids={doc.id})
     return _agent_findings(db, deal)[0]
@@ -967,7 +967,7 @@ class TestFinancialPayload:
     """Amounts, counterparties and the two covenant booleans."""
 
     def test_amount_stated_by_document_is_kept(self, db: Session, test_deal: Deal):
-        finding = _fin_single(db, test_deal, amount_eur=120000)
+        finding = _fin_single(db, test_deal, amount_eur=120000, amount_evidence="EUR 120000")
         payload = finding.structured_payload_json
         assert payload["amount_eur"] == 120000
         assert payload["amount_source"] == "document"
@@ -1011,4 +1011,3 @@ class TestFinancialPayload:
         assert payload["amount_eur"] is None
         assert payload["amount_source"] == "not_stated"
         assert payload["change_of_control_clause"] is None
-

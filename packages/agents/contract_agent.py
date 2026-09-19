@@ -254,6 +254,7 @@ class ContractAgent:
             db.flush()
 
             for (doc, _, _, _), analysis in zip(to_analyse, analyses):
+                from packages.agents.evidence import verified_clause_page
                 doc_clauses: list = []
                 for p in analysis["clauses"]:
                     finding = ClauseFinding(
@@ -261,7 +262,7 @@ class ContractAgent:
                         clause_type=ClauseType(p["clause_type"]),
                         title=p["title"],
                         content=p["content"],
-                        page_number=p["page_number"],
+                        page_number=verified_clause_page(p["content"], doc.chunks, doc.page_count),
                         confidence=p["confidence"],
                         relevance_score=p["relevance_score"],
                         relevance_reason=p["relevance_reason"],
@@ -575,8 +576,19 @@ class ContractAgent:
 
     def _classify_relevance_payloads(self, payloads: list[dict], filename: str, is_ccnl: bool) -> list[dict]:
         kept: list[dict] = []
-        for start in range(0, len(payloads), 30):
-            kept.extend(self._classify_relevance_batch(payloads[start:start + 30], filename, is_ccnl))
+        batch: list[dict] = []
+        chars = 0
+        for payload in payloads:
+            size = len(json.dumps(payload, ensure_ascii=False))
+            if size > 24000:
+                raise LLMResponseError("Clause relevance: a clause exceeds the complete-context budget")
+            if batch and (len(batch) == 30 or chars + size > 24000):
+                kept.extend(self._classify_relevance_batch(batch, filename, is_ccnl))
+                batch, chars = [], 0
+            batch.append(payload)
+            chars += size
+        if batch:
+            kept.extend(self._classify_relevance_batch(batch, filename, is_ccnl))
         return kept
 
     def _classify_relevance_batch(
@@ -599,13 +611,14 @@ class ContractAgent:
         if not payloads:
             return payloads
 
-        # Build compact input — use a content preview to save tokens.
+        # Relevance must consider the complete quotation, including exceptions
+        # and termination triggers at the end of a clause.
         clauses_input = [
             {
                 "clause_index": i,
                 "clause_type": p["clause_type"],
                 "title": p["title"],
-                "content_preview": p["content"][:300],
+                "content_preview": p["content"],
             }
             for i, p in enumerate(payloads)
         ]

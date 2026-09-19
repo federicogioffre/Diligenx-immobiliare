@@ -313,6 +313,8 @@ def test_large_report_uses_bounded_summary_and_keeps_every_finding(db, test_deal
         def complete(self, *args, **kwargs):
             raise AssertionError("Large reports must not send an unbounded summary prompt")
 
+    from tests.report_fixtures import complete_report_inputs
+    complete_report_inputs(db, test_deal)
     result = generate_due_diligence_report(test_deal.id, db, provider=NoUnboundedSummary())
     report = db.get(Report, result["report_id"])
     assert report.status == ReportStatus.completed

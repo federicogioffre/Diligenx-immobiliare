@@ -164,8 +164,8 @@ export default function DashboardPage() {
     try {
       const updated = await api.deals.update(editDeal.id, {
         title: editTitle,
-        description: editDescription || undefined,
-        value: editValue ? Number(editValue) : undefined,
+        description: editDescription || null,
+        value: editValue ? Number(editValue) : null,
       })
       setDeals((prev) => prev.map((d) => (d.id === updated.id ? updated : d)))
       setEditDeal(null)

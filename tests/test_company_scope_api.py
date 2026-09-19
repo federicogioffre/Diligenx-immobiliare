@@ -67,7 +67,7 @@ def test_no_scope_does_not_guess_from_title_or_profile_frequency(client, auth_he
     assert response.json() == []
 
 
-def test_setting_scope_refreshes_only_saved_intro_without_llm(client, auth_headers, db, test_deal):
+def test_setting_scope_preserves_saved_report_and_requires_new_analysis(client, auth_headers, db, test_deal):
     seed_profiles(db, test_deal)
     report = seed_report(db, test_deal)
     previous = report.content
@@ -76,28 +76,25 @@ def test_setting_scope_refreshes_only_saved_intro_without_llm(client, auth_heade
                                 json={"target_company_names": ["TargetCo S.p.A."]})
     assert response.status_code == 200
     db.refresh(report)
-    assert report.content.startswith(previous.split("## 2.")[0])
-    assert report.content.split("## 3.")[1] == previous.split("## 3.")[1]
-    assert report.content.count("### 2.1 TargetCo S.p.A.") == 1
-    assert "Supplier" not in report.content
-    assert "Milano" in report.content and "Euro 100.000" in report.content
+    assert report.content == previous
     saved = client.get(f"/deals/{test_deal.id}/report", headers=auth_headers)
     assert saved.json()["markdown"] == report.content
+    assert saved.json()["stale"] is True
     with patch("app.services.report_export.render_pdf", return_value=b"%PDF-1.4") as render:
         export = client.get(f"/deals/{test_deal.id}/report/export?format=pdf", headers=auth_headers)
-    assert export.status_code == 200
-    assert render.call_args.args[1].content == report.content
+    assert export.status_code == 409
+    render.assert_not_called()
 
 
-def test_scope_change_rolls_back_if_report_shape_is_unknown(client, auth_headers, db, test_deal):
+def test_scope_change_preserves_unknown_report_without_rewriting_it(client, auth_headers, db, test_deal):
     report = seed_report(db, test_deal, content="Custom report without a known introductory section")
     response = client.patch(f"/deals/{test_deal.id}", headers=auth_headers,
                             json={"target_company_names": ["Other S.r.l."], "title": "Changed"})
-    assert response.status_code == 409
+    assert response.status_code == 200
     db.refresh(test_deal)
     db.refresh(report)
-    assert test_deal.title == "Test Deal"
-    assert test_deal.target_company_names == ["TargetCo S.p.A."]
+    assert test_deal.title == "Changed"
+    assert test_deal.target_company_names == ["Other S.r.l."]
     assert report.content == "Custom report without a known introductory section"
 
 

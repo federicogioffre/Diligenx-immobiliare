@@ -746,6 +746,11 @@ def _parse_llm_items(raw: str, *, context: str) -> list[dict]:
     return items
 
 
+VALID_DOCUMENT_TYPES = frozenset({
+    "contract", "agreement", "legal", "invoice", "financial_statement", "tax", "report", "other",
+})
+
+
 def _parse_classification(raw: str) -> dict:
     result = _safe_json(raw)
     if (
@@ -754,6 +759,10 @@ def _parse_classification(raw: str) -> dict:
         or not result["document_type"].strip()
     ):
         raise LLMResponseError("Document classification: expected an object with document_type")
+    document_type = result["document_type"].strip().lower()
+    if document_type not in VALID_DOCUMENT_TYPES:
+        raise LLMResponseError("Document classification: unsupported document_type")
+    result["document_type"] = document_type
     return result
 
 
@@ -1007,7 +1016,7 @@ class DealAnalysisAgent:
                     clause_type=ClauseType(clause_type_str),
                     title=str(item.get("title", ""))[:500],
                     content=content,
-                    page_number=item.get("page_number"),
+                    page_number=None,
                     confidence=confidence,
                 )
                 db.add(finding)

@@ -24,6 +24,7 @@ async function mockScope(page: Page, status = 'reviewed', rejectSave = false) {
       if (request.method() === 'PATCH') {
         if (rejectSave) return route.fulfill({ status: 409, json: { detail: 'Il report esistente richiede verifica prima di aggiornare il perimetro.' } })
         names = request.postDataJSON().target_company_names
+        status = 'draft'
       }
       return route.fulfill({ json: { id: 4, title: 'Operazione Riservata', status, report_language: 'it', target_company_names: names } })
     }
@@ -37,8 +38,9 @@ async function mockScope(page: Page, status = 'reviewed', rejectSave = false) {
     }
     if (path === '/deals/4/analysis-checkpoint') return route.fulfill({ json: { available: false } })
     if (path === '/deals/4/report') return route.fulfill({ json: {
+      report_id: 1, deal_id: 4, generation_available: false, stale: true,
       markdown: '# Report\n\n## 1. Introduzione\nTesto invariato.\n\n## 2. Informazioni Societarie\n\n'
-        + names.map((name, index) => `### 2.${index + 1} ${name}\n\n| Campo | Valore |\n|---|---|\n| Sede | Milano |\n`).join('\n')
+        + '### 2.1 Alfa S.r.l.\n\n| Campo | Valore |\n|---|---|\n| Sede | Milano |\n'
         + '\n## 3. Executive Summary\nRiassunto invariato.',
     } })
     if (path === '/documents/deals/4/documents' || /\/(agent-runs|red-flags|open-questions|missing-documents)$/.test(path)) {
@@ -49,7 +51,7 @@ async function mockScope(page: Page, status = 'reviewed', rejectSave = false) {
   return { writes, profileReads: () => profileReads }
 }
 
-test('scope saves trimmed legal names, refreshes profiles and opens the updated report', async ({ page }) => {
+test('scope saves legal names and marks the preserved report as out of date', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   const state = await mockScope(page)
   await page.goto('/deals/4')
@@ -69,10 +71,11 @@ test('scope saves trimmed legal names, refreshes profiles and opens the updated 
   expect(state.profileReads()).toBeGreaterThanOrEqual(2)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 
-  await page.getByRole('link', { name: 'Vedi Report', exact: true }).click()
+  await page.getByRole('link', { name: 'Report', exact: true }).click()
   await expect(page).toHaveURL(/\/deals\/4\/report$/, { timeout: 15_000 })
-  await expect(page.getByRole('heading', { name: '2.1 Beta S.r.l.', exact: true })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '2.2 Gamma S.p.A.', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '2.1 Alfa S.r.l.', exact: true })).toBeVisible()
+  await expect(page.getByRole('alert').filter({ hasText: 'versione precedente conservata' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'PDF', exact: true })).toBeDisabled()
   await expect(page.getByText('Riassunto invariato.', { exact: true })).toBeVisible()
   expect(state.writes).toHaveLength(1)
 })

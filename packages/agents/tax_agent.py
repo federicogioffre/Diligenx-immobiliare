@@ -988,6 +988,8 @@ class TaxAgent:
 
             legal_basis = item.get("legal_basis")
             legal_basis = str(legal_basis)[:200] if legal_basis else None
+            from packages.agents.evidence import grounded_amount
+            amount, amount_source, amount_evidence = grounded_amount(item, text)
 
             payloads.append({
                 "finding_type": finding_type,
@@ -999,7 +1001,9 @@ class TaxAgent:
                 "legal_basis": legal_basis,
                 "fiscal_years": fiscal_years,
                 "assessment_periods": periods,
-                "amount_eur": _normalize_amount(item),
+                "amount_eur": amount,
+                "amount_source": amount_source,
+                "amount_evidence": amount_evidence,
                 "mitigating_factors": mitigations,
                 "confidence": item.get("confidence"),
                 "source": "llm",
@@ -1088,9 +1092,8 @@ class TaxAgent:
                     # Explicit, so a reader can tell "the document states no
                     # figure" from "nobody looked". Quantification is an
                     # information request, never an estimate.
-                    "amount_source": (
-                        "document" if p.get("amount_eur") is not None else "not_stated"
-                    ),
+                    "amount_source": p.get("amount_source", "not_stated"),
+                    "amount_evidence": p.get("amount_evidence"),
                     "mitigating_factors": p.get("mitigating_factors", []),
                 },
             )

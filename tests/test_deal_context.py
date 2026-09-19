@@ -230,6 +230,8 @@ def test_regenerated_report_and_qa_receive_context_without_double_wrap(db, test_
     db.commit()
     report_base = RecordingProvider("A summary based on the analyzed findings.")
     wrapped = with_deal_context(report_base, db, test_deal.id)
+    from tests.report_fixtures import complete_report_inputs
+    complete_report_inputs(db, test_deal)
     generate_due_diligence_report(test_deal.id, db, provider=wrapped)
     assert len(report_base.calls) == 1
     assert report_base.calls[0][0].count("<transaction_context_json>") == 1

@@ -95,7 +95,7 @@ def login(
     user = db.query(User).filter(User.email == form.username).first()
     if not user or not verify_password(form.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    token = create_access_token(user.email)
+    token = create_access_token(user.email, user_id=user.id, hashed_password=user.hashed_password)
     _set_session_cookies(response, token)
     return {"access_token": token}
 
@@ -178,8 +178,11 @@ def reset_password(
     against, so it is single-use: the first successful reset (or any
     password change) invalidates every outstanding token.
     """
-    if len(payload.new_password) < 8:
-        raise HTTPException(status_code=422, detail="La password deve avere almeno 8 caratteri")
+    from app.core.security import validate_password
+    try:
+        validate_password(payload.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
 
     # Decode WITHOUT the fingerprint first to locate the user, then
     # validate properly against that user's current hash.
@@ -193,7 +196,7 @@ def reset_password(
 
     user = db.query(User).filter(
         User.email == claims.get("sub"), User.is_active == True
-    ).first()
+    ).with_for_update().populate_existing().first()
     if not user:
         raise HTTPException(status_code=400, detail="Link non valido o scaduto")
 

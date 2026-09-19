@@ -219,6 +219,8 @@ export interface ReportResponse {
   report_id: number
   deal_id: number
   markdown: string
+  generation_available: boolean
+  stale: boolean
 }
 
 export interface QASource {
@@ -518,7 +520,7 @@ export const api = {
       id: number,
       data: {
         title?: string
-        description?: string
+        description?: string | null
         value?: number | null
         report_language?: 'it' | 'en' | 'auto'
         target_company_names?: string[] | null

@@ -106,7 +106,7 @@ class TestAgentRunEndpoint:
         db.commit()
         db.refresh(other)
 
-        token = create_access_token(other.email)
+        token = create_access_token(other.email, user_id=other.id, hashed_password=other.hashed_password)
         response = client.get(
             f"/deals/{test_deal.id}/agent-runs",
             headers={"Authorization": f"Bearer {token}"},

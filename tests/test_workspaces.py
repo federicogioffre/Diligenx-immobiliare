@@ -25,7 +25,7 @@ def _make_other_user(db):
     db.commit()
     db.refresh(other_ws)
 
-    headers = {"Authorization": f"Bearer {create_access_token(other.email)}"}
+    headers = {"Authorization": f"Bearer {create_access_token(other.email, user_id=other.id, hashed_password=other.hashed_password)}"}
     return other, other_ws, headers
 
 

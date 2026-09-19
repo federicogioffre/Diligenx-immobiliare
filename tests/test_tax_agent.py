@@ -815,7 +815,9 @@ class TestAmounts:
         self, db: Session, test_deal: Deal
     ):
         doc = _make_doc(db, test_deal)
-        set_llm_provider(_single_finding_provider(amount_eur=240000))
+        doc.raw_text += " Importo: EUR 240000."
+        db.commit()
+        set_llm_provider(_single_finding_provider(amount_eur=240000, amount_evidence="EUR 240000"))
         result = TaxAgent().run(test_deal.id, db, document_ids={doc.id})
 
         payload = _agent_findings(db, test_deal)[0].structured_payload_json

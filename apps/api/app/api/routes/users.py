@@ -92,6 +92,7 @@ def export_my_data(
             "value": deal.value,
             "status": deal.status.value if deal.status else None,
             "report_language": deal.report_language,
+            "target_company_names": deal.target_company_names,
             "created_at": _iso(deal.created_at),
             "documents": [_document(d) for d in deal.documents],
             "red_flags": [
@@ -206,7 +207,7 @@ def delete_my_account(
     account.
 
     Deletion order:
-    1. stored files on R2/local (best-effort, per document)
+    1. stored files on R2/local (retain references on a storage failure)
     2. workspaces — the ORM cascades take deals, documents, chunks,
        findings, red flags, reports, agent runs, open questions,
        missing documents and company profiles with them
@@ -225,7 +226,11 @@ def delete_my_account(
     for ws in workspaces:
         for deal in ws.deals:
             for doc in deal.documents:
-                delete_file(doc.file_path)  # best-effort, never raises
+                try:
+                    delete_file(doc.file_path, strict=True)
+                except Exception:
+                    db.rollback()
+                    raise HTTPException(503, "Cancellazione dei file non completata. Riprova.") from None
                 files_deleted += 1
 
     for ws in workspaces:

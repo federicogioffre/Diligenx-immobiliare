@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -9,37 +10,61 @@ from app.core.config import settings
 
 
 def hash_password(password: str) -> str:
+    if len(password.encode("utf-8")) > 72:
+        raise ValueError("Password exceeds bcrypt's 72-byte limit")
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
+def validate_password(password: str) -> None:
+    if len(password) < 8 or len(password.encode("utf-8")) > 72:
+        raise ValueError("La password deve avere almeno 8 caratteri e non superare 72 byte UTF-8")
+
+
 def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode(), hashed.encode())
+    if len(plain.encode("utf-8")) > 72:
+        return False
+    try:
+        return bcrypt.checkpw(plain.encode(), hashed.encode())
+    except ValueError:
+        return False
 
 
-def create_access_token(subject: str) -> str:
+def create_access_token(subject: str, *, user_id: int, hashed_password: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": subject, "exp": expire, "typ": "access"}
+    payload = {"sub": subject, "exp": expire, "typ": "access", "uid": user_id,
+               "fp": _password_fingerprint(hashed_password)}
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def decode_token(token: str) -> str:
-    """Decode a session access token and return its subject (email).
+def decode_access_claims(token: str) -> dict:
+    """Decode the signed, account-bound claims of a session access token.
 
     Rejects scoped tokens (e.g. SSE stream tickets): a short-lived ticket
     leaked through a URL must never be usable as a full session credential.
-    Tokens without a ``typ`` claim are accepted for backward compatibility
-    with sessions issued before token typing was introduced.
+    Unbound legacy sessions must sign in again. Accepting them would retain
+    access after an account is recreated or its password is reset.
     """
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         sub: str = payload.get("sub")
         if sub is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-        if payload.get("scope") is not None or payload.get("typ", "access") != "access":
+        if (payload.get("scope") is not None or payload.get("typ") != "access"
+                or type(payload.get("uid")) is not int
+                or not isinstance(payload.get("fp"), str)):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-        return sub
+        return payload
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+
+def decode_token(token: str) -> str:
+    return decode_access_claims(token)["sub"]
+
+
+def session_matches_user(claims: dict, user) -> bool:
+    return (claims["uid"] == user.id and claims["sub"] == user.email
+            and hmac.compare_digest(claims["fp"], _password_fingerprint(user.hashed_password)))
 
 
 # ── SSE stream tickets ──────────────────────────────────────────────────────

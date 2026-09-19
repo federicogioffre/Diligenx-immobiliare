@@ -21,3 +21,5 @@ class ReportGenerateResponse(BaseModel):
     report_id: int
     deal_id: int
     markdown: str
+    generation_available: bool = True
+    stale: bool = False

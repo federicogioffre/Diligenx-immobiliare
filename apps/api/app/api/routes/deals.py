@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from app.core.limiter import limiter
 from sqlalchemy.orm import Session, selectinload
+from starlette.concurrency import run_in_threadpool
 
 from app.db.session import get_db
 from app.models.agent_run import AgentRun
@@ -109,44 +110,15 @@ def update_deal(
     if deal.status == 'analyzing':
         raise HTTPException(409, 'Attendi la fine dell’analisi prima di modificare la pratica.')
 
+    before = (deal.title, deal.description, deal.value, deal.target_company_names, deal.report_language)
     if payload.title is not None:
         deal.title = payload.title
-    if payload.description is not None:
+    if "description" in payload.model_fields_set:
         deal.description = payload.description
-    if payload.value is not None:
+    if "value" in payload.model_fields_set:
         deal.value = payload.value
     if "target_company_names" in payload.model_fields_set:
         deal.target_company_names = payload.target_company_names
-        # Rebuild only the introductory section from existing source evidence;
-        # the financial analysis, findings and executive summary stay intact.
-        from app.models.company_profile import CompanyProfile
-        from app.models.report import Report, ReportType
-        from packages.agents.report_agent import refresh_corporate_intro_section
-        profiles = (
-            db.query(CompanyProfile)
-            .options(selectinload(CompanyProfile.source_document))
-            .filter(CompanyProfile.deal_id == deal_id)
-            .order_by(CompanyProfile.id)
-            .all()
-        )
-        reports = db.query(Report).filter(
-            Report.deal_id == deal_id, Report.report_type == ReportType.due_diligence,
-        ).all()
-        for report in reports:
-            if not report.content:
-                continue
-            language = "it" if re.search(
-                r"^## (?:2\.\s+)?Informazioni Societarie[ \t]*\r?$", report.content, re.MULTILINE,
-            ) else "en"
-            try:
-                report.content = refresh_corporate_intro_section(
-                    report.content, profiles, deal.target_company_names, language,
-                )
-            except ValueError:
-                db.rollback()
-                raise HTTPException(
-                    409, "Il report esistente ha una struttura non riconosciuta: rigeneralo prima di modificare il perimetro.",
-                ) from None
     if payload.report_language is not None:
         lang = payload.report_language.lower().strip()
         if lang not in ("it", "en", "auto"):
@@ -157,6 +129,9 @@ def update_deal(
         # "auto" clears the override → back to majority-language detection.
         deal.report_language = None if lang == "auto" else lang
 
+    after = (deal.title, deal.description, deal.value, deal.target_company_names, deal.report_language)
+    if before != after:
+        deal.status = "draft"
     db.commit()
     db.refresh(deal)
     return deal
@@ -181,6 +156,13 @@ def delete_deal(
     if deal.status == 'analyzing':
         raise HTTPException(409, 'Attendi la fine dell’analisi prima di eliminare la pratica.')
 
+    from app.services.storage import delete_file
+    try:
+        for document in deal.documents:
+            delete_file(document.file_path, strict=True)
+    except Exception:
+        db.rollback()
+        raise HTTPException(503, 'Cancellazione dei file non completata. Riprova.') from None
     db.delete(deal)
     db.commit()
 
@@ -275,7 +257,11 @@ async def analyze_deal(
     # deal-row lock, so the document set cannot change underneath this check.
     from app.models.deal import DealStatus
     from app.models.document import Document
-    deal = db.query(Deal).filter(Deal.id == deal_id).with_for_update().populate_existing().one()
+    # A competing admission may await Redis while holding this row. Waiting
+    # synchronously here would prevent its coroutine from releasing the lock.
+    deal = await run_in_threadpool(lambda: db.query(Deal).filter(
+        Deal.id == deal_id,
+    ).with_for_update().populate_existing().one())
     if deal.status == DealStatus.analyzing:
         raise HTTPException(status_code=409, detail="Analysis is already running")
     incomplete = []
@@ -366,9 +352,9 @@ async def resume_analysis(
     from app.services.jobs import enqueue_or_run
     from packages.agents.analysis_checkpoint import CheckpointError, validate_resume
 
-    deal = db.query(Deal).filter(
+    deal = await run_in_threadpool(lambda: db.query(Deal).filter(
         Deal.id == deal_id, Deal.workspace.has(owner_id=current_user.id),
-    ).with_for_update().populate_existing().first()
+    ).with_for_update().populate_existing().first())
     if deal is None:
         raise HTTPException(404, "Deal not found")
     if deal.status == DealStatus.analyzing:
@@ -790,10 +776,14 @@ def get_report(
     if not report:
         raise HTTPException(status_code=404, detail="No report generated yet")
 
+    from packages.agents.analysis_checkpoint import report_publication_state
+    generation_available, stale = report_publication_state(db, deal_id, report)
     return ReportGenerateResponse(
         report_id=report.id,
         deal_id=deal_id,
         markdown=report.content or "",
+        generation_available=generation_available,
+        stale=stale,
     )
 
 
@@ -836,6 +826,11 @@ def export_report(
     )
     if not report:
         raise HTTPException(status_code=404, detail="No report generated yet")
+
+    from packages.agents.analysis_checkpoint import report_publication_state
+    _, stale = report_publication_state(db, deal_id, report)
+    if stale:
+        raise HTTPException(status_code=409, detail="Il report non corrisponde all'analisi corrente: completa l'analisi e rigeneralo.")
 
     from app.services.report_export import render_docx, render_pdf
 

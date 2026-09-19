@@ -882,13 +882,17 @@ class FinancialAgent:
 
             counterparty = item.get("counterparty")
             counterparty = str(counterparty)[:200] if counterparty else None
+            from packages.agents.evidence import grounded_amount
+            amount, amount_source, amount_evidence = grounded_amount(item, text)
 
             payloads.append({
                 "finding_type": finding_type,
                 "title": str(item.get("title", ""))[:100],
                 "description": str(item.get("description", ""))[:400],
                 "severity": severity_str,
-                "amount_eur": _normalize_amount(item),
+                "amount_eur": amount,
+                "amount_source": amount_source,
+                "amount_evidence": amount_evidence,
                 "counterparty": counterparty,
                 # Only meaningful on a covenant finding; the two booleans
                 # are the whole legal deliverable of a financing review, so
@@ -909,17 +913,21 @@ class FinancialAgent:
     ) -> list[dict]:
         """Deterministic floor findings the LLM must not silently drop.
 
-        For each heuristic whose keyword appears in *text*, emit a finding
-        unless the LLM already produced one of the same ``finding_type``
-        for this document. At most one floor per ``finding_type``.
+        Keep the strongest matching floor per type. An existing weaker
+        finding of that type must not suppress a stronger control trigger.
         """
         lowered = text.lower()
-        covered_types = {p["finding_type"] for p in llm_payloads}
+        severity_order = {"low": 0, "medium": 1, "high": 2}
+        covered_types = {
+            p["finding_type"]: max(severity_order.get(q["severity"], 0)
+                for q in llm_payloads if q["finding_type"] == p["finding_type"])
+            for p in llm_payloads
+        }
         seen_types: set[str] = set()
 
         payloads: list[dict] = []
-        for h in _FINANCIAL_HEURISTICS:
-            if h.finding_type in covered_types or h.finding_type in seen_types:
+        for h in sorted(_FINANCIAL_HEURISTICS, key=lambda h: severity_order[h.severity], reverse=True):
+            if covered_types.get(h.finding_type, -1) >= severity_order[h.severity] or h.finding_type in seen_types:
                 continue
             if h.keyword not in lowered:
                 continue
@@ -976,9 +984,8 @@ class FinancialAgent:
                     # Distinguishes "the document states no figure" from
                     # "nobody looked": pricing an item is the client's
                     # advisers' job, never the pipeline's.
-                    "amount_source": (
-                        "document" if p.get("amount_eur") is not None else "not_stated"
-                    ),
+                    "amount_source": p.get("amount_source", "not_stated"),
+                    "amount_evidence": p.get("amount_evidence"),
                     "counterparty": p.get("counterparty"),
                     "change_of_control_clause": p.get("change_of_control_clause"),
                     "financial_covenant": p.get("financial_covenant"),

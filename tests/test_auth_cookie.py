@@ -168,7 +168,7 @@ def test_stream_rejects_ticket_for_other_deal(client, test_user, test_deal, auth
 
 def test_stream_rejects_full_session_token(client, test_user, test_deal):
     """The old ?token=<session JWT> pattern must no longer work."""
-    session_token = create_access_token(test_user.email)
+    session_token = create_access_token(test_user.email, user_id=test_user.id, hashed_password=test_user.hashed_password)
     resp = client.get(
         f"/deals/{test_deal.id}/analysis-stream?ticket={session_token}"
     )

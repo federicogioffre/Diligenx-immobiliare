@@ -155,7 +155,7 @@ def test_loi_uploads_and_promotions_cannot_access_another_owner(
     other = User(email="other-loi@example.com", hashed_password=test_user.hashed_password)
     db.add(other)
     db.commit()
-    other_headers = {"Authorization": f"Bearer {create_access_token(other.email)}"}
+    other_headers = {"Authorization": f"Bearer {create_access_token(other.email, user_id=other.id, hashed_password=other.hashed_password)}"}
     pool.enqueue_job.reset_mock()
     storage.reset_mock()
 

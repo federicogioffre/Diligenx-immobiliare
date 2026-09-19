@@ -9,6 +9,7 @@ from app.models.document import Document, DocumentStatus
 from packages.agents.deal_analysis_agent import FakeLLMProvider, set_llm_provider
 from packages.agents.output_language import resolve_output_language
 from packages.agents.report_agent import generate_due_diligence_report
+from tests.report_fixtures import complete_report_inputs
 
 
 @pytest.fixture(autouse=True)
@@ -66,6 +67,7 @@ class TestItalianReport:
 
     def test_italian_headings_when_docs_italian(self, db, test_deal):
         _doc(db, test_deal, "it", 1)
+        complete_report_inputs(db, test_deal)
         md = generate_due_diligence_report(test_deal.id, db)["markdown"]
         # Section numbering (1., 1.1, ...) is applied at render time.
         assert "## 1. Introduzione" in md
@@ -81,11 +83,13 @@ class TestItalianReport:
         test_deal.report_language = "it"
         db.commit()
         _doc(db, test_deal, "en", 1)  # docs English, override wins
+        complete_report_inputs(db, test_deal)
         md = generate_due_diligence_report(test_deal.id, db)["markdown"]
         assert "## 1. Introduzione" in md
 
     def test_english_report_unchanged(self, db, test_deal):
         _doc(db, test_deal, "en", 1)
+        complete_report_inputs(db, test_deal)
         md = generate_due_diligence_report(test_deal.id, db)["markdown"]
         assert "## 1. Introduction" in md
         assert "_STRICTLY PRIVATE AND CONFIDENTIAL_" in md

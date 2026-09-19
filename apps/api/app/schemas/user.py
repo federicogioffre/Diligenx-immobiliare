@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 from datetime import datetime
 
 
@@ -6,6 +6,13 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str
     full_name: str | None = None
+
+    @field_validator("password")
+    @classmethod
+    def valid_password(cls, value):
+        from app.core.security import validate_password
+        validate_password(value)
+        return value
 
 
 class UserRead(BaseModel):

@@ -273,9 +273,13 @@ class TestRedFlagCreation:
         return _PageLLM()
 
     def test_source_page_persisted_when_it_matches_a_clause_page(self, db, test_deal):
-        """A cited page that exists among the document's clause findings is kept."""
+        """A cited page independently backed by extracted text is kept."""
         doc = _make_doc(db, test_deal)
-        _make_clause_finding(db, doc, page_number=7)
+        finding = _make_clause_finding(db, doc, page_number=7)
+        from app.models.document_chunk import DocumentChunk
+        doc.page_count = 7
+        db.add(DocumentChunk(document_id=doc.id, chunk_index=0, content=finding.content, page_number=7))
+        db.commit()
         RedFlagAggregationAgent(provider=self._page_llm(doc.id, 7)).run(test_deal.id, db)
         flag = _red_flags(db, test_deal)[0]
         assert flag.source_page == 7
@@ -1049,8 +1053,10 @@ class TestCarriedFigures:
     """The amount and the years the specialists extracted must survive."""
 
     def test_amount_and_years_are_carried(self, db, test_deal):
+        doc = _make_doc(db, test_deal, raw_text="Avviso di accertamento: EUR 240000.")
         RedFlagAggregationAgent(
-            provider=_flag_llm(amount_eur=240000, fiscal_years=[2022, 2021])
+            provider=_flag_llm(amount_eur=240000, fiscal_years=[2022, 2021],
+                               source_document_id=doc.id, amount_evidence="EUR 240000")
         ).run(test_deal.id, db)
         payload = _red_flags(db, test_deal)[0].structured_payload_json
         assert payload["amount_eur"] == 240000
@@ -1143,6 +1149,7 @@ class TestPayloadSummary:
             "defensibility": "actual",
             "tax_kind": "iva",
             "amount_eur": 85000,
+            "amount_source": "document",
             "fiscal_years": [2021, 2022],
             "mitigating_factors": ["instalment_plan_in_force"],
             "legal_basis": "art. 13 D.Lgs. 471/1997",
@@ -1179,4 +1186,3 @@ class TestPayloadSummary:
             {"change_of_control_clause": True}
         )
         assert _summarize_payload({"change_of_control_clause": False}) == ""
-
