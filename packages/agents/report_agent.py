@@ -254,16 +254,22 @@ def _render_introduction(deal_title: str, areas_reviewed: list[str], lang: str) 
         if areas_reviewed
         else _NO_AREAS_LINE[lang]
     )
-    # Computed from the rules registry rather than fixed: the assessment
-    # period moved from four years to five, so a sentence naming a number of
-    # years would already be wrong for anything filed from 2016 on.
-    from packages.agents import tax_rules_registry
+    # A statutory assessment window does not establish which fiscal years
+    # have actually been reviewed. State the documentary limit explicitly.
+    tax_scope = {
+        "it": "La copertura fiscale è limitata agli atti e ai periodi espressamente "
+              "documentati nei rilievi; la disponibilità di documenti per altri "
+              "periodi non è attestata dal presente Report.",
+        "en": "Tax coverage is limited to the acts and periods expressly "
+              "documented in the findings; this Report does not establish "
+              "that documents for other periods were available.",
+    }
 
     return _INTRO_TEMPLATES[lang].format(
         intro_heading=_L10N[lang]["intro_heading"],
         deal_title=deal_title,
         areas_text=areas_text,
-        tax_scope_sentence=tax_rules_registry.describe_scope(language=lang),
+        tax_scope_sentence=tax_scope[lang],
     )
 
 
@@ -273,6 +279,31 @@ def _format_source_citation(flag, doc_names: dict, lang: str) -> str:
     Returns "" when there is no source document. The page is included only
     when the aggregator attributed (and validated) one.
     """
+    payload = getattr(flag, "structured_payload_json", None) or {}
+    if not isinstance(payload, dict) or payload.get("grounding_reviewed") is not True:
+        payload = {}
+    # New reports can have several independently validated source pages.
+    # Never collapse a combined finding to one arbitrary page.
+    references: dict[int, set[int]] = {}
+    for entry in payload.get("evidence", []):
+        if isinstance(entry, dict) and type(entry.get("source_document_id")) is int:
+            doc_id = entry["source_document_id"]
+            if doc_id in doc_names:
+                references.setdefault(doc_id, set())
+    for item in payload.get("source_pages", []):
+        if not isinstance(item, dict):
+            continue
+        doc_id, page = item.get("source_document_id"), item.get("page")
+        if type(doc_id) is int and doc_id in doc_names and type(page) is int and page > 0:
+            references.setdefault(doc_id, set()).add(page)
+    if references:
+        page_label = "pp." if lang == "en" else "pagg."
+        single_label = "p." if lang == "en" else "pag."
+        return "(" + "; ".join(
+            (f"{doc_names[doc_id]}, {page_label if len(pages) > 1 else single_label} "
+             + ", ".join(str(page) for page in sorted(pages))) if pages else doc_names[doc_id]
+            for doc_id, pages in sorted(references.items())
+        ) + ")"
     doc_id = getattr(flag, "source_document_id", None)
     if doc_id is None:
         return ""
@@ -696,6 +727,16 @@ class IncompleteAnalysisError(RuntimeError):
     """A report cannot be published from failed or unfinished analysis."""
 
 
+def _analysis_signature(db, deal_id: int) -> tuple:
+    """Identify the exact prerequisite runs, even on identical input data."""
+    from app.models.agent_run import AgentRun
+    return tuple(db.query(
+        AgentRun.id, AgentRun.agent_name, AgentRun.status,
+        AgentRun.started_at, AgentRun.completed_at, AgentRun.input_hash,
+    ).filter(AgentRun.deal_id == deal_id, AgentRun.agent_name != "report_generation")
+                 .order_by(AgentRun.id).all())
+
+
 def generate_due_diligence_report(
     deal_id: int,
     db: Session,
@@ -745,6 +786,9 @@ def generate_due_diligence_report(
         raise IncompleteAnalysisError(
             "Analisi incompleta: riesegui l'analisi prima di generare il report."
         )
+
+    analysis_signature = _analysis_signature(db, deal_id)
+    admitted_status = deal.status
 
     logger.info("Generating due-diligence report for deal %d ('%s')", deal_id, deal.title)
 
@@ -831,11 +875,70 @@ def generate_due_diligence_report(
         if len(summary_prompt) > 24000:
             executive_summary = _large_report_summary(len(documents), red_flags, len(observations), lang)
         else:
+            from packages.agents.grounding_review import review_grounded_text
+            # Review against the persisted findings, including their
+            # limitations and remedies. The generator cannot promote an
+            # information gap into a fact at this final summarization step.
+            import json
+            summary_sources = [{
+                "document_id": 0, "filename": "confirmed-review-context",
+                "text": json.dumps({
+                    "deal_title": deal.title,
+                    "deal_description": deal.description,
+                    "confirmed_target_company_names": deal.target_company_names or [],
+                    "documents_reviewed": len(documents),
+                    "red_flags_count": len(red_flags),
+                    "observations_count": len(observations),
+                    "severity_counts": {
+                        severity: sum(f.severity.value == severity for f in red_flags)
+                        for severity in ("high", "medium", "low")
+                    },
+                }, ensure_ascii=False),
+            }] + [
+                {"document_id": index + 1, "filename": f"finding-{index + 1}",
+                 "text": "\n".join(str(value) for value in values if value)}
+                for index, values in enumerate(
+                    [(f.title, f"Severity: {f.severity.value}", f.issue, f.risk, f.recommendation) for f in red_flags]
+                    + [(f.title, f.description) for f in observations]
+                )
+            ]
+            context = getattr(llm, "context", None)
+            for offset, loi in enumerate(getattr(context, "lois", ())):
+                summary_sources.append({
+                    "document_id": len(red_flags) + len(observations) + offset + 1,
+                    "filename": loi.filename,
+                    "text": "Proposed transaction context only; excerpt may be incomplete.\n" + loi.text,
+                })
+            from packages.agents.stage_tx import release_connection_before_llm
+            release_connection_before_llm(db)
             executive_summary = llm.complete(summary_prompt, max_tokens=1536).strip()
+            if executive_summary:
+                executive_summary = review_grounded_text(
+                    llm, executive_summary, summary_sources, lang,
+                )
         if not executive_summary:
             from packages.agents.deal_analysis_agent import LLMResponseError
 
             raise LLMResponseError("Executive summary: AI response contained no text")
+
+        # The model calls run without holding the admission row lock. Reacquire
+        # it and check both inputs and run identity before reading live ORM rows
+        # for assembly. Even an identical-corpus reanalysis is a new snapshot.
+        deal = db.query(Deal).filter(Deal.id == deal_id).with_for_update().populate_existing().first()
+        if deal is None:
+            raise IncompleteAnalysisError("La pratica è cambiata durante la generazione: riprova.")
+        try:
+            current_hash = require_report_inputs(db, deal_id)
+        except CheckpointError as exc:
+            raise IncompleteAnalysisError(str(exc)) from exc
+        if (current_hash != input_hash or deal.status != admitted_status
+                or _analysis_signature(db, deal_id) != analysis_signature):
+            raise IncompleteAnalysisError("L'analisi è cambiata durante la generazione: rigenera il report aggiornato.")
+        # A concurrent generator may have created the row while this one was
+        # awaiting its provider. Serialize publication on the deal, then re-read.
+        report = db.query(Report).filter(
+            Report.deal_id == deal_id, Report.report_type == ReportType.due_diligence,
+        ).populate_existing().first()
 
         # ── Deterministic assembly ───────────────────────────────────── #
         areas_reviewed = [

@@ -151,9 +151,24 @@ def _agent_runs(db: Session, deal: Deal) -> list[AgentRun]:
     )
 
 
+@pytest.fixture
+def aggregation_source(db, test_deal):
+    """Explicit evidence for tests of orchestration/metadata, not LLM quality."""
+    document = _make_doc(db, test_deal, filename="test_source.txt")
+    _make_clause_finding(db, document)
+    return document
+
+
+class UngroundedProvider(FakeLLMProvider):
+    def complete(self, prompt, max_tokens=2048):
+        return json.dumps([{"title": "Unsupported assertion", "issue": "No document supports this.",
+                            "severity": "high", "category": "general"}])
+
+
 # ── 1. RedFlag creation ────────────────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("aggregation_source")
 class TestRedFlagCreation:
     """RedFlag rows are persisted with correct field values."""
 
@@ -276,6 +291,7 @@ class TestRedFlagCreation:
         """A cited page independently backed by extracted text is kept."""
         doc = _make_doc(db, test_deal)
         finding = _make_clause_finding(db, doc, page_number=7)
+        doc.raw_text = finding.content
         from app.models.document_chunk import DocumentChunk
         doc.page_count = 7
         db.add(DocumentChunk(document_id=doc.id, chunk_index=0, content=finding.content, page_number=7))
@@ -302,16 +318,17 @@ class TestRedFlagCreation:
         assert flag.source_page is None
 
     def test_no_documents_zero_flags(self, db, test_deal):
-        """A deal with no documents produces an empty context → FakeLLM still
-        returns its standard flag — this is expected (FakeLLM ignores context)."""
+        """A model must not create unsupported flags from an empty corpus."""
+        db.query(Document).filter_by(deal_id=test_deal.id).delete()
+        db.commit()
         result = RedFlagAggregationAgent().run(test_deal.id, db)
-        # FakeLLM always returns 1 flag regardless of context content
-        assert result["red_flags_count"] >= 0
+        assert result["red_flags_count"] == 0
 
 
 # ── 2. Deduplication ───────────────────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("aggregation_source")
 class TestDeduplication:
     """Near-duplicate flags are merged; highest severity wins."""
 
@@ -400,6 +417,7 @@ class TestDeduplication:
 # ── 3. Context building ────────────────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("aggregation_source")
 class TestContextBuilding:
     """Clause and agent findings appear in the LLM context text."""
 
@@ -409,7 +427,8 @@ class TestContextBuilding:
             self.last_prompt = ""
 
         def complete(self, prompt, max_tokens=2048):
-            self.last_prompt = prompt
+            if "GROUNDING REVIEW\n" not in prompt:
+                self.last_prompt = prompt
             return super().complete(prompt, max_tokens)
 
     def test_clause_finding_appears_in_context(self, db, test_deal):
@@ -494,6 +513,7 @@ class TestContextBuilding:
 # ── 4. OpenQuestion generation ─────────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("aggregation_source")
 class TestOpenQuestionGeneration:
     """high/critical flags produce OpenQuestions; medium/low do not."""
 
@@ -573,6 +593,7 @@ class TestOpenQuestionGeneration:
 # ── 5. Return value ────────────────────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("aggregation_source")
 class TestReturnValue:
     """run() returns a dict with the expected structure and counts."""
 
@@ -651,6 +672,7 @@ class TestReturnValue:
 # ── 6. Idempotency ─────────────────────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("aggregation_source")
 class TestIdempotency:
     """Re-running the agent produces stable counts — no row accumulation."""
 
@@ -719,6 +741,7 @@ class TestIdempotency:
 # ── 7. AgentRun lifecycle ──────────────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("aggregation_source")
 class TestAgentRunLifecycle:
     """AgentRun is created, timestamped, and correctly completed/failed."""
 
@@ -802,19 +825,19 @@ class TestEdgeCases:
         with pytest.raises(ValueError, match="Deal 99999 not found"):
             RedFlagAggregationAgent().run(99999, db)
 
-    def test_no_documents_completes_without_error(self, db, test_deal):
-        """A deal with no documents should complete cleanly."""
-        result = RedFlagAggregationAgent().run(test_deal.id, db)
-        assert "error" not in result
-        assert "red_flags_count" in result
+    def test_no_documents_unsupported_flags_fail(self, db, test_deal):
+        with pytest.raises(LLMResponseError, match="without source evidence"):
+            RedFlagAggregationAgent(UngroundedProvider()).run(test_deal.id, db)
 
     def test_no_documents_agent_run_created(self, db, test_deal):
-        RedFlagAggregationAgent().run(test_deal.id, db)
+        with pytest.raises(LLMResponseError):
+            RedFlagAggregationAgent(UngroundedProvider()).run(test_deal.id, db)
         assert len(_agent_runs(db, test_deal)) == 1
 
-    def test_no_documents_agent_run_completed(self, db, test_deal):
-        RedFlagAggregationAgent().run(test_deal.id, db)
-        assert _agent_runs(db, test_deal)[0].status == AgentRunStatus.completed
+    def test_no_documents_unsupported_flags_mark_run_failed(self, db, test_deal):
+        with pytest.raises(LLMResponseError):
+            RedFlagAggregationAgent(UngroundedProvider()).run(test_deal.id, db)
+        assert _agent_runs(db, test_deal)[0].status == AgentRunStatus.failed
 
     def test_llm_returns_invalid_json_fails_stage(self, db, test_deal):
         """Unparseable LLM output fails the stage."""
@@ -855,17 +878,20 @@ class TestEdgeCases:
 
     def test_module_level_run_red_flag_aggregation(self, db, test_deal):
         """run_red_flag_aggregation convenience function works correctly."""
+        _make_doc(db, test_deal)
         result = run_red_flag_aggregation(test_deal.id, db)
         assert "red_flags_count" in result
 
     def test_module_level_with_provider(self, db, test_deal):
         """Provider is forwarded through the convenience wrapper."""
+        _make_doc(db, test_deal)
         explicit = FakeLLMProvider()
         result = run_red_flag_aggregation(test_deal.id, db, provider=explicit)
         assert result["red_flags_count"] >= 0
 
     def test_existing_red_flags_from_other_sources_cleared(self, db, test_deal):
         """All RedFlags for the deal are cleared on each run (agent owns them all)."""
+        _make_doc(db, test_deal)
         # Manually insert a red flag (simulating a previous run from any source)
         pre_existing = RedFlag(
             deal_id=test_deal.id,
@@ -888,6 +914,7 @@ class TestEdgeCases:
 # ── 9. Orchestrator compatibility ──────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("aggregation_source")
 class TestOrchestratorCompatibility:
     """Verify that RedFlagAggregationAgent output matches what the orchestrator
     expects from stages['red_flag_aggregation']."""
@@ -969,8 +996,10 @@ def _flag_llm(**overrides) -> LLMProvider:
     }
     item.update(overrides)
 
-    class _Stub(LLMProvider):
+    class _Stub(FakeLLMProvider):
         def complete(self, prompt: str, max_tokens: int = 4096) -> str:
+            if "GROUNDING REVIEW\n" in prompt:
+                return super().complete(prompt, max_tokens)
             if "RED FLAGS" in prompt.upper():
                 return json.dumps([item])
             return "[]"
@@ -995,6 +1024,7 @@ def _tax_finding(db, deal, *, category="tax_assessment", payload=None) -> AgentF
     return af
 
 
+@pytest.mark.usefixtures("aggregation_source")
 class TestRemedyAndImpactTags:
     """Two axes: the instrument that answers a finding, and what it hits."""
 
@@ -1049,6 +1079,7 @@ class TestRemedyAndImpactTags:
         assert flag.remedy_type is None and flag.impact is None
 
 
+@pytest.mark.usefixtures("aggregation_source")
 class TestCarriedFigures:
     """The amount and the years the specialists extracted must survive."""
 
@@ -1062,9 +1093,11 @@ class TestCarriedFigures:
         assert payload["amount_eur"] == 240000
         assert payload["fiscal_years"] == [2021, 2022]
 
-    def test_payload_is_null_when_there_is_nothing_to_carry(self, db, test_deal):
+    def test_payload_contains_review_provenance_without_inventing_amounts(self, db, test_deal):
         RedFlagAggregationAgent(provider=_flag_llm()).run(test_deal.id, db)
-        assert _red_flags(db, test_deal)[0].structured_payload_json is None
+        payload = _red_flags(db, test_deal)[0].structured_payload_json
+        assert payload["grounding_reviewed"] is True
+        assert "amount_eur" not in payload
 
     @pytest.mark.parametrize("bad", ["circa 240k", -3, True, None])
     def test_unusable_amount_is_dropped(self, db, test_deal, bad):
@@ -1082,6 +1115,7 @@ class TestCarriedFigures:
         assert payload["fiscal_years"] == [2022]
 
 
+@pytest.mark.usefixtures("aggregation_source")
 class TestSeverityFloor:
     """A finding with no available defence cannot be reported as medium."""
 
@@ -1109,7 +1143,7 @@ class TestSeverityFloor:
         flag = _red_flags(db, test_deal)[0]
         assert flag.severity == Severity.high
         # Not marked as floored: the model already had it right.
-        assert flag.structured_payload_json is None
+        assert flag.structured_payload_json.get("severity_floored") is None
 
     def test_no_floor_without_a_matching_category(self, db, test_deal):
         """The floor is a safety net; a missed match costs nothing."""

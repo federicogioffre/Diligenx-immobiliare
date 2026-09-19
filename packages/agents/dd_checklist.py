@@ -1,6 +1,6 @@
 """Standard Italian DD legal checklist (NM Standard Legal Checklist v2).
 
-Reproduces, verbatim, the structure of a professional Italian M&A legal
+Follows the structure of a professional Italian M&A legal
 due diligence checklist used by the firm: 17 sections (A-Q) and ~80
 items, each identified by the firm's numbering ("A.1", "A.2", "B.1", …).
 
@@ -20,7 +20,7 @@ Each item is a :class:`ChecklistItem` with:
   parent section (one of A..Q), used for grouping in the report.
 * ``area`` — the :class:`DueDiligenceArea` slot for the Key Findings
   section. Cross-referencing only; not user-visible in IR rendering.
-* ``request_it`` / ``request_en`` — the verbatim text to provide. Used
+* ``request_it`` / ``request_en`` — the request text to provide. Used
   as the question rendered in the report.
 * ``keywords`` — substrings searched (lower-cased) in a needle composed
   of the document filename + first 1000 chars of extracted text. Italian
@@ -660,10 +660,10 @@ CHECKLIST: list[ChecklistItem] = [
     ),
     _item(
         "G.7", "G", "suppliers_customers",
-        "Contratti di appalto, subfornitura, logistica e consulenza che "
-        "superino la soglia di materialità indicata in premessa.",
-        "Contracting, sub-supply, logistics and consulting agreements "
-        "above the materiality threshold set out in the introduction.",
+        "Contratti di appalto, subfornitura, logistica e consulenza, con "
+        "indicazione del valore e della durata di ciascun contratto.",
+        "Contracting, sub-supply, logistics and consulting agreements, "
+        "including the value and duration of each agreement.",
         ["contratto di appalto", "subfornitura", "logistica",
          "consulting agreement"],
         Priority.medium,
@@ -724,11 +724,12 @@ CHECKLIST: list[ChecklistItem] = [
     ),
     _item(
         "H.2", "H", "insurance",
-        "Elenco dei sinistri di valore superiore a Euro [●] pendenti o "
-        "definiti negli ultimi 3 anni; denunce tardive o contestazioni di "
-        "copertura da parte degli assicuratori.",
-        "List of claims above EUR [●] pending or settled over the last 3 "
-        "years; late notifications or coverage disputes from insurers.",
+        "Elenco dei sinistri pendenti o definiti negli ultimi 3 anni, con "
+        "indicazione del valore di ciascun sinistro; denunce tardive o "
+        "contestazioni di copertura da parte degli assicuratori.",
+        "List of claims pending or settled over the last 3 years, including "
+        "the value of each claim; late notifications or coverage disputes "
+        "from insurers.",
         ["sinistro", "denuncia sinistro", "insurance claim"],
         Priority.medium,
     ),

@@ -16,6 +16,9 @@ class StubLLM:
         self.prompts = []
     def complete(self, prompt, **kwargs):
         self.prompts.append(prompt)
+        if "GROUNDING REVIEW\n" in prompt:
+            from packages.agents.deal_analysis_agent import FakeLLMProvider
+            return FakeLLMProvider().complete(prompt, **kwargs)
         return self.value
 
 @pytest.fixture

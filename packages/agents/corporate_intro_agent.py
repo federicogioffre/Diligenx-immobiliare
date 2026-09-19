@@ -3,7 +3,8 @@
 Populates ``CompanyProfile`` rows — the structured equivalent of the
 "Corporate Introductory Information" table in professional red-flag DD
 reports. For each target company described in the deal's corporate
-documents (visure camerali, atti costitutivi, statuti, patti parasociali),
+documents (visure camerali, atti costitutivi, statuti, patti parasociali,
+or company profiles),
 the agent extracts the standard fields (legal form, registered office,
 capital, shareholders, board, auditors, business, fiscal year, duration)
 via an LLM with strict grounding rules.
@@ -11,8 +12,9 @@ via an LLM with strict grounding rules.
 Auto-detection
 --------------
 When ``document_ids`` is *None*, every *processed* document in the deal is
-inspected and only those that look corporate (filename or first 1500
-chars of body text contain corporate keywords) are sent to the LLM.
+inspected in bounded text windows. Corporate document names, profile
+headings, or several distinct corporate fact fields select a document for
+extraction. Selection does not certify the source or its contents.
 
 Idempotency
 -----------
@@ -21,6 +23,7 @@ and ``CompanyProfile`` rows before writing fresh results.
 """
 import json
 import logging
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -37,8 +40,8 @@ logger = logging.getLogger(__name__)
 
 AGENT_NAME = "corporate_intro_extraction"
 
-# Reused / extended from corporate_agent — these match the typical filenames
-# and first lines of Italian corporate documents.
+# Reused / extended from corporate_agent — these match typical corporate
+# documents, including informal profiles that are not registry certificates.
 _CORPORATE_INTRO_KEYWORDS = [
     # English
     "articles of association",
@@ -58,10 +61,28 @@ _CORPORATE_INTRO_KEYWORDS = [
     "patti parasociali",
     "camera di commercio",
     "registro delle imprese",
+    "profilo societario",
+    "scheda societaria",
+    "anagrafica societaria",
+    "corporate profile",
+    "company profile",
+    "company factsheet",
 ]
 
 _MIN_PROFILE_CONFIDENCE = 0.55
 _TEXT_MAX_CHARS = 12000
+_SELECTION_WINDOW_CHARS = 12000
+_SELECTION_OVERLAP_CHARS = 256
+
+# A generic file can contain useful target facts without naming a particular
+# legal document. Require three distinct field groups, so a company name or
+# an invoice footer with only office/capital details does not trigger a call.
+_CORPORATE_FACT_PATTERNS = tuple(re.compile(pattern) for pattern in (
+    r"\b(?:sede\s+legale|registered\s+office)\b",
+    r"\b(?:capitale\s+sociale|share\s+capital|paid[ -]in\s+capital|corporate\s+capital)\b",
+    r"\b(?:assetto\s+proprietario|socio\s+unico|socia\s+unica|azionisti|shareholders?|shareholding|ownership)\b",
+    r"\b(?:consiglio\s+di\s+amministrazione|amministrator[ei]|amministratric[ei]|managing\s+body|board\s+of\s+directors|sole\s+director)\b",
+))
 
 
 class CorporateIntroAgent:
@@ -219,12 +240,29 @@ class CorporateIntroAgent:
 
     @staticmethod
     def _looks_corporate(doc) -> bool:
-        haystack = (
-            (doc.filename or "").lower().replace("_", " ").replace("-", " ")
-            + " "
-            + (doc.raw_text or "")[:1500].lower()
+        filename = " ".join(
+            (doc.filename or "").lower().replace("_", " ").replace("-", " ").split()
         )
-        return any(kw in haystack for kw in _CORPORATE_INTRO_KEYWORDS)
+        if any(kw in filename for kw in _CORPORATE_INTRO_KEYWORDS):
+            return True
+
+        # Scan all pages without making another document-sized string or
+        # increasing the provider's extraction window. Overlap preserves
+        # headings/field labels split at the edge of a selection window.
+        text = doc.raw_text or ""
+        fields_seen: set[int] = set()
+        step = _SELECTION_WINDOW_CHARS - _SELECTION_OVERLAP_CHARS
+        for start in range(0, len(text), step):
+            window = " ".join(text[start:start + _SELECTION_WINDOW_CHARS].lower().split())
+            if any(kw in window for kw in _CORPORATE_INTRO_KEYWORDS):
+                return True
+            fields_seen.update(
+                index for index, pattern in enumerate(_CORPORATE_FACT_PATTERNS)
+                if pattern.search(window)
+            )
+            if len(fields_seen) >= 3:
+                return True
+        return False
 
     def _profile_payloads(self, filename: str, raw_text: str, document_id: int,
                           target_company_names: list[str] | tuple[str, ...] | None = None) -> list[dict]:

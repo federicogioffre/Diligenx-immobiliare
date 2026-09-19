@@ -177,6 +177,11 @@ def _flag_payload(item: dict, severity_was_floored: bool) -> dict | None:
         # model's judgement alone.
         payload["severity_floored"] = True
 
+    if item.get("grounding_reviewed") is True:
+        payload["grounding_reviewed"] = True
+        payload["evidence"] = item["evidence"]
+        payload["source_pages"] = item["source_pages"]
+
     return payload or None
 
 
@@ -342,10 +347,12 @@ class RedFlagAggregationAgent:
             )
             output_lang = resolve_output_language(deal, db)
             severity_floors = _build_severity_floors(agent_findings)
+            from packages.agents.grounding_review import snapshot_documents, review_grounded_flags
+            review_documents = snapshot_documents(doc_map, clause_findings, agent_findings)
             from packages.agents.stage_tx import release_connection_before_llm
             release_connection_before_llm(db)
             raw_flags = self._call_llm_for_flags(
-                context_text, deal_id, language_instruction(output_lang)
+                context_text, deal_id, language_instruction(output_lang), output_lang
             )
 
             logger.info(
@@ -355,6 +362,12 @@ class RedFlagAggregationAgent:
 
             # ── 5. Deduplicate ────────────────────────────────────────── #
             deduped_flags, dedup_removed = self._deduplicate(raw_flags)
+
+            # Review complete source evidence before replacing any previous
+            # outputs. A valid JSON response alone is not a fidelity check.
+            deduped_flags = review_grounded_flags(
+                self._llm, deduped_flags, review_documents, output_lang
+            )
 
             if dedup_removed:
                 logger.info(
@@ -564,12 +577,13 @@ class RedFlagAggregationAgent:
     # ── LLM call ────────────────────────────────────────────────────────
 
     def _call_llm_for_flags(
-        self, context_text: str, deal_id: int, lang_instruction: str = ""
+        self, context_text: str, deal_id: int, lang_instruction: str = "", output_lang: str = "en"
     ) -> list[dict]:
         from packages.prompts.deal_prompts import RED_FLAG_AGGREGATION_PROMPT
         from packages.agents.legal_rules import build_legal_rules_context
 
         from packages.agents.document_coverage import aggregation_batches
+        from packages.agents.output_language import recommendation_examples
 
         results: list[dict] = []
         for index, batch in enumerate(aggregation_batches(context_text), start=1):
@@ -577,6 +591,7 @@ class RedFlagAggregationAgent:
                 findings_by_document=batch,
                 legal_rules_context=build_legal_rules_context(),
                 language_instruction=lang_instruction,
+                recommendation_examples=recommendation_examples(output_lang),
             )
             raw = self._llm.complete(prompt, max_tokens=12288)
             results.extend(_parse_llm_items(
@@ -711,6 +726,7 @@ class RedFlagAggregationAgent:
                     description=item.get("issue") or item.get("description", ""),
                     severity=Severity(severity_str),
                     confidence=item.get("confidence"),
+                    structured_payload_json=_flag_payload(item, False),
                 )
                 db.add(af)
             else:
@@ -740,9 +756,10 @@ class RedFlagAggregationAgent:
                     category=category,
                     confidence=item.get("confidence"),
                     source_document_id=source_doc_id,
-                    source_page=self._validate_source_page(
-                        item.get("source_page"), source_doc_id, pages_by_doc
-                    ),
+                    source_page=(item.get("source_page") if item.get("grounding_reviewed") is True
+                                 else self._validate_source_page(
+                                     item.get("source_page"), source_doc_id, pages_by_doc
+                                 )),
                     remedy_type=_normalize_choice(
                         item.get("remedy_type"), _VALID_REMEDY_TYPES
                     ),

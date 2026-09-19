@@ -5,8 +5,7 @@ Covers:
   Findings row, in the conventions of the report's language
 - The remedy tag is rendered at the end of the recommendation cell
 - Rows without figures or without a tag render exactly as before
-- The tax scope sentence names the assessable period computed from the
-  rules registry rather than a fixed number of years
+- The tax scope sentence distinguishes document coverage from assessment windows
 - The new legal-rules entries reach the aggregation context
 """
 from datetime import date
@@ -125,16 +124,16 @@ class TestRemedyTag:
 
 
 class TestTaxScopeSentence:
-    def test_period_is_computed_not_fixed(self):
-        """The assessment period moved from four years to five in 2016."""
-        expected_first = min(tax_rules_registry.open_fiscal_years())
+    def test_assessment_window_does_not_claim_documentary_coverage(self):
         intro = _render_introduction("Project X", ["Tax"], "en")
-        assert str(expected_first) in intro
-        assert "still open to assessment" in intro
+        assert "periods expressly documented in the findings" in intro
+        assert "still open to assessment" not in intro
+        assert "2020" not in intro
 
     def test_italian_sentence(self):
         intro = _render_introduction("Project X", ["Fiscale"], "it")
-        assert "periodi d'imposta ancora accertabili" in intro
+        assert "periodi espressamente documentati nei rilievi" in intro
+        assert "periodi d'imposta ancora accertabili" not in intro
 
     @pytest.mark.parametrize("lang,phrase", [
         ("en", "left to the client's tax advisors"),

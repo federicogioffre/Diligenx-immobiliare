@@ -328,3 +328,101 @@ def test_docx_without_key_findings_single_portrait_section(
     assert resp.status_code == 200
     doc = _DocxDocument(io.BytesIO(resp.content))
     assert len(doc.sections) == 1
+
+
+@pytest.mark.parametrize(
+    ("source", "expected", "italic", "bold"),
+    [
+        ("_(Fonte: 01_profilo_societario.pdf, p. 1)_",
+         "(Fonte: 01_profilo_societario.pdf, p. 1)", True, False),
+        ("*Nessun dato documentato*", "Nessun dato documentato", True, False),
+        ("**_Riserva importante_**", "Riserva importante", True, True),
+        ("**Rischio**", "Rischio", False, True),
+        ("01_profilo_societario.pdf", "01_profilo_societario.pdf", False, False),
+        (r"\_citazione letterale\_", "_citazione letterale_", False, False),
+        ("`_nome_documento_`", "_nome_documento_", False, False),
+        ("un _delimitatore incompleto", "un _delimitatore incompleto", False, False),
+        ("A & B < C", "A & B < C", False, False),
+    ],
+)
+def test_docx_inline_emphasis_preserves_source_text(source, expected, italic, bold):
+    from docx import Document
+    from app.services.report_export import _render_inline
+
+    paragraph = Document().add_paragraph()
+    _render_inline(paragraph, source)
+
+    assert paragraph.text == expected
+    assert all(bool(run.italic) is italic for run in paragraph.runs)
+    assert all(bool(run.bold) is bold for run in paragraph.runs)
+
+
+def test_docx_inline_nested_severity_and_line_breaks():
+    from docx import Document
+    from app.services.report_export import _render_inline, _SEVERITY_COLORS
+
+    paragraph = Document().add_paragraph()
+    _render_inline(paragraph, "_Riserva **[HIGH]**_<br>Fonte: 02_finanziamento.pdf")
+
+    assert paragraph.text == "Riserva [HIGH]\nFonte: 02_finanziamento.pdf"
+    severity = next(run for run in paragraph.runs if run.text == "[HIGH]")
+    assert severity.bold and severity.italic
+    assert severity.font.color.rgb == _SEVERITY_COLORS["HIGH"]
+    assert not paragraph.runs[-1].italic
+
+
+def test_docx_inline_preserves_heading_style_inheritance():
+    from docx import Document
+    from app.services.report_export import _render_inline
+
+    heading = Document().add_heading("", level=4)
+    _render_inline(heading, "Finding [HIGH]")
+
+    assert heading.runs[0].bold is None
+    assert heading.runs[0].italic is None
+    assert heading.runs[1].bold is True
+
+
+def test_docx_tables_repeat_headers_and_keep_findings_rows_together():
+    from docx import Document
+    from docx.oxml.ns import qn
+    from types import SimpleNamespace
+    from app.services.report_export import render_docx
+
+    result = render_docx(
+        SimpleNamespace(title="Table regression"),
+        SimpleNamespace(content=FINDINGS_MARKDOWN),
+    )
+    document = Document(io.BytesIO(result))
+    table = document.tables[0]
+    assert table.rows[0]._tr.trPr.find(qn("w:tblHeader")) is not None
+    assert all(
+        paragraph.paragraph_format.keep_with_next
+        for cell in table.rows[0].cells for paragraph in cell.paragraphs
+    )
+    for row in table.rows:
+        assert row._tr.trPr.find(qn("w:cantSplit")) is not None
+    assert "Clausola di cambio di controllo" in table.rows[1].cells[1].text
+
+
+def test_pdf_keeps_heading_with_following_body_at_page_boundary():
+    from pypdf import PdfReader
+    from types import SimpleNamespace
+    from app.services.report_export import render_pdf
+
+    # This amount of content previously left the H3 alone at the bottom of
+    # the first body page, with its paragraph on the following page.
+    markdown = (
+        "## Introduction\n\n"
+        + "Filler paragraph with enough words to establish the layout.\n\n" * 29
+        + "### Regression heading\n\nFollowing body marker.\n"
+    )
+    result = render_pdf(
+        SimpleNamespace(title="Layout regression"),
+        SimpleNamespace(content=markdown),
+    )
+    pages = [page.extract_text() or "" for page in PdfReader(io.BytesIO(result)).pages]
+    # The earlier occurrence of the heading is in the table of contents.
+    heading_page = [i for i, page in enumerate(pages) if "Regression heading" in page][-1]
+    body_page = next(i for i, page in enumerate(pages) if "Following body marker." in page)
+    assert heading_page == body_page
