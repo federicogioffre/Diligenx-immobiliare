@@ -96,7 +96,8 @@ For each red flag provide:
   * post_closing_action — something the buyer must do after closing to regularise the position
   * information_request — the finding is that something was not provided
 - impact: what the finding hits — one of [value, spa, other]. `value` where it moves the price, the multiple or the net debt; `spa` where a clause is needed; `other` where it is operational or informational. Null if unclear.
-- amount_eur: carry forward the amount a source finding states, if any; otherwise null. Never compute or estimate one.
+- amount_eur: carry forward only amounts marked amount_source=document; otherwise null. Never compute or estimate one.
+- amount_evidence: copy the source finding's exact evidence quotation for that amount; otherwise null.
 - fiscal_years: carry forward the fiscal years of a source finding, as integers; empty array if none.
 - severity: one of [low, medium, high]
 - area: one of [corporate, indebtedness, real_estate, employees, suppliers_customers, insurance, litigation, ip_it, data_protection, financial, tax, other]
@@ -310,7 +311,7 @@ Priority order: check all PRIORITY RISKS first, then apply SAFE HARBOUR before r
 {findings_by_document}
 
 Return ONLY a JSON array (no markdown fences, no explanation):
-[{{"finding_type": "red_flag", "title": "...", "issue": "...", "risk": "...", "recommendation": "...", "remedy_type": null, "impact": null, "amount_eur": null, "fiscal_years": [], "severity": "high", "area": "...", "category": "...", "confidence": 0.0, "source_document_id": null, "source_page": null}}, ...]
+[{{"finding_type": "red_flag", "title": "...", "issue": "...", "risk": "...", "recommendation": "...", "remedy_type": null, "impact": null, "amount_eur": null, "amount_evidence": null, "fiscal_years": [], "severity": "high", "area": "...", "category": "...", "confidence": 0.0, "source_document_id": null, "source_page": null}}, ...]
 
 If no findings, return an empty array: []
 """
@@ -425,6 +426,7 @@ For each finding, provide:
 - legal_basis: the statutory provision the DOCUMENT cites, verbatim (e.g. "art. 110 TUIR"), or null if the document cites none. Do not supply a provision the document does not mention.
 - fiscal_years: array of the fiscal years the finding concerns, as integers (e.g. [2021, 2022]); empty array if the document does not say.
 - amount_eur: the exposure in euro if the DOCUMENT states it, otherwise null. Never a computed or estimated figure.
+- amount_evidence: exact verbatim quotation containing that amount and its currency; required whenever amount_eur is not null. Never invent a quotation.
 - defensibility: how the position would hold up IF the tax authority challenged it. This is NOT the likelihood of being audited — never estimate that.
   * actual — errors, omissions or insufficient payments that automatically produce a tax charge with no possible defence (e.g. a tax shown as due in a filed return and not paid)
   * high   — a position most likely to give rise to litigation and difficult for the company to defend
@@ -448,7 +450,7 @@ Document text:
 {text}
 
 Return ONLY a JSON array (no markdown fences, no explanation):
-[{{"finding_type": "...", "tax_kind": "...", "title": "...", "description": "...", "legal_basis": null, "fiscal_years": [], "amount_eur": null, "defensibility": "...", "mitigating_factors": [], "confidence": 0.0}}, ...]
+[{{"finding_type": "...", "tax_kind": "...", "title": "...", "description": "...", "legal_basis": null, "fiscal_years": [], "amount_eur": null, "amount_evidence": null, "defensibility": "...", "mitigating_factors": [], "confidence": 0.0}}, ...]
 
 If no tax findings are present, return an empty array: []
 """
@@ -485,6 +487,7 @@ For each finding, provide:
 - title: concise label (max 100 characters)
 - description: the finding with the document evidence, quoting figures verbatim where possible, preserving Italian formatting (max 400 characters)
 - amount_eur: the amount in euro if the DOCUMENT states it, otherwise null. Never a computed or estimated figure.
+- amount_evidence: exact verbatim quotation containing that amount and its currency; required whenever amount_eur is not null. Never invent a quotation.
 - counterparty: the bank, guarantor, customer, supplier or related party the finding concerns, if the document names one; otherwise null.
 - change_of_control_clause: for a covenant finding, true or false if the document says whether the agreement has one; otherwise null.
 - financial_covenant: for a covenant finding, true or false if the document says whether financial covenants apply; otherwise null.
@@ -503,7 +506,7 @@ Document text:
 {text}
 
 Return ONLY a JSON array (no markdown fences, no explanation):
-[{{"finding_type": "...", "title": "...", "description": "...", "amount_eur": null, "counterparty": null, "change_of_control_clause": null, "financial_covenant": null, "severity": "...", "confidence": 0.0}}, ...]
+[{{"finding_type": "...", "title": "...", "description": "...", "amount_eur": null, "amount_evidence": null, "counterparty": null, "change_of_control_clause": null, "financial_covenant": null, "severity": "...", "confidence": 0.0}}, ...]
 
 If no financial findings are present, return an empty array: []
 """

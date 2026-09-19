@@ -2,6 +2,7 @@ import os
 import sys
 
 import pytest
+import bcrypt
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
@@ -23,6 +24,13 @@ from app.core.limiter import limiter  # noqa: E402
 TEST_DATABASE_URL = "sqlite:///./test_diligenx.db"
 engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
 TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+@pytest.fixture(autouse=True)
+def _fast_test_password_hashes(monkeypatch):
+    """Exercise real bcrypt at test cost; production keeps its default work factor."""
+    original = bcrypt.gensalt
+    monkeypatch.setattr(bcrypt, "gensalt", lambda: original(rounds=4))
 
 
 @pytest.fixture(autouse=True)
@@ -92,7 +100,7 @@ def test_user(db: Session) -> User:
 
 @pytest.fixture
 def auth_headers(test_user: User) -> dict:
-    token = create_access_token(test_user.email)
+    token = create_access_token(test_user.email, user_id=test_user.id, hashed_password=test_user.hashed_password)
     return {"Authorization": f"Bearer {token}"}
 
 

@@ -86,6 +86,8 @@ def analyzed_deal(db: Session, test_deal: Deal) -> Deal:
     test_deal.status = DealStatus.reviewed
     db.commit()
     db.refresh(test_deal)
+    from tests.report_fixtures import complete_report_inputs
+    complete_report_inputs(db, test_deal)
     return test_deal
 
 
@@ -170,11 +172,11 @@ class TestGenerateDueDiligenceReport:
             generate_due_diligence_report(99999, db)
 
     def test_deal_with_no_findings(self, db: Session, test_deal: Deal):
-        """Report is still generated even if no analysis has been run."""
-        result = generate_due_diligence_report(test_deal.id, db)
-        assert result["markdown"]
-        report = db.query(Report).filter(Report.id == result["report_id"]).first()
-        assert report.status == ReportStatus.completed
+        """An empty run history is not evidence of a complete analysis."""
+        from packages.agents.report_agent import IncompleteAnalysisError
+        with pytest.raises(IncompleteAnalysisError):
+            generate_due_diligence_report(test_deal.id, db)
+        assert db.query(Report).filter_by(deal_id=test_deal.id).count() == 0
 
 
 # ── API route tests ────────────────────────────────────────────────────────
@@ -247,7 +249,7 @@ class TestReportRoute:
         db.commit()
         db.refresh(other)
 
-        token = create_access_token(other.email)
+        token = create_access_token(other.email, user_id=other.id, hashed_password=other.hashed_password)
         headers = {"Authorization": f"Bearer {token}"}
 
         response = client.post(

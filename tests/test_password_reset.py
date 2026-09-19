@@ -113,7 +113,7 @@ class TestResetPassword:
         resp = client.post(
             "/auth/reset-password",
             json={
-                "token": create_access_token(test_user.email),
+                "token": create_access_token(test_user.email, user_id=test_user.id, hashed_password=test_user.hashed_password),
                 "new_password": "whatever-123",
             },
         )

@@ -649,15 +649,12 @@ class TestFailureIsolation:
 
 class TestEdgeCases:
 
-    def test_no_documents_pipeline_completes_without_error(self, db, test_deal):
-        """A deal with no documents must run all stages cleanly."""
+    def test_no_documents_pipeline_cannot_publish_a_report(self, db, test_deal):
+        """An empty corpus cannot become a completed due-diligence report."""
         result = run_deal_analysis_pipeline(test_deal.id, db)
-        assert result["completed"] is True
+        assert result["completed"] is False
         assert set(result["stages"].keys()) == _ALL_STAGES
-        for stage_name, stage_result in result["stages"].items():
-            assert "error" not in stage_result, (
-                f"Stage '{stage_name}' errored with no documents: {stage_result}"
-            )
+        assert "error" in result["stages"]["report_generation"]
 
     def test_no_documents_zero_clause_findings(self, db, test_deal):
         result = run_deal_analysis_pipeline(test_deal.id, db)

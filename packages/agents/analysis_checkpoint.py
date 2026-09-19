@@ -23,6 +23,38 @@ class CheckpointError(ValueError):
     pass
 
 
+def require_report_inputs(db, deal_id: int) -> str:
+    """Require every prerequisite from the same completed, unchanged analysis."""
+    intake, by_name = _checkpoint_runs(db, deal_id)
+    fingerprint, _ = corpus_fingerprint(db, deal_id)
+    if not intake.input_hash or intake.input_hash != fingerprint:
+        raise CheckpointError("I dati della pratica sono cambiati: esegui una nuova analisi prima del report.")
+    previous_end = utc(intake.started_at)
+    for _, name in STAGES[:-1]:
+        run = by_name.get(name)
+        if (run is None or run.status != "completed" or not run.started_at or not run.completed_at
+                or utc(run.started_at) < previous_end or utc(run.completed_at) < utc(run.started_at)):
+            raise CheckpointError("Analisi incompleta: completa tutte le fasi prima di generare il report.")
+        previous_end = utc(run.completed_at)
+    return fingerprint
+
+
+def report_publication_state(db, deal_id: int, report) -> tuple[bool, bool]:
+    """Return (generation_available, stale), retaining the prior report verbatim."""
+    try:
+        fingerprint = require_report_inputs(db, deal_id)
+    except CheckpointError:
+        return False, True
+    from app.models.deal import Deal
+    from app.models.agent_run import AgentRun
+    deal = db.query(Deal).filter_by(id=deal_id).one()
+    intake = db.query(AgentRun).filter_by(deal_id=deal_id, agent_name="intake").order_by(AgentRun.id.desc()).first()
+    published = report.updated_at or report.created_at
+    stale = (report.input_hash != fingerprint or published is None
+             or utc(published) < utc(intake.started_at))
+    return deal.status != "analyzing", stale
+
+
 def utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
@@ -81,6 +113,7 @@ def _checkpoint_runs(db, deal_id):
 def validate_resume(db, deal_id: int) -> ResumePlan:
     """Fail closed on edited documents, incomplete routing, or stale stage rows."""
     from app.models.agent_finding import AgentFinding
+    from packages.agents.deal_analysis_agent import VALID_DOCUMENT_TYPES
 
     intake, by_name = _checkpoint_runs(db, deal_id)
     fingerprint, document_ids = corpus_fingerprint(db, deal_id)
@@ -108,7 +141,7 @@ def validate_resume(db, deal_id: int) -> ResumePlan:
             payload = row.structured_payload_json
             if (row.document_id not in document_ids or row.document_id in seen
                     or not isinstance(payload, dict) or not isinstance(payload.get("document_type"), str)
-                    or not payload["document_type"].strip()):
+                    or payload["document_type"] not in VALID_DOCUMENT_TYPES):
                 raise CheckpointError("Classificazione salvata incompleta o non valida.")
             seen.add(row.document_id)
             classifications.append({"document_id": row.document_id,

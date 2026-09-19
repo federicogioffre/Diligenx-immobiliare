@@ -27,6 +27,7 @@ class Report(TimestampMixin, Base):
     report_type: Mapped[ReportType] = mapped_column(Enum(ReportType))
     title: Mapped[str] = mapped_column(String(500))
     content: Mapped[str | None] = mapped_column(Text)
+    input_hash: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[ReportStatus] = mapped_column(
         Enum(ReportStatus), default=ReportStatus.generating
     )

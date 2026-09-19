@@ -46,7 +46,7 @@ def _other_user_headers(db) -> dict:
     db.add(other)
     db.commit()
     db.refresh(other)
-    return {"Authorization": f"Bearer {create_access_token(other.email)}"}
+    return {"Authorization": f"Bearer {create_access_token(other.email, user_id=other.id, hashed_password=other.hashed_password)}"}
 
 
 # ── /open-questions ────────────────────────────────────────────────────────

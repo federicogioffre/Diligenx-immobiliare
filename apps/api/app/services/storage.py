@@ -74,9 +74,10 @@ def save_file(content: bytes, key: str) -> str:
     return key
 
 
-def delete_file(key: str) -> None:
+def delete_file(key: str, *, strict: bool = False) -> None:
     """
-    Delete a stored file.  Best-effort — never raises.
+    Delete a stored file. Set strict=True when the caller must retain its
+    database reference and return a retryable error if storage is unavailable.
 
     Local mode  → deletes UPLOAD_DIR/<key>.
     Cloud mode  → deletes S3_BUCKET/<key>.
@@ -93,6 +94,8 @@ def delete_file(key: str) -> None:
             logger.debug("Deleted %s", path)
     except Exception:
         logger.warning("Could not delete file: %s", key, exc_info=True)
+        if strict:
+            raise
 
 
 @contextmanager

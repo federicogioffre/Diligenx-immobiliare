@@ -116,6 +116,7 @@ def _prepare_upload(
     key = _storage_key(deal_id, base_name, content)
     doc = db.query(Document).filter(Document.deal_id == deal_id, Document.file_path == key).first()
     promote_to_loi = doc is not None and document_role == "loi" and doc.document_role != "loi"
+    inventory_changed = doc is None or doc.status == DocumentStatus.failed or promote_to_loi
     if promote_to_loi and deal.status == DealStatus.analyzing:
         raise HTTPException(status_code=409, detail="Analisi in corso: attendere prima di modificare il ruolo del documento.")
     if doc is None:
@@ -138,6 +139,8 @@ def _prepare_upload(
         # Generic uploads (including batches and retries) never demote a LOI.
         # The deal lock also serializes this metadata change against analysis.
         doc.document_role = "loi"
+    if inventory_changed:
+        deal.status = DealStatus.draft
     response = DocumentUploadResponse.model_validate(doc)
     db.commit()
     return response
@@ -281,18 +284,18 @@ async def retry_document(
     ).first()
     if doc is None:
         raise HTTPException(404, "Document not found")
-    deal = db.query(Deal).filter(
+    deal = await run_in_threadpool(lambda: db.query(Deal).filter(
         Deal.id == doc.deal_id, Deal.workspace.has(owner_id=current_user.id),
-    ).with_for_update().populate_existing().first()
+    ).with_for_update().populate_existing().first())
     if deal is None:
         raise HTTPException(404, "Document not found")
     if deal.status == DealStatus.analyzing:
         raise HTTPException(409, "Analisi in corso: attendere prima di riprovare il documento.")
     # Re-read after taking the inventory lock: ingestion/deletion may have
     # changed the document since the initial ownership lookup.
-    doc = db.query(Document).filter(
+    doc = await run_in_threadpool(lambda: db.query(Document).filter(
         Document.id == document_id, Document.deal_id == deal.id,
-    ).with_for_update().populate_existing().first()
+    ).with_for_update().populate_existing().first())
     if doc is None:
         raise HTTPException(404, "Document not found")
     if doc.analysis_ready:
@@ -359,7 +362,12 @@ def delete_document(
     key = doc.file_path
     # Keep the inventory lock through deletion. A re-upload has the same
     # content key, and must not race with deletion of its newly stored object.
-    delete_file(key)
+    try:
+        delete_file(key, strict=True)
+    except Exception:
+        db.rollback()
+        raise HTTPException(503, 'Cancellazione del file non completata. Riprova.') from None
+    deal.status = DealStatus.draft
     db.delete(doc)
     db.commit()
 

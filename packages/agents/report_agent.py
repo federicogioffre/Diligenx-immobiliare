@@ -721,6 +721,12 @@ def generate_due_diligence_report(
     if deal is None:
         raise ValueError(f"Deal {deal_id} not found")
 
+    from packages.agents.analysis_checkpoint import CheckpointError, require_report_inputs
+    try:
+        input_hash = require_report_inputs(db, deal_id)
+    except CheckpointError as exc:
+        raise IncompleteAnalysisError(str(exc)) from exc
+
     from packages.agents.deal_context import with_deal_context
     llm = with_deal_context(provider or get_llm_provider(), db, deal_id)
 
@@ -907,6 +913,7 @@ def generate_due_diligence_report(
             db.add(report)
         report.title = f"Due Diligence Report — {deal.title}"
         report.content = markdown
+        report.input_hash = input_hash
         report.status = ReportStatus.completed
         # A manual retry after the pipeline's report stage failed must clear
         # that failure too, otherwise the UI keeps labelling this new report

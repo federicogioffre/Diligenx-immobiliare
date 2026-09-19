@@ -272,7 +272,7 @@ class TestAskRoute:
         db.commit()
         db.refresh(other)
 
-        token = create_access_token(other.email)
+        token = create_access_token(other.email, user_id=other.id, hashed_password=other.hashed_password)
         headers = {"Authorization": f"Bearer {token}"}
 
         response = client.post(

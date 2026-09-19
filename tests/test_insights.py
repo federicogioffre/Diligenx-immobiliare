@@ -69,7 +69,7 @@ def test_insights_workspace_of_other_user_returns_404(client, db, test_workspace
     db.add(other)
     db.commit()
     db.refresh(other)
-    headers = {"Authorization": f"Bearer {create_access_token(other.email)}"}
+    headers = {"Authorization": f"Bearer {create_access_token(other.email, user_id=other.id, hashed_password=other.hashed_password)}"}
 
     resp = client.get(f"/workspaces/{test_workspace.id}/insights", headers=headers)
     assert resp.status_code == 404

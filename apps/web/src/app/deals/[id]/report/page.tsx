@@ -70,6 +70,7 @@ export default function ReportPage() {
   const [error, setError]       = useState('')
   const [analysisIncomplete, setAnalysisIncomplete] = useState(false)
   const [reportFailed, setReportFailed] = useState(false)
+  const [reportStale, setReportStale] = useState(false)
 
   useEffect(() => {
     // Auth guard is enforced by middleware.ts; 401s redirect automatically.
@@ -83,12 +84,16 @@ export default function ReportPage() {
       const [runs, deal] = await Promise.all([
         api.deals.agentRuns(dealId), api.deals.get(dealId),
       ])
-      setAnalysisIncomplete(deal.status === 'analyzing' || runs.some((run) =>
-        run.agent_name !== 'report_generation' && run.status !== 'completed'))
+      const required = ['intake', 'document_router', 'contract_analysis', 'corporate_governance',
+        'corporate_intro_extraction', 'tax_analysis', 'financial_analysis', 'red_flag_aggregation']
+      setAnalysisIncomplete(deal.status === 'analyzing' || required.some((name) =>
+        !runs.some((run) => run.agent_name === name && run.status === 'completed')))
       setReportFailed(runs.some((run) =>
         run.agent_name === 'report_generation' && run.status === 'failed'))
       const data = await api.deals.getReport(dealId)
       setMarkdown(data.markdown)
+      setAnalysisIncomplete(!data.generation_available)
+      setReportStale(data.stale)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Errore'
       if (msg.includes('404') || msg.includes('No report')) {
@@ -107,6 +112,7 @@ export default function ReportPage() {
       const data = await api.deals.generateReport(dealId)
       setMarkdown(data.markdown)
       setReportFailed(false)
+      setReportStale(false)
       toast.success('Report generato')
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Generazione fallita')
@@ -150,7 +156,7 @@ export default function ReportPage() {
             <>
               <button
                 onClick={() => handleDownload('pdf')}
-                disabled={downloading !== null || generating}
+                disabled={downloading !== null || generating || reportStale}
                 className="inline-flex items-center gap-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 px-3.5 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
                 title="Scarica in formato PDF"
               >
@@ -165,7 +171,7 @@ export default function ReportPage() {
               </button>
               <button
                 onClick={() => handleDownload('docx')}
-                disabled={downloading !== null || generating}
+                disabled={downloading !== null || generating || reportStale}
                 className="inline-flex items-center gap-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 px-3.5 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
                 title="Scarica in formato Word"
               >
@@ -204,10 +210,11 @@ export default function ReportPage() {
       </div>
 
       <ErrorAlert error={error} className="mb-4" />
-      {(analysisIncomplete || reportFailed) && (
+      {(analysisIncomplete || reportFailed || reportStale) && (
         <p role="alert" className="mb-4 rounded-lg bg-amber-50 p-4 text-sm text-amber-800">
           {analysisIncomplete
             ? 'Analisi incompleta. Riesegui l’analisi prima di generare un nuovo report.'
+            : reportStale ? 'Il report deve essere rigenerato per riflettere l’analisi corrente.'
             : 'L’ultima generazione del report non è stata completata.'}
           {markdown && ' Il report mostrato è la versione precedente conservata.'}
         </p>

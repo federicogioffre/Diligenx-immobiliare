@@ -48,12 +48,15 @@ Osservazione di prova con **testo in grassetto**.
 @pytest.fixture
 def report_fixture(db: Session, test_deal: Deal) -> Report:
     """Insert a completed due-diligence report for ``test_deal``."""
+    from tests.report_fixtures import complete_report_inputs
+    fingerprint = complete_report_inputs(db, test_deal)
     r = Report(
         deal_id=test_deal.id,
         report_type=ReportType.due_diligence,
         title="Due Diligence Report",
         content=SAMPLE_MARKDOWN,
         status=ReportStatus.completed,
+        input_hash=fingerprint,
     )
     db.add(r)
     db.commit()
@@ -92,7 +95,7 @@ def _make_other_user_with_report(db: Session) -> tuple[Workspace, Deal, Report, 
     db.commit()
     db.refresh(report)
 
-    headers = {"Authorization": f"Bearer {create_access_token(other.email)}"}
+    headers = {"Authorization": f"Bearer {create_access_token(other.email, user_id=other.id, hashed_password=other.hashed_password)}"}
     return ws, deal, report, headers
 
 
@@ -228,11 +231,14 @@ Osservazione successiva alla tabella.
 
 @pytest.fixture
 def findings_report_fixture(db: Session, test_deal: Deal) -> Report:
+    from tests.report_fixtures import complete_report_inputs
+    fingerprint = complete_report_inputs(db, test_deal)
     r = Report(
         deal_id=test_deal.id,
         report_type=ReportType.due_diligence,
         title="Findings Report",
         content=FINDINGS_MARKDOWN,
+        input_hash=fingerprint,
         status=ReportStatus.completed,
     )
     db.add(r)

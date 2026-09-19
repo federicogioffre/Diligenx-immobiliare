@@ -102,7 +102,7 @@ def test_upload_limit_is_shared_per_user_but_not_per_office_ip(client, auth_head
     deal = Deal(title="Second deal", workspace_id=workspace.id)
     db.add(deal)
     db.commit()
-    second_headers = {"Authorization": f"Bearer {create_access_token(second.email)}"}
+    second_headers = {"Authorization": f"Bearer {create_access_token(second.email, user_id=second.id, hashed_password=second.hashed_password)}"}
     limiter.enabled = True
     limiter.reset()
 

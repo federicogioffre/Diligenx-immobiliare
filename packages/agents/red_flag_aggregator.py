@@ -163,6 +163,8 @@ def _flag_payload(item: dict, severity_was_floored: bool) -> dict | None:
     amount = item.get("amount_eur")
     if isinstance(amount, (int, float)) and not isinstance(amount, bool) and amount >= 0:
         payload["amount_eur"] = float(amount)
+        payload["amount_source"] = item.get("amount_source", "unverified")
+        payload["amount_evidence"] = item.get("amount_evidence")
 
     years = item.get("fiscal_years")
     if isinstance(years, (list, tuple)):
@@ -201,8 +203,10 @@ def _summarize_payload(payload: dict | None) -> str:
         bits.append(f"tax={tax_kind}")
 
     amount = payload.get("amount_eur")
-    if amount is not None:
+    if amount is not None and payload.get("amount_source") == "document":
         bits.append(f"amount_stated_by_document=EUR {amount:,.0f}")
+        if payload.get("amount_evidence"):
+            bits.append("amount_evidence=" + str(payload["amount_evidence"]))
 
     years = payload.get("fiscal_years")
     if years:
@@ -312,12 +316,15 @@ class RedFlagAggregationAgent:
             clause_findings = self._gather_clause_findings(db, doc_map)
             agent_findings = self._gather_agent_findings(db, deal_id)
 
-            # Real page numbers per document, used to validate the page the
-            # LLM cites (guards against a hallucinated source_page).
+            # Revalidate legacy findings against ingestion evidence. A page
+            # returned by another model is not an independent source of truth.
+            from packages.agents.evidence import verified_clause_page
             pages_by_doc: dict[int, set[int]] = {}
             for cf in clause_findings:
-                if cf.page_number is not None:
-                    pages_by_doc.setdefault(cf.document_id, set()).add(cf.page_number)
+                doc = doc_map.get(cf.document_id)
+                page = verified_clause_page(cf.content, doc.chunks, doc.page_count) if doc else None
+                if page is not None:
+                    pages_by_doc.setdefault(cf.document_id, set()).add(page)
 
             logger.info(
                 "[%s] deal=%d — gathered %d clause finding(s), %d agent finding(s)",
@@ -509,7 +516,7 @@ class RedFlagAggregationAgent:
             if doc_clauses:
                 parts.append("Clause Findings:")
                 for cf in doc_clauses:
-                    snippet = (cf.content or "")[:200]
+                    snippet = cf.content or ""
                     # Expose the page so the LLM can cite it in source_page.
                     page = f" (p. {cf.page_number})" if cf.page_number is not None else ""
                     parts.append(f"  [{cf.clause_type.value}]{page} {cf.title}: {snippet}")
@@ -523,7 +530,7 @@ class RedFlagAggregationAgent:
                         if hasattr(af.severity, "value")
                         else str(af.severity)
                     )
-                    desc_snippet = (af.description or "")[:200]
+                    desc_snippet = af.description or ""
                     extra = _summarize_payload(af.structured_payload_json)
                     extra = f"  [{extra}]" if extra else ""
                     parts.append(
@@ -543,7 +550,7 @@ class RedFlagAggregationAgent:
                     if hasattr(af.severity, "value")
                     else str(af.severity)
                 )
-                desc_snippet = (af.description or "")[:200]
+                desc_snippet = af.description or ""
                 extra = _summarize_payload(af.structured_payload_json)
                 extra = f"  [{extra}]" if extra else ""
                 parts.append(
@@ -633,10 +640,9 @@ class RedFlagAggregationAgent:
         clause findings; otherwise None. Prevents hallucinated citations."""
         if raw_page is None or source_doc_id is None:
             return None
-        try:
-            page = int(raw_page)
-        except (TypeError, ValueError):
+        if type(raw_page) is not int:
             return None
+        page = raw_page
         return page if page in pages_by_doc.get(source_doc_id, set()) else None
 
     def _persist_flags_and_questions(
@@ -662,6 +668,20 @@ class RedFlagAggregationAgent:
         _MIN_FLAG_CONFIDENCE = 0.50   # drop red_flags below this threshold
         pages_by_doc = pages_by_doc or {}
         severity_floors = severity_floors or {}
+
+        from app.models.document import Document
+        allowed_documents = {row.id: row for row in db.query(Document).filter_by(deal_id=deal_id)}
+        for item in flags:
+            source_id = item.get("source_document_id")
+            if source_id is not None and (type(source_id) is not int or source_id not in allowed_documents):
+                from packages.agents.deal_analysis_agent import LLMResponseError
+                raise LLMResponseError("Aggregation cited a document outside this deal")
+            from packages.agents.evidence import grounded_amount
+            source_doc = allowed_documents.get(source_id)
+            amount, amount_source, amount_evidence = grounded_amount(item, source_doc.raw_text or "" if source_doc else "")
+            item["amount_eur"] = amount
+            item["amount_source"] = amount_source
+            item["amount_evidence"] = amount_evidence
 
         red_flags: list[RedFlag] = []
         for item in flags:

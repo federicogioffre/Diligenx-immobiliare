@@ -148,7 +148,7 @@ class TestDeleteAccount:
         deleted_keys: list[str] = []
         import app.api.routes.users as users_module
         monkeypatch.setattr(
-            users_module, "delete_file", lambda key: deleted_keys.append(key)
+            users_module, "delete_file", lambda key, **kwargs: deleted_keys.append(key)
         )
         resp = client.request(
             "DELETE", "/users/me",
