@@ -142,6 +142,14 @@ class DealContextProvider(LLMProvider):
     def complete(self, prompt: str, max_tokens: int = 3072) -> str:
         return self.provider.complete(self._prefix + prompt, max_tokens=max_tokens)
 
+    def complete_json(
+        self, prompt: str, max_tokens: int = 3072, *, response_type: str = "array",
+    ) -> str:
+        complete_json = getattr(self.provider, "complete_json", None)
+        if callable(complete_json):
+            return complete_json(self._prefix + prompt, max_tokens=max_tokens, response_type=response_type)
+        return self.complete(prompt, max_tokens=max_tokens)
+
 
 def with_deal_context(provider: LLMProvider, db, deal_id: int) -> LLMProvider:
     """Reuse the pipeline snapshot, or replace a wrapper from a different deal."""

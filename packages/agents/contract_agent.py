@@ -39,7 +39,7 @@ from sqlalchemy.orm import Session
 from packages.agents.deal_analysis_agent import (
     LLMProvider,
     get_llm_provider,
-    _parse_llm_items,
+    _complete_llm_items,
     LLMResponseError,
     _VALID_CLAUSE_TYPES,
     DealAnalysisAgent,
@@ -520,9 +520,8 @@ class ContractAgent:
             text=text,
         )
 
-        raw = self._llm.complete(prompt, max_tokens=6144)
-        items = _parse_llm_items(
-            raw, context=f"CCNL compliance, document {document_id}"
+        items = _complete_llm_items(
+            self._llm, prompt, max_tokens=6144, context=f"CCNL compliance, document {document_id}"
         )
 
         payloads: list[dict] = []
@@ -629,8 +628,7 @@ class ContractAgent:
             clauses_json=json.dumps(clauses_input, ensure_ascii=False, indent=2),
         )
 
-        raw = self._llm.complete(prompt, max_tokens=6144)
-        items = _parse_llm_items(raw, context="Clause relevance")
+        items = _complete_llm_items(self._llm, prompt, max_tokens=6144, context="Clause relevance")
         relevance_map: dict[int, tuple[str, str]] = {}
         for item in items:
             idx = item.get("clause_index")
@@ -694,10 +692,9 @@ class ContractAgent:
                     else ""
                 ),
             )
-            raw = self._llm.complete(prompt, max_tokens=12288)
-
-            items = _parse_llm_items(
-                raw, context=f"Contract document {document_id}, batch {batch_idx + 1}"
+            items = _complete_llm_items(
+                self._llm, prompt, max_tokens=12288,
+                context=f"Contract document {document_id}, batch {batch_idx + 1}"
             )
 
             for item in items:

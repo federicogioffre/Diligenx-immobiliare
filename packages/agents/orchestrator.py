@@ -47,7 +47,7 @@ from sqlalchemy.orm import Session
 from packages.agents.deal_analysis_agent import (
     LLMProvider,
     get_llm_provider,
-    _parse_classification,
+    _complete_classification,
     _VALID_SEVERITIES,
     _CONTRACT_TYPES,
 )
@@ -157,7 +157,9 @@ def _clear_previous_runs(db: Session, deal_id: int, agent_name: str) -> None:
 
 # ── Helper: transactional stage isolation ────────────────────────────────
 
-def _record_failed_run(db: Session, deal_id: int, stage_key: str, error: str) -> None:
+def _record_failed_run(
+    db: Session, deal_id: int, stage_key: str, error: str, *, started_at: datetime | None = None,
+) -> None:
     """Record a failed AgentRun for *stage_key* in a fresh committed transaction.
 
     Called after a stage has been rolled back — the AgentRun the stage created
@@ -168,6 +170,8 @@ def _record_failed_run(db: Session, deal_id: int, stage_key: str, error: str) ->
     try:
         _clear_previous_runs(db, deal_id, agent_name)
         run = _create_run(db, deal_id, agent_name)
+        if started_at is not None:
+            run.started_at = started_at
         _complete_run(db, run, error=error)
         db.commit()
     except Exception:
@@ -187,19 +191,20 @@ def _execute_stage(db: Session, deal_id: int, stage_key: str, fn) -> dict:
     results and, crucially, restores rows a delete-then-regenerate stage may
     have deleted before failing — and the failure is recorded separately.
     """
+    started_at = datetime.now(timezone.utc)
     try:
         result = fn()
     except Exception as exc:  # stage crashed outright (e.g. poisoned session)
         logger.exception("[%s] deal=%d — stage crashed", stage_key, deal_id)
         db.rollback()
-        _record_failed_run(db, deal_id, stage_key, str(exc))
+        _record_failed_run(db, deal_id, stage_key, str(exc), started_at=started_at)
         return {"error": str(exc)}
 
     if isinstance(result, dict) and "error" in result:
         # Stage handled its own exception and reported failure: discard its
         # (possibly partial) work so it can't wipe previously-good data.
         db.rollback()
-        _record_failed_run(db, deal_id, stage_key, str(result.get("error")))
+        _record_failed_run(db, deal_id, stage_key, str(result.get("error")), started_at=started_at)
         return result
 
     try:
@@ -207,7 +212,7 @@ def _execute_stage(db: Session, deal_id: int, stage_key: str, fn) -> dict:
     except Exception as exc:  # commit itself failed — treat as a stage failure
         logger.exception("[%s] deal=%d — stage commit failed", stage_key, deal_id)
         db.rollback()
-        _record_failed_run(db, deal_id, stage_key, str(exc))
+        _record_failed_run(db, deal_id, stage_key, str(exc), started_at=started_at)
         return {"error": str(exc)}
 
     return result
@@ -365,9 +370,7 @@ def _stage_document_routing(
                 filename=filename,
                 text=text,
             )
-            raw = llm.complete(prompt, max_tokens=512)
-
-            return _parse_classification(raw)
+            return _complete_classification(llm, prompt, context=f"Document classification, document {doc_id}")
 
         from packages.agents.concurrency import run_llm_tasks
         from packages.agents.stage_tx import release_connection_before_llm

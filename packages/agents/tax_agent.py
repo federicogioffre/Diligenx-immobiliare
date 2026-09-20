@@ -81,7 +81,7 @@ from sqlalchemy.orm import Session
 from packages.agents.deal_analysis_agent import (
     LLMProvider,
     get_llm_provider,
-    _parse_llm_items,
+    _complete_llm_items,
     _normalize_severity,
 )
 from packages.agents import tax_rules_registry as _rules
@@ -959,10 +959,8 @@ class TaxAgent:
             filename=filename,
             text=text,
         )
-        raw = self._llm.complete(prompt, max_tokens=12288)
-
-        items = _parse_llm_items(
-            raw, context=f"{self.AGENT_NAME}, document {document_id}"
+        items = _complete_llm_items(
+            self._llm, prompt, max_tokens=12288, context=f"{self.AGENT_NAME}, document {document_id}"
         )
 
         payloads: list[dict] = []
