@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     # AI Analysis
     ANTHROPIC_API_KEY: str = ""
     ANALYSIS_MODEL: str = "gpt-5.6-luna"
+    # Model for the judgment stages — red-flag aggregation, source-fidelity
+    # review and executive summary — where legal judgment, not bulk reading,
+    # decides the quality of the report. Empty = same as ANALYSIS_MODEL.
+    # A `claude-*` value selects Anthropic and requires ANTHROPIC_API_KEY.
+    JUDGMENT_MODEL: str = ""
     # Max concurrent LLM calls within a pipeline stage (per-document fan-out).
     # The analysis pipeline parallelises independent per-document calls with a
     # bounded thread pool of this size; 1 restores fully sequential behaviour.

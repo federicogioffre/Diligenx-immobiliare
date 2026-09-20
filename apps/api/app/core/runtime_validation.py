@@ -8,6 +8,8 @@ def validate_beta_configuration() -> None:
     from packages.llm_config import DEFAULT_ANALYSIS_MODEL, analysis_api_key_name
     key_name = analysis_api_key_name(settings.ANALYSIS_MODEL or DEFAULT_ANALYSIS_MODEL)
     required = {"REDIS_URL", "S3_BUCKET", "OPENAI_API_KEY", key_name}
+    if settings.JUDGMENT_MODEL:
+        required.add(analysis_api_key_name(settings.JUDGMENT_MODEL))
     missing = [name for name in sorted(required) if not getattr(settings, name)]
     if missing:
         raise RuntimeError("BETA_MODE requires: " + ", ".join(missing))

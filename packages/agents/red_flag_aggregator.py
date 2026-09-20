@@ -47,7 +47,7 @@ from packages.agents.deal_analysis_agent import (
     _complete_llm_items,
     _normalize_severity,
     _parse_dd_area,
-    get_llm_provider,
+    get_judgment_provider,
 )
 
 logger = logging.getLogger(__name__)
@@ -283,7 +283,7 @@ class RedFlagAggregationAgent:
     AGENT_NAME = AGENT_NAME
 
     def __init__(self, provider: LLMProvider | None = None):
-        self._llm = provider or get_llm_provider()
+        self._llm = provider or get_judgment_provider()
 
     # ── Public entry point ─────────────────────────────────────────────────
 

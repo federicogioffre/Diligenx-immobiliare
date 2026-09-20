@@ -33,7 +33,8 @@ def auth(auth_headers):
 def llm(monkeypatch):
     import packages.agents.report_agent as module
     provider = StubLLM()
-    monkeypatch.setattr(module, "get_llm_provider", lambda: provider)
+    # The report runs on the judgment provider; the stub must serve that role.
+    monkeypatch.setattr(module, "get_judgment_provider", lambda: provider)
     return provider
 
 def complete_inputs(db, deal):

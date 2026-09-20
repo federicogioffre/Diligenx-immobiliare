@@ -26,7 +26,7 @@ from datetime import date
 from sqlalchemy.orm import Session, joinedload
 
 from packages.agents.company_identity import consolidate_company_profiles, normalize_company_name
-from packages.agents.deal_analysis_agent import LLMProvider, get_llm_provider
+from packages.agents.deal_analysis_agent import LLMProvider, get_judgment_provider
 
 logger = logging.getLogger(__name__)
 
@@ -769,7 +769,7 @@ def generate_due_diligence_report(
         raise IncompleteAnalysisError(str(exc)) from exc
 
     from packages.agents.deal_context import with_deal_context
-    llm = with_deal_context(provider or get_llm_provider(), db, deal_id)
+    llm = with_deal_context(provider or get_judgment_provider(), db, deal_id)
 
     from app.models.agent_run import AgentRun, AgentRunStatus
 
