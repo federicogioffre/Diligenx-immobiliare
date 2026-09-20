@@ -411,6 +411,7 @@ class TestReturnValue:
         doc = _make_doc(db, test_deal)
         result = TaxAgent().run(test_deal.id, db, document_ids={doc.id})
         expected_keys = {
+            "failed_documents",
             "deal_id",
             "documents_analyzed",
             "agent_findings_count",

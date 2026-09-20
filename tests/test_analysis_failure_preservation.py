@@ -143,9 +143,17 @@ def test_later_contract_batch_failure_preserves_all_previous_clauses(db, analyze
                 return '[{"content":'
             return super().complete(prompt, max_tokens)
 
+    before_failed_doc = rows(db, ClauseFinding, document_id=doc.id)
+    other_before = [row for row in before if row not in before_failed_doc]
+
     result = run_deal_analysis_pipeline(analyzed.id, db, provider=FailSecondBatch())
-    assert 'error' in result['stages']['specialist_analysis']
-    assert rows(db, ClauseFinding) == before
+    # One document's failed request is a recorded gap, not a failed stage:
+    # that document keeps its previous clauses, the others are re-analysed.
+    stage = result['stages']['specialist_analysis']
+    assert 'error' not in stage
+    assert [entry['filename'] for entry in stage['failed_documents']] == ['contract.txt']
+    assert rows(db, ClauseFinding, document_id=doc.id) == before_failed_doc
+    assert len([row for row in rows(db, ClauseFinding) if row not in before_failed_doc]) == len(other_before)
 
 
 def test_manual_report_failure_preserves_published_report(db, analyzed):
