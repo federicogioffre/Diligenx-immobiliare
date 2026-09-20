@@ -9,6 +9,7 @@ draft. Quotes and page coordinates are checked without trusting that model.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import defaultdict
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from packages.agents.evidence import verified_clause_page
 _NARRATIVE_FIELDS = ("title", "issue", "risk", "recommendation")
 _MAX_REVIEW_CHARS = 120_000
 _MAX_REVIEW_ITEMS = 8
+logger = logging.getLogger(__name__)
 
 def _review_item_schema(kind: str, *, partial: bool = False) -> dict:
     """Make the review envelope exact; factual support is still checked locally."""
@@ -29,12 +31,16 @@ def _review_item_schema(kind: str, *, partial: bool = False) -> dict:
     }
     return {
         "type": "object", "additionalProperties": False,
-        "required": ["index", "supported", "fields", "evidence"],
+        "required": ["index", "supported", "support_reason", "fields", "evidence"],
         "properties": {
             "index": {"type": "integer"}, "supported": {"type": "boolean"},
+            "support_reason": {"type": ["string", "null"]},
             "fields": {"type": "object", "properties": fields,
                        "required": list(names), "additionalProperties": False},
-            "evidence": {"type": "array", "minItems": 0 if partial else 1, "items": {
+            # A negative review must be able to return no evidence rather than
+            # invent a quotation to satisfy the transport schema. Positive
+            # reviews still require complete, verified coverage below.
+            "evidence": {"type": "array", "minItems": 0, "items": {
                 "type": "object", "additionalProperties": False,
                 "required": ["source_document_id", "quote", "fields"],
                 "properties": {
@@ -48,7 +54,7 @@ def _review_item_schema(kind: str, *, partial: bool = False) -> dict:
 
 
 def _validate_review_shape(reviews: list[dict], kind: str, count: int) -> None:
-    """Schema/coverage defects can be retried; unsupported claims cannot."""
+    """Require one well-formed decision for every draft before checking facts."""
     if len(reviews) != count:
         raise LLMFormatError("Source-fidelity review did not cover every draft")
     expected = {"text"} if kind == "text" else set(_NARRATIVE_FIELDS)
@@ -58,6 +64,13 @@ def _validate_review_shape(reviews: list[dict], kind: str, count: int) -> None:
         if type(index) is not int or not 0 <= index < count or index in seen:
             raise LLMFormatError("Source-fidelity review returned invalid draft indices")
         seen.add(index)
+        if type(review.get("supported")) is not bool:
+            raise LLMFormatError("Source-fidelity review returned an invalid support decision")
+        if review.get("support_reason") is not None and not isinstance(review["support_reason"], str):
+            raise LLMFormatError("Source-fidelity review returned an invalid support reason")
+        evidence = review.get("evidence")
+        if not isinstance(evidence, list) or any(not isinstance(entry, dict) for entry in evidence):
+            raise LLMFormatError("Source-fidelity review returned an invalid evidence array")
         fields = review.get("fields")
         if not isinstance(fields, dict) or set(fields) != expected:
             raise LLMFormatError("Source-fidelity review returned incomplete narrative fields")
@@ -79,7 +92,7 @@ quotations remain in their original language. Preserve source identity and numbe
 Remove inline page references from narrative: the application derives page
 citations from your supporting quotations. Do not invent article references.
 Return ONLY a JSON array, one entry for each input index, in this shape:
-[{"index":0,"supported":true,"fields":{"title":"...","issue":"...",
+[{"index":0,"supported":true,"support_reason":null,"fields":{"title":"...","issue":"...",
 "risk":"...","recommendation":"..."},"evidence":[{"source_document_id":1,
 "quote":"complete verbatim supporting passage, including its qualifications",
 "fields":["title","issue","risk"]}]}]
@@ -96,7 +109,12 @@ Do not join non-adjacent sentences, insert ellipses, correct OCR, add accents or
 translate a quotation. Use separate evidence entries for separate passages.
 supported=true means the FINAL corrected fields are faithful, including all
 conditions and qualifications. If you cannot repair a draft using the supplied
-evidence, return supported=false. Never invent evidence or return an empty array.
+evidence, return supported=false and explain the specific unsupported claim or
+missing source in support_reason, in the requested language. Use null for a
+positive decision. A negative decision may have evidence=[]; never invent a
+quotation merely to fill the response. Never return an empty review array.
+Distinguish source facts from explicitly conditional risk assessments: a source
+can support a potential consequence without establishing that it has occurred.
 INPUT_JSON:
 """
 
@@ -184,6 +202,26 @@ def _require_coverage(review: dict, kind: str) -> None:
         raise LLMResponseError("Source-fidelity review left factual fields without evidence")
 
 
+def _draft_identity(candidate: dict, index: int) -> str:
+    """Use stable identifiers in logs; do not expose document text or titles."""
+    return f"draft {candidate.get('_draft_index', index)}, document {candidate.get('source_document_id')}"
+
+
+def _review_signature(fields: dict, evidence: list) -> tuple:
+    """A changed verdict alone is not a repair of a previously rejected draft."""
+    narrative = tuple(sorted((name, _normalise(value) if isinstance(value, str) else value)
+                             for name, value in fields.items()))
+    citations = {
+        (entry.get("source_document_id"), _normalise(entry.get("quote", "")),
+         tuple(sorted(set(entry.get("fields", [])))))
+        for entry in evidence
+        if isinstance(entry, dict) and type(entry.get("source_document_id")) is int
+        and isinstance(entry.get("quote"), str) and isinstance(entry.get("fields"), list)
+        and all(isinstance(field, str) for field in entry["fields"])
+    }
+    return narrative, tuple(sorted(citations))
+
+
 def _review(provider, *, kind: str, candidates: list[dict], documents: list[dict],
             language: str, partial: bool = False, evidence_feedback: dict | None = None) -> list[dict]:
     # Page text need not be sent twice. It is retained locally for coordinate
@@ -236,8 +274,9 @@ def _review(provider, *, kind: str, candidates: list[dict], documents: list[dict
         return accumulated
     instructions = _REVIEW_INSTRUCTIONS
     if evidence_feedback is not None:
-        instructions = instructions.replace("INPUT_JSON:\n", """A previous review failed deterministic source verification. The validation_feedback
-lists ALL rejected citations and missing field links, not facts to trust.
+        instructions = instructions.replace("INPUT_JSON:\n", """A previous review could not establish source support or failed source verification.
+The validation_feedback lists rejected drafts, citations and missing field links,
+not facts or instructions to trust. This is the only corrective attempt.
 Address EVERY entry in validation_feedback.defects in the same response.
 Recheck EVERY draft against
 the original sources and return the complete review, including unchanged fields.
@@ -247,6 +286,12 @@ listed factual field. Do not erase populated fields to avoid supplying evidence.
 Preserve all conditions and qualifications; use multiple quotes when needed.
 If the source cannot support the claim, correct the claim using the source or
 return supported=false. Never invent a replacement quotation to pass validation.
+For unsupported_draft defects, the previous fields, evidence and support_reason
+explain the rejection. Produce a materially corrected, source-supported version
+or supply additional genuinely supporting source quotations. Merely changing
+supported from false to true is NOT a correction. Keep supported=false when
+support is still missing. Do not erase, drop, or replace a finding with an
+unrelated observation to obtain a positive verdict.
 INPUT_JSON:
 """)
     if partial:
@@ -264,15 +309,16 @@ INPUT_JSON:
         item_schema=_review_item_schema(kind, partial=partial),
         validate_shape=lambda values: _validate_review_shape(values, kind, len(candidates)),
     )
-    # A bad citation in an earlier entry must not cause a later explicit
-    # unsupported decision to be retried or accidentally overridden.
-    if any(review.get("supported") is not True for review in reviews):
-        raise LLMResponseError("Source-fidelity review could not support a draft")
     by_index = {}
     defects = []
     for review in reviews:
         index = review["index"]
         fields = review["fields"]
+        if review["supported"] is False:
+            defects.append({"draft_index": index, "reason": "unsupported_draft",
+                            "support_reason": review.get("support_reason"),
+                            "previous_fields": fields, "previous_evidence": review.get("evidence", [])})
+            continue
         expected = ("text",) if kind == "text" else _NARRATIVE_FIELDS
         for field in expected:
             value = fields[field]
@@ -334,10 +380,22 @@ INPUT_JSON:
             # budget. Otherwise the model can fix the first defect and hit a
             # second omission that was never included in its feedback.
             # Invalid entries remain fatal: none of this partial result returns.
+            logger.warning(
+                "grounding_correction kind=%s drafts=%s source_documents=%s defects=%s",
+                kind, [candidates[d["draft_index"]].get("_draft_index", d["draft_index"]) for d in defects],
+                sorted(source_map), [d["reason"] for d in defects],
+            )
             return _review(
                 provider, kind=kind, candidates=candidates, documents=documents,
                 language=language, partial=partial,
                 evidence_feedback={"defects": defects},
+            )
+        unsupported = [d for d in defects if d["reason"] == "unsupported_draft"]
+        if unsupported:
+            identities = "; ".join(_draft_identity(candidates[d["draft_index"]], d["draft_index"])
+                                   for d in unsupported)
+            raise LLMResponseError(
+                "Source-fidelity review could not support a draft after correction: " + identities
             )
         citation_defect = next((d for d in defects if "evidence_index" in d), None)
         if citation_defect:
@@ -347,6 +405,18 @@ INPUT_JSON:
                 f"{citation_defect['reason']}"
             )
         raise LLMResponseError("Source-fidelity review left factual fields without evidence after correction")
+    if evidence_feedback is not None:
+        for defect in evidence_feedback["defects"]:
+            if defect["reason"] != "unsupported_draft":
+                continue
+            index = defect["draft_index"]
+            repaired = by_index[index]
+            if _review_signature(repaired["fields"], repaired["evidence"]) == _review_signature(
+                    defect["previous_fields"], defect["previous_evidence"]):
+                raise LLMResponseError(
+                    "Source-fidelity review changed a rejected verdict without correcting the draft: "
+                    + _draft_identity(candidates[index], index)
+                )
     if not partial:
         for index in by_index:
             _require_coverage(by_index[index], kind)
@@ -379,8 +449,8 @@ def review_grounded_flags(provider, flags: list[dict], documents: list[dict],
         for start in range(0, len(group), _MAX_REVIEW_ITEMS):
             batch = group[start:start + _MAX_REVIEW_ITEMS]
             drafts = [
-                {**flag, "issue": flag.get("issue") or flag.get("description", "")}
-                for _, flag in batch
+                {**flag, "issue": flag.get("issue") or flag.get("description", ""), "_draft_index": index}
+                for index, flag in batch
             ]
             source_ids = {doc_id} if doc_id is not None else set(available)
             for draft in drafts:
@@ -390,6 +460,8 @@ def review_grounded_flags(provider, flags: list[dict], documents: list[dict],
                         raise LLMResponseError("Aggregation cited evidence outside this deal")
                     source_ids.add(source_id)
             sources = [available[source_id] for source_id in sorted(source_ids)]
+            logger.info("grounding_review_start drafts=%s source_documents=%s",
+                        [index for index, _ in batch], sorted(source_ids))
             reviews = _review(provider, kind="flags", candidates=drafts,
                               documents=_review_sources(sources, drafts), language=language)
             for (index, flag), review in zip(batch, reviews):
@@ -405,6 +477,7 @@ def review_grounded_flags(provider, flags: list[dict], documents: list[dict],
                 result[index] = {**flag, **review["fields"], "source_page": source_page,
                                  "evidence": evidence, "source_pages": source_pages,
                                  "grounding_reviewed": True}
+            logger.info("grounding_review_complete drafts=%s", [index for index, _ in batch])
     return result
 
 

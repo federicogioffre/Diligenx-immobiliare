@@ -99,7 +99,7 @@ class MutatingReview:
     (lambda result: result.clear(), 2),
     (lambda result: result.append(copy.deepcopy(result[0])), 2),
     (lambda result: result[0].update(index=True), 2),
-    (lambda result: result[0].update(supported=False), 1),
+    (lambda result: result[0].update(supported=False), 2),
     (lambda result: result[0]["fields"].pop("risk"), 2),
     (lambda result: result[0]["fields"].update(risk=None), 1),
     (lambda result: result[0]["fields"].update(title=""), 1),
@@ -176,7 +176,7 @@ def test_citation_correction_cannot_override_a_negative_support_decision(replay)
     assert len(reviewer.prompts) == 2
 
 
-def test_bad_citation_cannot_retry_another_explicitly_unsupported_draft(replay):
+def test_bad_citation_and_unsupported_draft_share_one_correction_budget(replay):
     class MixedDecisions(ReplayReviewer):
         def complete(self, prompt, max_tokens=2048):
             response = json.loads(super().complete(prompt, max_tokens))
@@ -188,7 +188,130 @@ def test_bad_citation_cannot_retry_another_explicitly_unsupported_draft(replay):
     reviewer = MixedDecisions()
     with pytest.raises(LLMResponseError, match="could not support"):
         review_grounded_flags(reviewer, [replay["flags"][0]] * 2, replay["documents"], "it")
-    assert len(reviewer.prompts) == 1
+    assert len(reviewer.prompts) == 2
+
+
+def test_unsupported_draft_gets_one_informed_repair_without_losing_source_conditions(replay):
+    class RepairableDraft(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            if len(self.prompts) == 1:
+                response[0].update(supported=False, support_reason="Il rimborso non è automaticamente dovuto.",
+                                   evidence=[])
+                response[0]["fields"]["risk"] = "Il rimborso è automaticamente dovuto."
+            else:
+                defect = data["validation_feedback"]["defects"][0]
+                assert defect["reason"] == "unsupported_draft"
+                assert defect["support_reason"] == "Il rimborso non è automaticamente dovuto."
+                assert defect["previous_fields"]["risk"] == "Il rimborso è automaticamente dovuto."
+                assert data["documents"][0]["text"] == replay["documents"][0]["text"]
+            return json.dumps(response)
+
+    reviewer = RepairableDraft()
+    result = review_grounded_flags(reviewer, replay["flags"][:1], replay["documents"], "it")
+    assert len(reviewer.prompts) == 2
+    assert "30 giorni dalla contestazione scritta" in result[0]["risk"]
+    assert result[0]["grounding_reviewed"] is True
+    assert result[0]["amount_eur"] == replay["flags"][0]["amount_eur"]
+    assert "_draft_index" not in result[0]
+
+
+@pytest.mark.parametrize("duplicate_quote", [False, True])
+def test_changing_only_a_rejected_verdict_is_not_a_repair(replay, duplicate_quote):
+    class VerdictFlip(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            if len(self.prompts) == 1:
+                response[0]["supported"] = False
+            elif duplicate_quote:
+                response[0]["evidence"].append(copy.deepcopy(response[0]["evidence"][0]))
+            return json.dumps(response)
+
+    reviewer = VerdictFlip()
+    with pytest.raises(LLMResponseError, match="without correcting.*draft 0, document 241"):
+        review_grounded_flags(reviewer, replay["flags"][:1], replay["documents"], "it")
+    assert len(reviewer.prompts) == 2
+
+
+def test_unsupported_repair_must_still_pass_verbatim_verification(replay):
+    class FabricatedRepair(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            if len(self.prompts) == 1:
+                response[0].update(supported=False, evidence=[])
+            else:
+                response[0]["evidence"][0]["quote"] = "La banca conferma che il debito è già esigibile."
+            return json.dumps(response)
+
+    reviewer = FabricatedRepair()
+    with pytest.raises(LLMResponseError, match="unsupported evidence after correction"):
+        review_grounded_flags(reviewer, replay["flags"][:1], replay["documents"], "it")
+    assert len(reviewer.prompts) == 2
+
+
+def test_unrepairable_draft_error_keeps_global_index_and_document_without_source_text(replay):
+    class RejectLoan(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            if data["documents"][0]["document_id"] == 241:
+                response[0]["supported"] = False
+            return json.dumps(response)
+
+    reviewer = RejectLoan()
+    flags = [replay["flags"][1], replay["flags"][0]]
+    with pytest.raises(LLMResponseError, match="after correction: draft 1, document 241") as error:
+        review_grounded_flags(reviewer, flags, replay["documents"], "it")
+    assert flags[1]["title"] not in str(error.value)
+    assert len(reviewer.prompts) == 3
+
+
+def test_negative_review_schema_permits_missing_evidence_but_requires_explanation_field():
+    from packages.agents.grounding_review import _review_item_schema
+    schema = _review_item_schema("flags")
+    assert "support_reason" in schema["required"]
+    assert schema["properties"]["evidence"]["minItems"] == 0
+
+
+@pytest.mark.parametrize("can_repair", [False, True])
+def test_unsupported_draft_recovery_is_atomic_at_persistence(db, test_deal, replay, can_repair):
+    from app.models.document import Document, DocumentStatus
+    from app.models.red_flag import RedFlag, Severity
+    from packages.agents.red_flag_aggregator import RedFlagAggregationAgent
+
+    test_deal.report_language = "it"
+    source = replay["documents"][0]
+    document = Document(deal_id=test_deal.id, filename="loan.pdf", file_path="/tmp/loan.pdf",
+                        mime_type="application/pdf", file_size=100, status=DocumentStatus.processed,
+                        raw_text=source["text"])
+    db.add(document)
+    db.flush()
+    draft = {**replay["flags"][0], "source_document_id": document.id}
+    previous = RedFlag(deal_id=test_deal.id, title="Previous reviewed result", issue="Preserve me",
+                       category="liability", severity=Severity.high)
+    db.add(previous)
+    db.commit()
+
+    class RecoveringReviewer(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            if "GROUNDING REVIEW\n" in prompt and (len(self.prompts) == 1 or not can_repair):
+                response[0].update(supported=False, evidence=[], support_reason="Mancano le condizioni del rimedio.")
+            return json.dumps(response)
+
+    reviewer = RecoveringReviewer([draft])
+    if can_repair:
+        result = RedFlagAggregationAgent(reviewer).run(test_deal.id, db)
+        assert result["red_flags_count"] == 1
+        current = db.query(RedFlag).filter_by(deal_id=test_deal.id).one()
+        assert "30 giorni" in current.risk
+        assert current.structured_payload_json["grounding_reviewed"] is True
+    else:
+        with pytest.raises(LLMResponseError, match="could not support.*after correction"):
+            RedFlagAggregationAgent(reviewer).run(test_deal.id, db)
+        assert db.query(RedFlag).filter_by(deal_id=test_deal.id).one().title == "Previous reviewed result"
+    assert len(reviewer.prompts) == 2
 
 
 def test_missing_field_links_receive_precise_feedback_and_complete_verification(replay):
