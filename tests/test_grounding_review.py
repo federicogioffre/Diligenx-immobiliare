@@ -107,11 +107,11 @@ class MutatingReview:
     (lambda result: result[0]["fields"].update(issue="Il covenant è violato (art. p.2)."), 1),
     (lambda result: result[0]["fields"].update(recommendation="Insert a specific indemnity in the SPA for the benefit of the Buyer."), 1),
     (lambda result: result[0].update(evidence=[]), 1),
-    (lambda result: result[0]["evidence"][0].update(quote="The bank has already demanded payment."), 1),
-    (lambda result: result[0]["evidence"][0].update(source_document_id=999), 1),
+    (lambda result: result[0]["evidence"][0].update(quote="The bank has already demanded payment."), 2),
+    (lambda result: result[0]["evidence"][0].update(source_document_id=999), 2),
     (lambda result: [entry.update(fields=["title"]) for entry in result[0]["evidence"]], 1),
 ])
-def test_invalid_review_never_publishes_and_only_retries_structural_errors(replay, mutate, attempts):
+def test_invalid_review_never_publishes_and_correction_is_bounded(replay, mutate, attempts):
     reviewer = MutatingReview(mutate)
     with pytest.raises(LLMResponseError):
         review_grounded_flags(reviewer, replay["flags"][:1], replay["documents"], "it")
@@ -132,6 +132,62 @@ def test_incomplete_narrative_fields_retry_with_complete_original_evidence(repla
     assert reviewer.prompts[1].endswith(reviewer.prompts[0])
     assert result[0]["risk"]
     assert result[0]["grounding_reviewed"] is True
+
+
+@pytest.mark.parametrize("wrong_document", [False, True])
+def test_citation_correction_receives_feedback_and_must_pass_verbatim_checks(replay, wrong_document):
+    class OnceInvalidCitation(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            if len(self.prompts) == 1:
+                response[0]["evidence"][0].update(
+                    {"source_document_id": 999} if wrong_document else {"quote": "DSCR ... 0,85"}
+                )
+            else:
+                data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+                assert data["validation_feedback"]["draft_index"] == 0
+                assert data["validation_feedback"]["reason"]
+                assert data["documents"][0]["text"] == replay["documents"][0]["text"]
+            return json.dumps(response)
+
+    reviewer = OnceInvalidCitation()
+    result = review_grounded_flags(reviewer, replay["flags"][:1], replay["documents"], "it")
+    assert len(reviewer.prompts) == 2
+    assert result[0]["grounding_reviewed"] is True
+    for entry in result[0]["evidence"]:
+        source = next(d for d in replay["documents"] if d["document_id"] == entry["source_document_id"])
+        assert " ".join(entry["quote"].split()).casefold() in " ".join(source["text"].split()).casefold()
+
+
+def test_citation_correction_cannot_override_a_negative_support_decision(replay):
+    class CannotRepair(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            if len(self.prompts) == 1:
+                response[0]["evidence"][0]["quote"] = "Invented quotation"
+            else:
+                response[0]["supported"] = False
+            return json.dumps(response)
+
+    reviewer = CannotRepair()
+    with pytest.raises(LLMResponseError, match="could not support"):
+        review_grounded_flags(reviewer, replay["flags"][:1], replay["documents"], "it")
+    assert len(reviewer.prompts) == 2
+
+
+def test_bad_citation_cannot_retry_another_explicitly_unsupported_draft(replay):
+    class MixedDecisions(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            rejected = copy.deepcopy(response[0])
+            rejected.update(index=1, supported=False)
+            response[0]["evidence"][0]["quote"] = "Invented quotation"
+            return json.dumps([response[0], rejected])
+
+    reviewer = MixedDecisions()
+    with pytest.raises(LLMResponseError, match="could not support"):
+        review_grounded_flags(reviewer, [replay["flags"][0]] * 2, replay["documents"], "it")
+    assert len(reviewer.prompts) == 1
 
 
 def test_review_happens_before_deleting_previous_outputs(db, test_deal, replay):
