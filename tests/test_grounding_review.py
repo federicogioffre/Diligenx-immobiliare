@@ -95,27 +95,43 @@ class MutatingReview:
         return json.dumps(result)
 
 
-@pytest.mark.parametrize("mutate", [
-    lambda result: result.clear(),
-    lambda result: result.append(copy.deepcopy(result[0])),
-    lambda result: result[0].update(index=True),
-    lambda result: result[0].update(supported=False),
-    lambda result: result[0]["fields"].pop("risk"),
-    lambda result: result[0]["fields"].update(risk=None),
-    lambda result: result[0]["fields"].update(title=""),
-    lambda result: result[0]["fields"].update(title="Un titolo " * 100),
-    lambda result: result[0]["fields"].update(issue="Il covenant è violato (art. p.2)."),
-    lambda result: result[0]["fields"].update(recommendation="Insert a specific indemnity in the SPA for the benefit of the Buyer."),
-    lambda result: result[0].update(evidence=[]),
-    lambda result: result[0]["evidence"][0].update(quote="The bank has already demanded payment."),
-    lambda result: result[0]["evidence"][0].update(source_document_id=999),
-    lambda result: [entry.update(fields=["title"]) for entry in result[0]["evidence"]],
+@pytest.mark.parametrize(("mutate", "attempts"), [
+    (lambda result: result.clear(), 2),
+    (lambda result: result.append(copy.deepcopy(result[0])), 2),
+    (lambda result: result[0].update(index=True), 2),
+    (lambda result: result[0].update(supported=False), 1),
+    (lambda result: result[0]["fields"].pop("risk"), 2),
+    (lambda result: result[0]["fields"].update(risk=None), 1),
+    (lambda result: result[0]["fields"].update(title=""), 1),
+    (lambda result: result[0]["fields"].update(title="Un titolo " * 100), 1),
+    (lambda result: result[0]["fields"].update(issue="Il covenant è violato (art. p.2)."), 1),
+    (lambda result: result[0]["fields"].update(recommendation="Insert a specific indemnity in the SPA for the benefit of the Buyer."), 1),
+    (lambda result: result[0].update(evidence=[]), 1),
+    (lambda result: result[0]["evidence"][0].update(quote="The bank has already demanded payment."), 1),
+    (lambda result: result[0]["evidence"][0].update(source_document_id=999), 1),
+    (lambda result: [entry.update(fields=["title"]) for entry in result[0]["evidence"]], 1),
 ])
-def test_invalid_semantic_review_fails_once_without_silent_fallback(replay, mutate):
+def test_invalid_review_never_publishes_and_only_retries_structural_errors(replay, mutate, attempts):
     reviewer = MutatingReview(mutate)
     with pytest.raises(LLMResponseError):
         review_grounded_flags(reviewer, replay["flags"][:1], replay["documents"], "it")
-    assert reviewer.calls == 1
+    assert reviewer.calls == attempts
+
+
+def test_incomplete_narrative_fields_retry_with_complete_original_evidence(replay):
+    class OnceIncomplete(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            if len(self.prompts) == 1:
+                response[0]["fields"].pop("risk")
+            return json.dumps(response)
+
+    reviewer = OnceIncomplete()
+    result = review_grounded_flags(reviewer, replay["flags"][:1], replay["documents"], "it")
+    assert len(reviewer.prompts) == 2
+    assert reviewer.prompts[1].endswith(reviewer.prompts[0])
+    assert result[0]["risk"]
+    assert result[0]["grounding_reviewed"] is True
 
 
 def test_review_happens_before_deleting_previous_outputs(db, test_deal, replay):

@@ -13,12 +13,54 @@ import re
 from collections import defaultdict
 from types import SimpleNamespace
 
-from packages.agents.deal_analysis_agent import LLMResponseError, _complete_llm_items
+from packages.agents.deal_analysis_agent import LLMFormatError, LLMResponseError, _complete_llm_items
 from packages.agents.evidence import verified_clause_page
 
 _NARRATIVE_FIELDS = ("title", "issue", "risk", "recommendation")
 _MAX_REVIEW_CHARS = 120_000
 _MAX_REVIEW_ITEMS = 8
+
+def _review_item_schema(kind: str) -> dict:
+    """Make the review envelope exact; factual support is still checked locally."""
+    names = ("text",) if kind == "text" else _NARRATIVE_FIELDS
+    fields = {
+        name: {"type": ["string", "null"] if name in {"risk", "recommendation"} else "string"}
+        for name in names
+    }
+    return {
+        "type": "object", "additionalProperties": False,
+        "required": ["index", "supported", "fields", "evidence"],
+        "properties": {
+            "index": {"type": "integer"}, "supported": {"type": "boolean"},
+            "fields": {"type": "object", "properties": fields,
+                       "required": list(names), "additionalProperties": False},
+            "evidence": {"type": "array", "items": {
+                "type": "object", "additionalProperties": False,
+                "required": ["source_document_id", "quote", "fields"],
+                "properties": {
+                    "source_document_id": {"type": "integer"}, "quote": {"type": "string"},
+                    "fields": {"type": "array", "items": {"type": "string", "enum": list(names)}},
+                },
+            }},
+        },
+    }
+
+
+def _validate_review_shape(reviews: list[dict], kind: str, count: int) -> None:
+    """Schema/coverage defects can be retried; unsupported claims cannot."""
+    if len(reviews) != count:
+        raise LLMFormatError("Source-fidelity review did not cover every draft")
+    expected = {"text"} if kind == "text" else set(_NARRATIVE_FIELDS)
+    seen = set()
+    for review in reviews:
+        index = review.get("index")
+        if type(index) is not int or not 0 <= index < count or index in seen:
+            raise LLMFormatError("Source-fidelity review returned invalid draft indices")
+        seen.add(index)
+        fields = review.get("fields")
+        if not isinstance(fields, dict) or set(fields) != expected:
+            raise LLMFormatError("Source-fidelity review returned incomplete narrative fields")
+
 
 _REVIEW_INSTRUCTIONS = """GROUNDING REVIEW
 Act as a source-fidelity reviewer, independently of the writer of the draft.
@@ -42,6 +84,9 @@ Return ONLY a JSON array, one entry for each input index, in this shape:
 "fields":["title","issue","risk"]}]}]
 For kind=text return fields={"text":"corrected complete text"} and evidence
 fields=["text"]. Preserve all relevant supported findings, not just one example.
+For kind=flags, fields must contain EXACTLY title, issue, risk and recommendation,
+even when an optional value is null. Return the complete corrected fields for
+every entry, including unchanged values; never return only a patch or omit keys.
 Provide evidence for EVERY nonempty factual field (title, issue, risk or text).
 Include separate quotes for facts supported by different passages or pages;
 never cite one convenient passage as support for unrelated claims.
@@ -196,20 +241,16 @@ INPUT_JSON:
 """)
     reviews = _complete_llm_items(
         provider, instructions + encoded, max_tokens=12288, context="Source-fidelity review",
+        item_schema=_review_item_schema(kind),
+        validate_shape=lambda values: _validate_review_shape(values, kind, len(candidates)),
     )
-    if len(reviews) != len(candidates):
-        raise LLMResponseError("Source-fidelity review did not cover every draft")
     by_index = {}
     for review in reviews:
-        index = review.get("index")
-        if type(index) is not int or not 0 <= index < len(candidates) or index in by_index:
-            raise LLMResponseError("Source-fidelity review returned invalid draft indices")
+        index = review["index"]
         if review.get("supported") is not True:
             raise LLMResponseError("Source-fidelity review could not support a draft")
-        fields = review.get("fields")
+        fields = review["fields"]
         expected = ("text",) if kind == "text" else _NARRATIVE_FIELDS
-        if not isinstance(fields, dict) or set(fields) != set(expected):
-            raise LLMResponseError("Source-fidelity review returned incomplete narrative fields")
         for field in expected:
             value = fields[field]
             if candidates[index].get(field) and (not isinstance(value, str) or not value.strip()):

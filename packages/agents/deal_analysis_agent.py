@@ -174,6 +174,7 @@ class LLMProvider(ABC):
 
     def complete_json(
         self, prompt: str, max_tokens: int = 3072, *, response_type: str = "array",
+        item_schema: dict | None = None,
     ) -> str:
         """JSON transport hook; text-only providers retain their existing API."""
         return self.complete(prompt, max_tokens=max_tokens)
@@ -269,6 +270,7 @@ class AnthropicLLMProvider(LLMProvider):
 
     def complete_json(
         self, prompt: str, max_tokens: int = 3072, *, response_type: str = "array",
+        item_schema: dict | None = None,
     ) -> str:
         """Get data through a single tool input, separate from assistant prose.
 
@@ -280,11 +282,14 @@ class AnthropicLLMProvider(LLMProvider):
             raise ValueError("Unsupported JSON response type")
         schema = {"type": response_type}
         if response_type == "array":
-            schema["items"] = {"type": "object"}
+            schema["items"] = item_schema if item_schema is not None else {"type": "object"}
+        elif item_schema is not None:
+            raise ValueError("An item schema requires an array response")
         msg = self._request(
             prompt, max_tokens,
             tools=[{
                 "name": "submit_analysis",
+                **({"strict": True} if item_schema is not None else {}),
                 "description": (
                     "Submit the complete analysis requested in the user prompt. "
                     "Put the requested JSON value in the result field, using every "
@@ -853,7 +858,7 @@ def _parse_llm_items(raw: str, *, context: str) -> list[dict]:
 
 def _complete_json(
     provider: LLMProvider, prompt: str, *, max_tokens: int,
-    context: str, response_type: str,
+    context: str, response_type: str, item_schema: dict | None = None, validate_shape=None,
 ) -> list | dict:
     """Retry a format error once, without salvaging or dropping any records.
 
@@ -870,8 +875,9 @@ def _complete_json(
         try:
             request_prompt = prompt if attempt == 0 else retry_prefix + prompt
             complete_json = getattr(provider, "complete_json", None)
+            schema_options = {"item_schema": item_schema} if item_schema is not None else {}
             raw = (
-                complete_json(request_prompt, max_tokens=max_tokens, response_type=response_type)
+                complete_json(request_prompt, max_tokens=max_tokens, response_type=response_type, **schema_options)
                 if callable(complete_json) else provider.complete(request_prompt, max_tokens=max_tokens)
             )
             result = _safe_json(raw)
@@ -881,6 +887,8 @@ def _complete_json(
             )
             if not valid:
                 raise LLMFormatError(f"AI response has an invalid JSON {response_type} shape")
+            if validate_shape is not None:
+                validate_shape(result)
             return result
         except LLMFormatError as exc:
             logger.warning("llm_json_format_error context=%s attempt=%d reason=%s", context, attempt + 1, exc)
@@ -893,9 +901,11 @@ def _complete_json(
 
 def _complete_llm_items(
     provider: LLMProvider, prompt: str, *, max_tokens: int, context: str,
+    item_schema: dict | None = None, validate_shape=None,
 ) -> list[dict]:
     return _complete_json(
         provider, prompt, max_tokens=max_tokens, context=context, response_type="array",
+        item_schema=item_schema, validate_shape=validate_shape,
     )
 
 
