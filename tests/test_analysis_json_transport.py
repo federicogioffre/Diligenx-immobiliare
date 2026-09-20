@@ -75,18 +75,20 @@ def test_deal_context_forwards_structured_transport_once():
 
 
 @pytest.mark.parametrize("kind", ["flags", "text"])
-def test_review_schema_reaches_real_sdk_as_strict_tool_through_context(kind):
+@pytest.mark.parametrize("partial", [False, True])
+def test_review_schema_reaches_real_sdk_as_strict_tool_through_context(kind, partial):
     from packages.agents.grounding_review import _review_item_schema
 
     provider, requests = sdk_provider([("tool_use", [tool([{"index": 0}])])])
     wrapped = DealContextProvider(provider, DealContext(4, ("Alfa S.p.A.",), (), 0, 0))
-    schema = _review_item_schema(kind)
+    schema = _review_item_schema(kind, partial=partial)
     wrapped.complete_json("GROUNDING REVIEW", item_schema=schema)
     definition = requests[0]["tools"][0]
     assert definition["strict"] is True
     assert definition["input_schema"]["properties"]["result"]["items"] == schema
     expected = {"text"} if kind == "text" else {"title", "issue", "risk", "recommendation"}
     assert set(schema["properties"]["fields"]["required"]) == expected
+    assert schema["properties"]["evidence"]["minItems"] == (0 if partial else 1)
 
     def verify_objects(value):
         if isinstance(value, dict):
