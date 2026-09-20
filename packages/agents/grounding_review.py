@@ -107,6 +107,10 @@ Provide evidence for EVERY nonempty factual field (title, issue, risk or text).
 Include separate quotes for facts supported by different passages or pages;
 never cite one convenient passage as support for unrelated claims.
 Each quote MUST be one contiguous passage copied exactly from one supplied source.
+Keep each quotation to the shortest contiguous passage that fully supports the
+claim, normally a few sentences. Never copy tables, ledgers, lists of figures or
+whole pages, and never repeat one passage for several fields: link one evidence
+entry to all the fields it supports instead.
 Do not join non-adjacent sentences, insert ellipses, correct OCR, add accents or
 translate a quotation. Use separate evidence entries for separate passages.
 supported=true means the FINAL corrected fields are faithful, including all
@@ -480,6 +484,32 @@ INPUT_JSON:
             for index in range(len(candidates))]
 
 
+def _review_batch(provider, drafts: list[dict], sources: list[dict], language: str) -> list[dict]:
+    """Review one batch, isolating a failed request to the drafts it affects.
+
+    A truncated, refused or malformed review response is a failure of one
+    request, not of the deal: a reviewer that spends its whole output budget
+    quoting a ledger for one draft must not discard every other verified flag.
+    The batch is halved until the failing draft stands alone, and that draft is
+    rejected with the transport error as its reason.
+    """
+    try:
+        return _review(provider, kind="flags", candidates=drafts,
+                       documents=_review_sources(sources, drafts), language=language,
+                       tolerant=True)
+    except LLMResponseError as exc:
+        if len(drafts) == 1:
+            reason = f"review request failed: {exc}"
+            logger.warning("grounding_rejected kind=flags %s: %s",
+                           _draft_identity(drafts[0], 0), reason)
+            return [{"rejected": reason}]
+        middle = len(drafts) // 2
+        logger.warning("grounding_batch_split drafts=%s reason=%s",
+                       [draft.get("_draft_index") for draft in drafts], exc)
+        return (_review_batch(provider, drafts[:middle], sources, language)
+                + _review_batch(provider, drafts[middle:], sources, language))
+
+
 def review_grounded_flags(provider, flags: list[dict], documents: list[dict],
                           language: str, rejections: list[dict] | None = None) -> list[dict]:
     """Review document groups before any output replacement or persistence.
@@ -528,9 +558,7 @@ def review_grounded_flags(provider, flags: list[dict], documents: list[dict],
             sources = [available[source_id] for source_id in sorted(source_ids)]
             logger.info("grounding_review_start drafts=%s source_documents=%s",
                         [index for index, _ in batch], sorted(source_ids))
-            reviews = _review(provider, kind="flags", candidates=drafts,
-                              documents=_review_sources(sources, drafts), language=language,
-                              tolerant=True)
+            reviews = _review_batch(provider, drafts, sources, language)
             for (index, flag), review in zip(batch, reviews):
                 if "rejected" in review:
                     dropped[index] = review["rejected"]
