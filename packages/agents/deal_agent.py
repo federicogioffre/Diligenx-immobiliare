@@ -1,5 +1,6 @@
-import anthropic
 from dataclasses import dataclass
+from packages.llm_config import DEFAULT_ANALYSIS_MODEL
+from .deal_analysis_agent import create_llm_provider
 
 from .base import BaseAgent
 from packages.prompts.deal_prompts import DEAL_ANALYSIS_PROMPT
@@ -14,11 +15,11 @@ class DealAnalysisResult:
 
 
 class DealAnalysisAgent(BaseAgent):
-    """Analyzes deals using Claude AI."""
+    """Legacy summary interface using the same configured provider contract."""
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-5"):
+    def __init__(self, api_key: str, model: str = DEFAULT_ANALYSIS_MODEL):
         super().__init__(model)
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self.provider = create_llm_provider(api_key, model)
 
     async def run(self, title: str, description: str, value: float | None = None) -> DealAnalysisResult:
         prompt = DEAL_ANALYSIS_PROMPT.format(
@@ -27,28 +28,7 @@ class DealAnalysisAgent(BaseAgent):
             value=f"${value:,.2f}" if value else "Not specified",
         )
 
-        thinking_options = (
-            {"thinking": {"type": "disabled"}}
-            if self.model == "claude-sonnet-5" or self.model.startswith("claude-sonnet-5-")
-            else {}
-        )
-        message = self.client.messages.create(
-            model=self.model,
-            max_tokens=1536,
-            **thinking_options,
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        from .deal_analysis_agent import LLMResponseError
-
-        if message.stop_reason in {"max_tokens", "refusal"}:
-            raise LLMResponseError(f"AI response stopped with {message.stop_reason}")
-        raw = "".join(
-            block.text for block in message.content
-            if isinstance(getattr(block, "text", None), str)
-        )
-        if not raw.strip():
-            raise LLMResponseError("AI response contained no text")
+        raw = self.provider.complete(prompt, max_tokens=1536)
 
         # Simple parsing — extend with structured output as needed
         return DealAnalysisResult(

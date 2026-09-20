@@ -171,8 +171,8 @@ def test_sonnet5_rejects_unusable_response_even_when_text_looks_valid(stop_reaso
         provider.complete("Extract clauses")
 
 
-@pytest.mark.parametrize("override", [None, "claude-sonnet-4-6", "claude-opus-5"])
-def test_factory_uses_sonnet5_default_and_respects_environment_override(monkeypatch, override):
+@pytest.mark.parametrize("override", ["claude-sonnet-5", "claude-sonnet-4-6", "claude-opus-5"])
+def test_factory_respects_explicit_anthropic_environment_override(monkeypatch, override):
     from app.core.config import Settings
     import app.core.config as config
     from packages.agents import deal_analysis_agent as llm
@@ -199,7 +199,7 @@ def test_legacy_agent_uses_sonnet5_and_handles_non_text_blocks():
         content=[SimpleNamespace(type="thinking"), SimpleNamespace(text="Summary")],
     )
     with patch("anthropic.Anthropic", return_value=client):
-        agent = DealAnalysisAgent(api_key="test-key")
+        agent = DealAnalysisAgent(api_key="test-key", model="claude-sonnet-5")
     result = asyncio.run(agent.run("Test deal", "Test description"))
     assert result.summary == "Summary"
     kwargs = client.messages.create.call_args.kwargs

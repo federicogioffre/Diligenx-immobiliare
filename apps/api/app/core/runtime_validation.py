@@ -5,9 +5,10 @@ from app.core.config import settings
 def validate_beta_configuration() -> None:
     if not settings.BETA_MODE:
         return
-    missing = [name for name in (
-        "REDIS_URL", "S3_BUCKET", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-    ) if not getattr(settings, name)]
+    from packages.llm_config import DEFAULT_ANALYSIS_MODEL, analysis_api_key_name
+    key_name = analysis_api_key_name(settings.ANALYSIS_MODEL or DEFAULT_ANALYSIS_MODEL)
+    required = {"REDIS_URL", "S3_BUCKET", "OPENAI_API_KEY", key_name}
+    missing = [name for name in sorted(required) if not getattr(settings, name)]
     if missing:
         raise RuntimeError("BETA_MODE requires: " + ", ".join(missing))
     if not settings.DATABASE_URL.startswith("postgresql") or settings.DEBUG:

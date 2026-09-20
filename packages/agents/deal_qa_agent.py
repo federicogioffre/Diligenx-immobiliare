@@ -101,7 +101,7 @@ def answer_deal_question(
 
     # ── 3. Ask the LLM ───────────────────────────────────────────────── #
     prompt = DEAL_QA_PROMPT.format(context=context, question=question)
-    raw = llm.complete(prompt, max_tokens=1536)
+    raw = llm.complete_json(prompt, max_tokens=1536, response_type="object")
 
     try:
         parsed = _safe_json(raw)
