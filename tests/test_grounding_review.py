@@ -109,7 +109,7 @@ class MutatingReview:
     (lambda result: result[0].update(evidence=[]), 1),
     (lambda result: result[0]["evidence"][0].update(quote="The bank has already demanded payment."), 2),
     (lambda result: result[0]["evidence"][0].update(source_document_id=999), 2),
-    (lambda result: [entry.update(fields=["title"]) for entry in result[0]["evidence"]], 1),
+    (lambda result: [entry.update(fields=["title"]) for entry in result[0]["evidence"]], 2),
 ])
 def test_invalid_review_never_publishes_and_correction_is_bounded(replay, mutate, attempts):
     reviewer = MutatingReview(mutate)
@@ -188,6 +188,41 @@ def test_bad_citation_cannot_retry_another_explicitly_unsupported_draft(replay):
     with pytest.raises(LLMResponseError, match="could not support"):
         review_grounded_flags(reviewer, [replay["flags"][0]] * 2, replay["documents"], "it")
     assert len(reviewer.prompts) == 1
+
+
+def test_missing_field_links_receive_precise_feedback_and_complete_verification(replay):
+    class OnceUnlinked(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            if len(self.prompts) == 1:
+                for entry in response[0]["evidence"]:
+                    entry["fields"] = ["title"]
+            else:
+                data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+                assert data["validation_feedback"]["missing_fields"] == ["issue", "risk"]
+            return json.dumps(response)
+
+    reviewer = OnceUnlinked()
+    result = review_grounded_flags(reviewer, replay["flags"][:1], replay["documents"], "it")
+    assert len(reviewer.prompts) == 2
+    assert {field for entry in result[0]["evidence"] for field in entry["fields"]} >= {"title", "issue", "risk"}
+
+
+def test_quote_and_coverage_repairs_share_the_same_single_retry_budget(replay):
+    class TwoDefects(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            if len(self.prompts) == 1:
+                response[0]["evidence"][0]["quote"] = "Invented quotation"
+            else:
+                for entry in response[0]["evidence"]:
+                    entry["fields"] = ["title"]
+            return json.dumps(response)
+
+    reviewer = TwoDefects()
+    with pytest.raises(LLMResponseError, match="without evidence"):
+        review_grounded_flags(reviewer, replay["flags"][:1], replay["documents"], "it")
+    assert len(reviewer.prompts) == 2
 
 
 def test_review_happens_before_deleting_previous_outputs(db, test_deal, replay):

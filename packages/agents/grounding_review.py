@@ -240,6 +240,8 @@ def _review(provider, *, kind: str, candidates: list[dict], documents: list[dict
 identifies the rejected citation, not a fact to trust. Recheck EVERY draft against
 the original sources and return the complete review, including unchanged fields.
 Repair the cited document identity or copy a truly verbatim contiguous passage.
+If missing_fields are listed, add source quotations and field links for EVERY
+listed factual field. Do not erase populated fields to avoid supplying evidence.
 Preserve all conditions and qualifications; use multiple quotes when needed.
 If the source cannot support the claim, correct the claim using the source or
 return supported=false. Never invent a replacement quotation to pass validation.
@@ -328,6 +330,16 @@ INPUT_JSON:
                              "fields": sorted(set(linked_fields)), "source_page": page})
         by_index[index] = {"fields": fields, "evidence": verified}
         if not partial:
+            covered = {field for entry in verified for field in entry["fields"]}
+            missing = sorted(field for field, value in fields.items()
+                             if field != "recommendation" and value and field not in covered)
+            if missing and evidence_feedback is None:
+                return _review(
+                    provider, kind=kind, candidates=candidates, documents=documents,
+                    language=language, partial=partial,
+                    evidence_feedback={"draft_index": index, "missing_fields": missing,
+                                       "reason": "factual fields have no linked source quotations"},
+                )
             _require_coverage(by_index[index], kind)
     return [by_index[index] for index in range(len(candidates))]
 
