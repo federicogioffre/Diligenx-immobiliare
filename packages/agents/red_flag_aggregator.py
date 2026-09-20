@@ -185,6 +185,30 @@ def _flag_payload(item: dict, severity_was_floored: bool) -> dict | None:
     return payload or None
 
 
+def _rejected_draft_question(draft: dict, reason: str, language: str) -> str:
+    """Phrase a dropped draft as a follow-up item in the report language.
+
+    The reviewer's reason is model output; it is quoted, truncated and never
+    interpreted. The draft's own narrative is not repeated: it is exactly the
+    text the review could not trace to the documents.
+    """
+    title = " ".join(str(draft.get("title", "")).split())[:300] or "—"
+    severity = _normalize_severity(draft.get("severity", "medium"))
+    reason = " ".join(str(reason).split())[:600]
+    if language == "it":
+        return (
+            f"Rilievo non pubblicato — '{title}' (gravità {severity}): la revisione di "
+            "aderenza alle fonti non ha trovato nei documenti un passaggio testuale a "
+            f"supporto ({reason}). Verificare manualmente la fonte prima di considerare "
+            "il rilievo."
+        )
+    return (
+        f"Unpublished finding — '{title}' (severity {severity}): the source-fidelity "
+        "review could not trace it to a verbatim passage in the documents "
+        f"({reason}). Verify the source manually before relying on the finding."
+    )
+
+
 def _summarize_payload(payload: dict | None) -> str:
     """Render the specialist agents' structured fields for the LLM context.
 
@@ -365,9 +389,20 @@ class RedFlagAggregationAgent:
 
             # Review complete source evidence before replacing any previous
             # outputs. A valid JSON response alone is not a fidelity check.
+            grounding_rejections: list[dict] = []
             deduped_flags = review_grounded_flags(
-                self._llm, deduped_flags, review_documents, output_lang
+                self._llm, deduped_flags, review_documents, output_lang,
+                rejections=grounding_rejections,
             )
+            if grounding_rejections:
+                # A doubtful draft is a human follow-up item, not a reason to
+                # discard the verified flags of the whole deal.
+                logger.warning(
+                    "[%s] deal=%d — grounding review rejected %d of %d draft(s): %s",
+                    self.AGENT_NAME, deal_id, len(grounding_rejections),
+                    len(deduped_flags) + len(grounding_rejections),
+                    "; ".join(f"{r['identity']}: {r['reason']}" for r in grounding_rejections),
+                )
 
             if dedup_removed:
                 logger.info(
@@ -403,6 +438,8 @@ class RedFlagAggregationAgent:
                 db,
                 pages_by_doc,
                 severity_floors=severity_floors,
+                grounding_rejections=grounding_rejections,
+                language=output_lang,
             )
 
             db.flush()
@@ -416,7 +453,10 @@ class RedFlagAggregationAgent:
             _duration = (run.completed_at - _started).total_seconds() if _started is not None else 0.0
             db.flush()
 
-            result = self._build_result(deal_id, red_flags, open_questions, dedup_removed)
+            result = self._build_result(
+                deal_id, red_flags, open_questions, dedup_removed,
+                grounding_rejected=len(grounding_rejections),
+            )
             logger.info(
                 "[%s] deal=%d — completed in %.2fs: %s",
                 self.AGENT_NAME, deal_id, _duration, result,
@@ -666,8 +706,15 @@ class RedFlagAggregationAgent:
         db: Session,
         pages_by_doc: dict[int, set[int]] | None = None,
         severity_floors: dict[str, str] | None = None,
+        grounding_rejections: list[dict] | None = None,
+        language: str = "en",
     ) -> tuple[list, list]:
         """Persist ``RedFlag`` rows and generate ``OpenQuestion`` for high/critical.
+
+        Drafts the grounding review rejected are never persisted as flags;
+        each becomes a medium-priority ``OpenQuestion`` carrying the reviewer's
+        reason, so the professional sees what the model could not trace to
+        the documents instead of losing it silently.
 
         Items with ``finding_type`` of ``"observation"`` or
         ``"information_request"`` are stored as ``AgentFinding`` rows rather
@@ -786,6 +833,19 @@ class RedFlagAggregationAgent:
                 db.add(q)
                 open_questions.append(q)
 
+        for rejection in grounding_rejections or []:
+            draft = rejection.get("flag") or {}
+            source_id = draft.get("source_document_id")
+            q = OpenQuestion(
+                deal_id=deal_id,
+                document_id=source_id if type(source_id) is int and source_id in allowed_documents else None,
+                agent_name=self.AGENT_NAME,
+                question=_rejected_draft_question(draft, rejection.get("reason", ""), language),
+                priority=Priority.medium,
+            )
+            db.add(q)
+            open_questions.append(q)
+
         db.flush()
         return red_flags, open_questions
 
@@ -797,6 +857,7 @@ class RedFlagAggregationAgent:
         red_flags: list,
         open_questions: list,
         dedup_removed: int,
+        grounding_rejected: int = 0,
     ) -> dict:
         from app.models.red_flag import Severity
 
@@ -820,6 +881,7 @@ class RedFlagAggregationAgent:
             "flags_by_severity": flags_by_severity,
             "flags_by_category": flags_by_category,
             "dedup_removed": dedup_removed,
+            "grounding_rejected": grounding_rejected,
         }
 
 

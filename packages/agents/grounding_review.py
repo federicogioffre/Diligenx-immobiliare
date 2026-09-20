@@ -2,9 +2,11 @@
 
 The second pass may repair narrative fields, but cannot change classifications,
 amounts or document identity. It is deliberately not a guarantee of legal
-correctness: semantic assessment still uses a model. Invalid/unsupported review
-results fail before persistence instead of silently publishing an unchecked
-draft. Quotes and page coordinates are checked without trusting that model.
+correctness: semantic assessment still uses a model. Invalid review results
+fail before persistence instead of silently publishing an unchecked draft, and
+a draft the review cannot support is dropped (and reported for follow-up)
+rather than published. Quotes and page coordinates are checked without
+trusting that model.
 """
 from __future__ import annotations
 
@@ -194,12 +196,20 @@ def _review_sources(documents: list[dict], candidates: list[dict]) -> list[dict]
     return selected
 
 
-def _require_coverage(review: dict, kind: str) -> None:
+def _coverage_defect(review: dict, kind: str) -> str | None:
+    """Return the reason a positive review still lacks evidence, or None."""
     fields = review["fields"]
     covered = {field for entry in review["evidence"] for field in entry["fields"]}
     required = {field for field in fields if field != "recommendation" and fields[field]}
     if not review["evidence"] or not required <= covered:
-        raise LLMResponseError("Source-fidelity review left factual fields without evidence")
+        return "left factual fields without evidence"
+    return None
+
+
+def _require_coverage(review: dict, kind: str) -> None:
+    reason = _coverage_defect(review, kind)
+    if reason is not None:
+        raise LLMResponseError("Source-fidelity review " + reason)
 
 
 def _draft_identity(candidate: dict, index: int) -> str:
@@ -222,8 +232,47 @@ def _review_signature(fields: dict, evidence: list) -> tuple:
     return narrative, tuple(sorted(citations))
 
 
+def _narrative_defect(candidate: dict, fields: dict, expected: tuple, kind: str, language: str) -> str | None:
+    """Return why the corrected narrative of one draft is unusable, or None."""
+    for field in expected:
+        value = fields[field]
+        if candidate.get(field) and (not isinstance(value, str) or not value.strip()):
+            return "removed a populated narrative field"
+        if value is None and field in {"risk", "recommendation"}:
+            continue
+        if not isinstance(value, str) or (field in {"title", "issue", "text"} and not value.strip()):
+            return "returned invalid narrative text"
+    from packages.agents.output_language import has_language_mismatch
+    if any(has_language_mismatch(value, language) for value in fields.values() if value):
+        return "did not respect the requested language"
+    if any(re.search(r"\b(?:p{1,2}\.\s*|pag(?:es?|ina|ine|g)?\.?\s*)\d+", value, re.I)
+           for value in fields.values() if value):
+        return "retained unverified inline page citations"
+    if kind == "flags" and len(fields["title"]) > 500:
+        return "title exceeds the supported field length"
+    return None
+
+
 def _review(provider, *, kind: str, candidates: list[dict], documents: list[dict],
-            language: str, partial: bool = False, evidence_feedback: dict | None = None) -> list[dict]:
+            language: str, partial: bool = False, evidence_feedback: dict | None = None,
+            tolerant: bool = False, rejected: dict[int, str] | None = None) -> list[dict]:
+    """Review every candidate; return one ``{"fields", "evidence"}`` per index.
+
+    A draft that cannot be verified is fatal for the whole review unless
+    ``tolerant`` is set, in which case its entry is ``{"rejected": reason}``
+    and the remaining drafts are still returned. ``rejected`` carries decisions
+    already taken (by an earlier window or the first pass) into the correction
+    pass, so a rejected draft is never re-admitted by a later response.
+    """
+    rejected = dict(rejected or {})
+
+    def reject(index: int, reason: str) -> None:
+        if not tolerant:
+            raise LLMResponseError("Source-fidelity review " + reason)
+        logger.warning("grounding_rejected kind=%s %s: %s", kind,
+                       _draft_identity(candidates[index], index), reason)
+        rejected[index] = reason
+
     # Page text need not be sent twice. It is retained locally for coordinate
     # checks; the reviewer sees complete source text, including limiting clauses.
     source_map = {doc["document_id"]: doc for doc in documents}
@@ -252,8 +301,13 @@ def _review(provider, *, kind: str, candidates: list[dict], documents: list[dict
             for window in text_batches(document.get("review_text", _source_text(document)), max_chars=40_000, overlap=1500):
                 reviews = _review(provider, kind=kind, candidates=current,
                                   documents=[{**document, "review_text": window.text}],
-                                  language=language, partial=True)
+                                  language=language, partial=True, tolerant=tolerant, rejected=rejected)
                 for index, review in enumerate(reviews):
+                    if index in rejected:
+                        continue
+                    if "rejected" in review:
+                        rejected[index] = review["rejected"]
+                        continue
                     old_fields = accumulated[index]["fields"]
                     changed = {field for field, value in old_fields.items()
                                if review["fields"].get(field) != value}
@@ -267,11 +321,16 @@ def _review(provider, *, kind: str, candidates: list[dict], documents: list[dict
                         ]
                     accumulated[index]["fields"] = review["fields"]
                     accumulated[index]["evidence"].extend(review["evidence"])
-                current = [{**candidate, **review["fields"]}
+                current = [candidate if "rejected" in review else {**candidate, **review["fields"]}
                            for candidate, review in zip(current, reviews)]
-        for review in accumulated:
-            _require_coverage(review, kind)
-        return accumulated
+        for index, review in enumerate(accumulated):
+            if index in rejected:
+                continue
+            reason = _coverage_defect(review, kind)
+            if reason is not None:
+                reject(index, reason)
+        return [{"rejected": rejected[index]} if index in rejected else accumulated[index]
+                for index in range(len(candidates))]
     instructions = _REVIEW_INSTRUCTIONS
     if evidence_feedback is not None:
         instructions = instructions.replace("INPUT_JSON:\n", """A previous review could not establish source support or failed source verification.
@@ -311,31 +370,21 @@ INPUT_JSON:
     )
     by_index = {}
     defects = []
+    expected = ("text",) if kind == "text" else _NARRATIVE_FIELDS
     for review in reviews:
         index = review["index"]
+        if index in rejected:
+            continue
         fields = review["fields"]
         if review["supported"] is False:
             defects.append({"draft_index": index, "reason": "unsupported_draft",
                             "support_reason": review.get("support_reason"),
                             "previous_fields": fields, "previous_evidence": review.get("evidence", [])})
             continue
-        expected = ("text",) if kind == "text" else _NARRATIVE_FIELDS
-        for field in expected:
-            value = fields[field]
-            if candidates[index].get(field) and (not isinstance(value, str) or not value.strip()):
-                raise LLMResponseError("Source-fidelity review removed a populated narrative field")
-            if value is None and field in {"risk", "recommendation"}:
-                continue
-            if not isinstance(value, str) or (field in {"title", "issue", "text"} and not value.strip()):
-                raise LLMResponseError("Source-fidelity review returned invalid narrative text")
-        from packages.agents.output_language import has_language_mismatch
-        if any(has_language_mismatch(value, language) for value in fields.values() if value):
-            raise LLMResponseError("Source-fidelity review did not respect the requested language")
-        if any(re.search(r"\b(?:p{1,2}\.\s*|pag(?:es?|ina|ine|g)?\.?\s*)\d+", value, re.I)
-               for value in fields.values() if value):
-            raise LLMResponseError("Source-fidelity review retained unverified inline page citations")
-        if kind == "flags" and len(fields["title"]) > 500:
-            raise LLMResponseError("Source-fidelity title exceeds the supported field length")
+        problem = _narrative_defect(candidates[index], fields, expected, kind, language)
+        if problem is not None:
+            reject(index, problem)
+            continue
         evidence = review.get("evidence")
         if not isinstance(evidence, list):
             raise LLMResponseError("Source-fidelity review returned invalid evidence")
@@ -388,44 +437,60 @@ INPUT_JSON:
             return _review(
                 provider, kind=kind, candidates=candidates, documents=documents,
                 language=language, partial=partial,
-                evidence_feedback={"defects": defects},
+                evidence_feedback={"defects": defects}, tolerant=tolerant, rejected=rejected,
             )
-        unsupported = [d for d in defects if d["reason"] == "unsupported_draft"]
-        if unsupported:
-            identities = "; ".join(_draft_identity(candidates[d["draft_index"]], d["draft_index"])
-                                   for d in unsupported)
-            raise LLMResponseError(
-                "Source-fidelity review could not support a draft after correction: " + identities
-            )
-        citation_defect = next((d for d in defects if "evidence_index" in d), None)
-        if citation_defect:
-            raise LLMResponseError(
-                "Source-fidelity review cited unsupported evidence after correction: "
-                f"draft {citation_defect['draft_index']}, evidence {citation_defect['evidence_index']}: "
-                f"{citation_defect['reason']}"
-            )
-        raise LLMResponseError("Source-fidelity review left factual fields without evidence after correction")
+        # The correction budget is spent: every remaining defect rejects its
+        # draft. In strict mode the first rejection raises, in the same
+        # precedence as before (unsupported, then citations, then coverage).
+        for defect in (d for d in defects if d["reason"] == "unsupported_draft"):
+            index = defect["draft_index"]
+            reason = "could not support a draft after correction: " + _draft_identity(candidates[index], index)
+            if isinstance(defect.get("support_reason"), str) and defect["support_reason"].strip():
+                reason += f" ({defect['support_reason'].strip()})"
+            reject(index, reason)
+        for defect in (d for d in defects if "evidence_index" in d):
+            if defect["draft_index"] in rejected:
+                continue
+            reject(defect["draft_index"], (
+                "cited unsupported evidence after correction: "
+                f"draft {defect['draft_index']}, evidence {defect['evidence_index']}: {defect['reason']}"
+            ))
+        for defect in (d for d in defects if "missing_fields" in d):
+            if defect["draft_index"] in rejected:
+                continue
+            reject(defect["draft_index"], "left factual fields without evidence after correction")
     if evidence_feedback is not None:
         for defect in evidence_feedback["defects"]:
-            if defect["reason"] != "unsupported_draft":
+            if defect["reason"] != "unsupported_draft" or defect["draft_index"] in rejected:
                 continue
             index = defect["draft_index"]
             repaired = by_index[index]
             if _review_signature(repaired["fields"], repaired["evidence"]) == _review_signature(
                     defect["previous_fields"], defect["previous_evidence"]):
-                raise LLMResponseError(
-                    "Source-fidelity review changed a rejected verdict without correcting the draft: "
-                    + _draft_identity(candidates[index], index)
-                )
+                reject(index, "changed a rejected verdict without correcting the draft: "
+                       + _draft_identity(candidates[index], index))
     if not partial:
         for index in by_index:
-            _require_coverage(by_index[index], kind)
-    return [by_index[index] for index in range(len(candidates))]
+            if index in rejected:
+                continue
+            reason = _coverage_defect(by_index[index], kind)
+            if reason is not None:
+                reject(index, reason)
+    return [{"rejected": rejected[index]} if index in rejected else by_index[index]
+            for index in range(len(candidates))]
 
 
 def review_grounded_flags(provider, flags: list[dict], documents: list[dict],
-                          language: str) -> list[dict]:
+                          language: str, rejections: list[dict] | None = None) -> list[dict]:
     """Review document groups before any output replacement or persistence.
+
+    Returns only the drafts the review could verify. A draft that stays
+    unsupported after the single correction attempt is dropped, not fatal:
+    one unverifiable flag must not discard a whole deal's aggregation. Each
+    dropped draft is appended to ``rejections`` (when given) as
+    ``{"flag", "identity", "reason"}`` so the caller can surface it for human
+    follow-up. The review still fails closed when *every* draft is rejected,
+    which points at a systemic problem rather than a doubtful finding.
 
     Legacy source_page remains a single integer only if all supporting quotes
     belong to one independently located page. Full evidence and multiple pages
@@ -445,6 +510,7 @@ def review_grounded_flags(provider, flags: list[dict], documents: list[dict],
             raise LLMResponseError("Aggregation cited a document outside this deal")
         groups[doc_id].append((index, flag))
     result = list(flags)
+    dropped: dict[int, str] = {}
     for doc_id, group in groups.items():
         for start in range(0, len(group), _MAX_REVIEW_ITEMS):
             batch = group[start:start + _MAX_REVIEW_ITEMS]
@@ -463,8 +529,15 @@ def review_grounded_flags(provider, flags: list[dict], documents: list[dict],
             logger.info("grounding_review_start drafts=%s source_documents=%s",
                         [index for index, _ in batch], sorted(source_ids))
             reviews = _review(provider, kind="flags", candidates=drafts,
-                              documents=_review_sources(sources, drafts), language=language)
+                              documents=_review_sources(sources, drafts), language=language,
+                              tolerant=True)
             for (index, flag), review in zip(batch, reviews):
+                if "rejected" in review:
+                    dropped[index] = review["rejected"]
+                    if rejections is not None:
+                        rejections.append({"flag": flag, "reason": review["rejected"],
+                                           "identity": f"draft {index}, document {doc_id}"})
+                    continue
                 evidence = review["evidence"]
                 coordinates = {(e["source_document_id"], e["source_page"]) for e in evidence}
                 source_pages = [
@@ -477,8 +550,12 @@ def review_grounded_flags(provider, flags: list[dict], documents: list[dict],
                 result[index] = {**flag, **review["fields"], "source_page": source_page,
                                  "evidence": evidence, "source_pages": source_pages,
                                  "grounding_reviewed": True}
-            logger.info("grounding_review_complete drafts=%s", [index for index, _ in batch])
-    return result
+            logger.info("grounding_review_complete drafts=%s rejected=%s",
+                        [index for index, _ in batch], sorted(i for i, _ in batch if i in dropped))
+    if dropped and len(dropped) == len(flags):
+        raise LLMResponseError("Source-fidelity review rejected every draft: "
+                               + "; ".join(dropped[index] for index in sorted(dropped)))
+    return [flag for index, flag in enumerate(result) if index not in dropped]
 
 
 def review_grounded_text(provider, text: str, sources: list[dict], language: str) -> str:
@@ -486,6 +563,7 @@ def review_grounded_text(provider, text: str, sources: list[dict], language: str
 
     Each source is {document_id: int, text: str, filename?: str}. These IDs may
     identify findings rather than uploaded documents; nothing is persisted here.
+    A summary is a single draft, so an unsupported review remains fatal here.
     """
     if not sources or not any(_source_text(source).strip() for source in sources):
         if text.strip():
