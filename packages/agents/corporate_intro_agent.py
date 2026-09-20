@@ -169,10 +169,13 @@ class CorporateIntroAgent:
             # No transaction may stay open across the LLM phase.
             release_connection_before_llm(db)
 
-            payload_lists = run_llm_tasks(
+            outcomes = run_llm_tasks(
                 work,
                 lambda item: self._profile_payloads(item[0], item[1], item[2], target_company_names),
+                isolate_failures=True,
             )
+            from packages.agents.stage_failures import split_outcomes, record_unanalysed_documents
+            analysed, failed = split_outcomes(documents, outcomes)
 
             # Idempotency: wipe the previous run's profiles in the same
             # transaction as the new ones.
@@ -183,8 +186,12 @@ class CorporateIntroAgent:
                 db.flush()
 
             profiles: list = []
-            for doc, payloads in zip(documents, payload_lists):
+            for doc, payloads in analysed:
                 profiles.extend(self._persist_profiles(doc, payloads, deal_id, db, target_company_names))
+            failed_documents = record_unanalysed_documents(
+                db, deal_id, self.AGENT_NAME,
+                [(doc.id, doc.filename, failure.error) for doc, failure in failed],
+            )
 
             db.flush()
 
@@ -196,6 +203,7 @@ class CorporateIntroAgent:
                 "deal_id": deal_id,
                 "documents_analysed": len(documents),
                 "company_profiles_count": len(profiles),
+                "failed_documents": failed_documents,
             }
             logger.info(
                 "[%s] deal=%d — completed in %.2fs: %s",

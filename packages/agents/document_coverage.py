@@ -89,6 +89,7 @@ class _DocumentCollection:
     next_merge: int = 0
     exhausted: bool = False
     logged_complete: bool = False
+    failure: BaseException | None = None
 
 
 def collect_documents_payloads(
@@ -99,7 +100,8 @@ def collect_documents_payloads(
     max_workers: int = 2,
     progress_context: str = "document_coverage",
     on_progress: Callable[[int, int, int], None] | None = None,
-) -> list[list[dict]]:
+    isolate_failures: bool = False,
+) -> list[list[dict] | "TaskFailure"]:
     """Use one bounded batch queue across documents, including a single giant.
 
     At most max_workers futures are submitted, with text slices produced only
@@ -108,7 +110,12 @@ def collect_documents_payloads(
     batch text, and merge in source order even when calls finish out of order.
     Workers receive plain values and must not use a database session. A failure
     prevents returning any collection; persistence remains the caller's job.
+    With ``isolate_failures`` a failed batch fails only its own document: that
+    document's remaining batches are dropped, its slot becomes a
+    :class:`~packages.agents.concurrency.TaskFailure`, and the others finish.
+    The first error is raised only when every document failed.
     """
+    from packages.agents.concurrency import TaskFailure
     if max_workers < 1:
         raise ValueError("Batch concurrency must be positive")
     states = [_DocumentCollection(doc_id, text_batches(text, max_chars=max_chars))
@@ -160,10 +167,19 @@ def collect_documents_payloads(
                     state = states[doc_index]
                     try:
                         items = future.result()
-                    except Exception:
+                    except Exception as exc:
                         logger.error("[%s] batch_failed doc=%d batch=%d",
                                      progress_context, state.document_id, batch_index + 1)
-                        raise
+                        if not isolate_failures:
+                            raise
+                        if state.failure is None:
+                            state.failure = exc
+                            state.batches = iter(())
+                        completed_batches += 1
+                        continue
+                    if state.failure is not None:
+                        completed_batches += 1
+                        continue
                     state.ready[batch_index] = (start, end, items)
                     state.completed += 1
                     while state.next_merge in state.ready:
@@ -185,7 +201,13 @@ def collect_documents_payloads(
             for future in pending:
                 future.cancel()
             raise
-    return [list(state.findings.values()) for state in states]
+    if isolate_failures and states and all(state.failure is not None for state in states):
+        raise states[0].failure
+    return [
+        TaskFailure(error=str(state.failure)[:500], exception=state.failure)
+        if state.failure is not None else list(state.findings.values())
+        for state in states
+    ]
 
 
 def aggregation_batches(context: str, max_chars: int = 8000) -> list[str]:

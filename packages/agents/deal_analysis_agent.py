@@ -165,6 +165,15 @@ class LLMFormatError(LLMResponseError):
     """A completed response has an invalid data format; one retry is allowed."""
 
 
+class LLMTruncatedError(LLMResponseError):
+    """The model spent its whole output budget without finishing the answer.
+
+    Usually a runaway generation (a loop on a short input); retried once by
+    ``_complete_json`` because it is stochastic, then fatal for that request.
+    """
+
+
+
 class LLMProvider(ABC):
     """Abstract interface for LLM completion providers."""
 
@@ -256,7 +265,7 @@ class AnthropicLLMProvider(LLMProvider):
         if msg.stop_reason == "refusal":
             raise LLMResponseError("AI provider refused the analysis request")
         if msg.stop_reason == "max_tokens":
-            raise LLMResponseError("AI response was truncated at the output token limit")
+            raise LLMTruncatedError("AI response was truncated at the output token limit")
         return msg
 
     def complete(self, prompt: str, max_tokens: int = 3072) -> str:
@@ -356,7 +365,7 @@ class OpenAILLMProvider(LLMProvider):
         if response.status != "completed" or getattr(response, "error", None):
             reason = getattr(getattr(response, "incomplete_details", None), "reason", None)
             if reason == "max_output_tokens":
-                raise LLMResponseError("AI response was truncated at the output token limit")
+                raise LLMTruncatedError("AI response was truncated at the output token limit")
             raise LLMResponseError(f"AI response did not complete (status={response.status})")
         return response
 
@@ -953,17 +962,26 @@ def _complete_json(
     provider: LLMProvider, prompt: str, *, max_tokens: int,
     context: str, response_type: str, item_schema: dict | None = None, validate_shape=None,
 ) -> list | dict:
-    """Retry a format error once, without salvaging or dropping any records.
+    """Retry a format error or a truncated answer once, never dropping records.
 
-    Transport errors, refusals and token exhaustion are not format retries.
+    Transport errors and refusals are not retried. A truncated answer is
+    almost always a runaway generation on a short input, which is stochastic:
+    one retry with an explicit compactness instruction usually completes.
     The complete original source prompt is retained on the second attempt.
     Logs contain diagnostics only, never document text or model responses.
     """
-    retry_prefix = (
+    format_prefix = (
         "FORMAT RETRY: Return the complete requested analysis in the required JSON "
         "shape. Include every record and field. Do not substitute an empty result "
         "for a formatting failure. Follow the original task and source below.\n\n"
     )
+    truncation_prefix = (
+        "OUTPUT LIMIT RETRY: The previous answer exceeded the output limit before "
+        "the JSON was complete. Return the complete requested analysis compactly: "
+        "every record once, no repetition, no commentary, quotations kept to the "
+        "passage that matters. Follow the original task and source below.\n\n"
+    )
+    retry_prefix = format_prefix
     for attempt in range(2):
         try:
             request_prompt = prompt if attempt == 0 else retry_prefix + prompt
@@ -987,6 +1005,12 @@ def _complete_json(
             logger.warning("llm_json_format_error context=%s attempt=%d reason=%s", context, attempt + 1, exc)
             if attempt == 1:
                 raise LLMResponseError(f"{context}: invalid AI response format after 2 attempts ({exc})") from exc
+            retry_prefix = format_prefix
+        except LLMTruncatedError as exc:
+            logger.warning("llm_output_truncated context=%s attempt=%d", context, attempt + 1)
+            if attempt == 1:
+                raise LLMResponseError(f"{context}: {exc} (after 2 attempts)") from exc
+            retry_prefix = truncation_prefix
         except LLMResponseError as exc:
             raise LLMResponseError(f"{context}: {exc}") from exc
     raise AssertionError("Unreachable JSON retry state")

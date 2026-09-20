@@ -77,6 +77,7 @@ import logging
 from datetime import datetime, timezone
 from typing import NamedTuple
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from packages.agents.deal_analysis_agent import (
@@ -707,17 +708,24 @@ class FinancialAgent:
                 on_progress=lambda done, total, document_id: publish_progress(
                     deal_id, progress_run_id, done, total, document_id,
                 ),
+                isolate_failures=True,
             )
+            from packages.agents.stage_failures import split_outcomes, record_unanalysed_documents
+            analysed, failed = split_outcomes(to_analyse, payload_lists)
 
             # Idempotency: wipe the previous run's outputs in the same
             # transaction as the new rows.
+            # A document whose request failed keeps the previous run's outputs:
+            # a gap is recorded for it, but nothing it had is destroyed.
+            kept_ids = [doc.id for (doc, _, _, _), _ in failed]
             db.query(AgentFinding).filter(
                 AgentFinding.deal_id == deal_id,
                 AgentFinding.agent_name == self.AGENT_NAME,
+                or_(AgentFinding.document_id.is_(None), AgentFinding.document_id.notin_(kept_ids)),
             ).delete(synchronize_session=False)
             db.flush()
 
-            for (doc, _, _, text), payloads in zip(to_analyse, payload_lists):
+            for (doc, _, _, text), payloads in analysed:
                 # Deterministic floor for high-signal Italian red flags.
                 floor_payloads = self._heuristic_payloads(text, payloads)
                 heuristic_count += len(floor_payloads)
@@ -752,6 +760,10 @@ class FinancialAgent:
 
             result = self._build_result(
                 deal_id, all_findings, findings_by_document, heuristic_count
+            )
+            result["failed_documents"] = record_unanalysed_documents(
+                db, deal_id, self.AGENT_NAME,
+                [(doc.id, doc.filename, failure.error) for (doc, _, _, _), failure in failed],
             )
             logger.info(
                 "[%s] deal=%d — completed in %.2fs: %s",

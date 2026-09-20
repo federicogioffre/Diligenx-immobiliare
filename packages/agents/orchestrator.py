@@ -42,6 +42,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from packages.agents.deal_analysis_agent import (
@@ -378,17 +379,22 @@ def _stage_document_routing(
         # No transaction may stay open across the LLM phase.
         release_connection_before_llm(db)
 
-        results = run_llm_tasks(to_classify, _classify)
+        outcomes = run_llm_tasks(to_classify, _classify, isolate_failures=True)
+        from packages.agents.stage_failures import split_outcomes, record_unanalysed_documents
+        classified, failed = split_outcomes(to_classify, outcomes)
 
         # Idempotency: wipe the previous run's classifications in the same
         # transaction as the new ones.
+        # A document whose request failed keeps its previous classification.
+        kept_ids = [doc.id for (doc, _, _, _), _ in failed]
         db.query(AgentFinding).filter(
             AgentFinding.deal_id == deal_id,
             AgentFinding.agent_name == agent,
+            or_(AgentFinding.document_id.is_(None), AgentFinding.document_id.notin_(kept_ids)),
         ).delete(synchronize_session=False)
         db.flush()
 
-        for (doc, _, _, _), classification in zip(to_classify, results):
+        for (doc, _, _, _), classification in classified:
             doc_type = classification.get("document_type", "other")
             confidence = classification.get("confidence", 0.0)
 
@@ -416,10 +422,15 @@ def _stage_document_routing(
                 agent, deal_id, doc.id, doc_type, confidence,
             )
 
+        failed_documents = record_unanalysed_documents(
+            db, deal_id, agent,
+            [(doc.id, doc.filename, failure.error) for (doc, _, _, _), failure in failed],
+        )
         db.flush()
         _complete_run(db, run)
 
-        result = {"documents_classified": len(classifications), "classifications": classifications}
+        result = {"documents_classified": len(classifications), "classifications": classifications,
+                  "failed_documents": failed_documents}
         logger.info("[%s] deal=%d — routing complete: %d documents", agent, deal_id, len(classifications))
         return result
 

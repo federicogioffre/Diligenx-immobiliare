@@ -34,6 +34,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from packages.agents.deal_analysis_agent import (
@@ -225,27 +226,35 @@ class ContractAgent:
             # and the whole stage would be rolled back at the first write.
             release_connection_before_llm(db)
 
-            analyses = run_llm_tasks(
+            outcomes = run_llm_tasks(
                 to_analyse,
                 lambda item: self._analyze_document_payloads(
                     item[1], item[2], item[3]
                 ),
+                isolate_failures=True,
             )
+            from packages.agents.stage_failures import split_outcomes, record_unanalysed_documents
+            analysed, failed = split_outcomes(to_analyse, outcomes)
 
             # ── 5. Persist results (main thread, input order) ──────── #
             from app.models.clause_finding import ClauseFinding, ClauseType
 
             # Idempotency: wipe the previous run's outputs in the same
             # transaction as the new rows.
+            # A document whose request failed keeps the previous run's outputs:
+            # a gap is recorded for it, but nothing it had is destroyed.
+            kept_ids = [doc.id for (doc, _, _, _), _ in failed]
             db.query(AgentFinding).filter(
                 AgentFinding.deal_id == deal_id,
                 AgentFinding.agent_name == self.AGENT_NAME,
+                or_(AgentFinding.document_id.is_(None), AgentFinding.document_id.notin_(kept_ids)),
             ).delete(synchronize_session=False)
             doc_ids_in_deal = [
                 row.id
                 for row in db.query(Document.id)
                 .filter(Document.deal_id == deal_id)
                 .all()
+                if row.id not in kept_ids
             ]
             if doc_ids_in_deal:
                 db.query(ClauseFinding).filter(
@@ -253,7 +262,7 @@ class ContractAgent:
                 ).delete(synchronize_session=False)
             db.flush()
 
-            for (doc, _, _, _), analysis in zip(to_analyse, analyses):
+            for (doc, _, _, _), analysis in analysed:
                 from packages.agents.evidence import verified_clause_page
                 doc_clauses: list = []
                 for p in analysis["clauses"]:
@@ -339,7 +348,12 @@ class ContractAgent:
             _duration = (run.completed_at - _started).total_seconds() if _started is not None else 0.0
             db.flush()
 
+            failed_documents = record_unanalysed_documents(
+                db, deal_id, self.AGENT_NAME,
+                [(doc.id, doc.filename, failure.error) for (doc, _, _, _), failure in failed],
+            )
             result = {
+                "failed_documents": failed_documents,
                 "deal_id": deal_id,
                 "contract_documents": len(clauses_by_document),
                 "clause_findings_count": len(all_clause_findings),
@@ -692,8 +706,11 @@ class ContractAgent:
                     else ""
                 ),
             )
+            # Clauses are quotations of this batch, so the answer cannot be
+            # much longer than the batch itself: a proportional budget stops
+            # a runaway generation early instead of after 12k tokens.
             items = _complete_llm_items(
-                self._llm, prompt, max_tokens=12288,
+                self._llm, prompt, max_tokens=max(3072, min(12288, len(batch_text))),
                 context=f"Contract document {document_id}, batch {batch_idx + 1}"
             )
 

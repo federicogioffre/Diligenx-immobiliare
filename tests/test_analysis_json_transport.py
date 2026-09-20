@@ -124,12 +124,21 @@ def test_invalid_structured_response_retries_whole_request_once(content):
     assert requests[1]["max_tokens"] == requests[0]["max_tokens"]
 
 
-@pytest.mark.parametrize("stop_reason", ["refusal", "max_tokens"])
-def test_refused_or_truncated_native_response_never_retries_or_accepts_partial_data(stop_reason):
-    provider, requests = sdk_provider([(stop_reason, [tool([{"title": "Apparently complete"}])])])
+def test_refused_native_response_never_retries_or_accepts_partial_data():
+    provider, requests = sdk_provider([("refusal", [tool([{"title": "Apparently complete"}])])])
     with pytest.raises(LLMResponseError, match="doc 217"):
         _complete_llm_items(provider, "source", max_tokens=6144, context="doc 217")
     assert len(requests) == 1
+
+
+def test_truncated_native_response_is_retried_once_and_never_accepts_partial_data():
+    """A runaway generation is stochastic: one compact retry, then fatal.
+    The apparently complete records of a truncated answer are never used."""
+    provider, requests = sdk_provider([("max_tokens", [tool([{"title": "Apparently complete"}])])] * 2)
+    with pytest.raises(LLMResponseError, match="doc 217: .*truncated.*after 2 attempts"):
+        _complete_llm_items(provider, "source", max_tokens=6144, context="doc 217")
+    assert len(requests) == 2
+    assert requests[1]["max_tokens"] == requests[0]["max_tokens"]
 
 
 @pytest.mark.parametrize("raw", [

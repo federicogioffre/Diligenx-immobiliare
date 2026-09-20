@@ -162,16 +162,25 @@ def test_malformed_complete_output_gets_one_full_format_retry(output):
 
 
 @pytest.mark.parametrize("reply", [
-    {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}, "output": [call([])]},
     {"status": "failed", "output": [call([])]},
     {"status": "completed", "error": {"code": "server_error", "message": "failure"}, "output": [call([])]},
     {"output": [call([]), {**message(""), "content": [{"type": "refusal", "refusal": "refused"}]}]},
 ])
-def test_incomplete_or_refused_result_is_never_accepted_or_format_retried(reply):
+def test_failed_or_refused_result_is_never_accepted_or_retried(reply):
     provider, requests = sdk_provider([reply])
     with pytest.raises(LLMResponseError):
         _complete_llm_items(provider, "SOURCE", max_tokens=6144, context="doc 1")
     assert len(requests) == 1
+
+
+def test_truncated_result_is_retried_once_compactly_and_never_accepted():
+    truncated = {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}, "output": [call([])]}
+    provider, requests = sdk_provider([truncated, truncated])
+    with pytest.raises(LLMResponseError, match="truncated.*after 2 attempts"):
+        _complete_llm_items(provider, "SOURCE", max_tokens=6144, context="doc 1")
+    assert len(requests) == 2
+    assert requests[1]["input"].startswith("OUTPUT LIMIT RETRY:")
+    assert requests[1]["input"].endswith("SOURCE")
 
 
 def test_empty_native_array_is_valid_but_empty_text_is_not():
