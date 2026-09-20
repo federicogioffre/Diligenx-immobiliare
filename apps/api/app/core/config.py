@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     #   rediss://...                          (TLS, recommended on Upstash)
     REDIS_URL: str = ""
     WORKER_MAX_JOBS: int = 4
-    WORKER_JOB_TIMEOUT_SECONDS: int = 3600
+    WORKER_JOB_TIMEOUT_SECONDS: int = 10800
     WORKER_MAX_TRIES: int = 3
 
     # Error monitoring (Sentry). Leave empty to run without Sentry — the
