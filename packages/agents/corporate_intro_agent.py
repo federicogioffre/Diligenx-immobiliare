@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 from packages.agents.deal_analysis_agent import (
     LLMProvider,
     get_llm_provider,
-    _parse_llm_items,
+    _complete_llm_items,
 )
 from packages.agents.company_identity import normalize_company_name
 
@@ -300,9 +300,8 @@ class CorporateIntroAgent:
             filename=filename, text=text,
             target_company_names=json.dumps(target_company_names, ensure_ascii=False),
         )
-        raw = self._llm.complete(prompt, max_tokens=6144)
-        items = _parse_llm_items(
-            raw, context=f"{self.AGENT_NAME}, document {document_id}"
+        items = _complete_llm_items(
+            self._llm, prompt, max_tokens=6144, context=f"{self.AGENT_NAME}, document {document_id}"
         )
 
         payloads: list[dict] = []

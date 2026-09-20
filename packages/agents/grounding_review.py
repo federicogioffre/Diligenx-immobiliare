@@ -13,7 +13,7 @@ import re
 from collections import defaultdict
 from types import SimpleNamespace
 
-from packages.agents.deal_analysis_agent import LLMResponseError, _parse_llm_items
+from packages.agents.deal_analysis_agent import LLMResponseError, _complete_llm_items
 from packages.agents.evidence import verified_clause_page
 
 _NARRATIVE_FIELDS = ("title", "issue", "risk", "recommendation")
@@ -194,8 +194,9 @@ contradiction with this window remains. Complete evidence coverage is checked
 across all windows by the application.
 INPUT_JSON:
 """)
-    response = provider.complete(instructions + encoded, max_tokens=12288)
-    reviews = _parse_llm_items(response, context="Source-fidelity review")
+    reviews = _complete_llm_items(
+        provider, instructions + encoded, max_tokens=12288, context="Source-fidelity review",
+    )
     if len(reviews) != len(candidates):
         raise LLMResponseError("Source-fidelity review did not cover every draft")
     by_index = {}

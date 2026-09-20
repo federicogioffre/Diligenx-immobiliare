@@ -245,7 +245,7 @@ def test_later_aggregation_batch_failure_preserves_prior_flags(db, test_deal, mo
     with pytest.raises(LLMResponseError, match="batch 2"):
         RedFlagAggregationAgent(provider=provider).run(test_deal.id, db)
     db.rollback()
-    assert provider.calls == 2
+    assert provider.calls == 3  # batch 1, batch 2, one format retry of batch 2
     assert db.query(RedFlag).one().title == "Previous flag"
 
 

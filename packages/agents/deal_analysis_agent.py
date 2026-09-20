@@ -160,6 +160,10 @@ class LLMResponseError(RuntimeError):
     """An AI response is incomplete or cannot be used as analysis evidence."""
 
 
+class LLMFormatError(LLMResponseError):
+    """A completed response has an invalid data format; one retry is allowed."""
+
+
 class LLMProvider(ABC):
     """Abstract interface for LLM completion providers."""
 
@@ -167,6 +171,12 @@ class LLMProvider(ABC):
     def complete(self, prompt: str, max_tokens: int = 3072) -> str:
         """Return text completion for the given prompt."""
         ...
+
+    def complete_json(
+        self, prompt: str, max_tokens: int = 3072, *, response_type: str = "array",
+    ) -> str:
+        """JSON transport hook; text-only providers retain their existing API."""
+        return self.complete(prompt, max_tokens=max_tokens)
 
 
 class AnthropicLLMProvider(LLMProvider):
@@ -202,7 +212,7 @@ class AnthropicLLMProvider(LLMProvider):
             return {"temperature": 0}
         return None
 
-    def complete(self, prompt: str, max_tokens: int = 3072) -> str:
+    def _request(self, prompt: str, max_tokens: int, **options):
         from time import monotonic
         from packages.agents.provider_limits import llm_slot
         started = monotonic()
@@ -219,6 +229,7 @@ class AnthropicLLMProvider(LLMProvider):
                 max_tokens=max_tokens,
                 extra_body=self._extra_body(),
                 **thinking_options,
+                **options,
                 messages=[
                     {
                         "role": "user",
@@ -234,15 +245,20 @@ class AnthropicLLMProvider(LLMProvider):
             )
         usage = getattr(msg, "usage", None)
         logger.info(
-            "llm_usage model=%s seconds=%.3f input_tokens=%s output_tokens=%s cache_read_tokens=%s cache_write_tokens=%s",
+            "llm_usage model=%s seconds=%.3f input_tokens=%s output_tokens=%s cache_read_tokens=%s cache_write_tokens=%s stop_reason=%s",
             self._model, monotonic() - started,
             getattr(usage, "input_tokens", None), getattr(usage, "output_tokens", None),
             getattr(usage, "cache_read_input_tokens", None), getattr(usage, "cache_creation_input_tokens", None),
+            msg.stop_reason,
         )
         if msg.stop_reason == "refusal":
             raise LLMResponseError("AI provider refused the analysis request")
         if msg.stop_reason == "max_tokens":
             raise LLMResponseError("AI response was truncated at the output token limit")
+        return msg
+
+    def complete(self, prompt: str, max_tokens: int = 3072) -> str:
+        msg = self._request(prompt, max_tokens)
         text = "".join(
             block.text for block in msg.content
             if isinstance(getattr(block, "text", None), str)
@@ -250,6 +266,52 @@ class AnthropicLLMProvider(LLMProvider):
         if not text.strip():
             raise LLMResponseError("AI response contained no text")
         return text
+
+    def complete_json(
+        self, prompt: str, max_tokens: int = 3072, *, response_type: str = "array",
+    ) -> str:
+        """Get data through a single tool input, separate from assistant prose.
+
+        No tool is executed: this is only a structured response envelope.
+        The stage-specific fields are defined in each analysis prompt and
+        validated by the caller. Refusals and token-limit stops remain fatal.
+        """
+        if response_type not in {"array", "object"}:
+            raise ValueError("Unsupported JSON response type")
+        schema = {"type": response_type}
+        if response_type == "array":
+            schema["items"] = {"type": "object"}
+        msg = self._request(
+            prompt, max_tokens,
+            tools=[{
+                "name": "submit_analysis",
+                "description": (
+                    "Submit the complete analysis requested in the user prompt. "
+                    "Put the requested JSON value in the result field, using every "
+                    "field and all records required by that prompt. Preserve all "
+                    "source evidence, qualifications and the requested language. "
+                    "An empty array is valid only when the analysis found no items. "
+                    "Do not put analysis data in assistant text or call this tool twice."
+                ),
+                "input_schema": {
+                    "type": "object", "properties": {"result": schema},
+                    "required": ["result"], "additionalProperties": False,
+                },
+            }],
+            tool_choice={"type": "tool", "name": "submit_analysis", "disable_parallel_tool_use": True},
+        )
+        calls = [block for block in msg.content if getattr(block, "type", None) == "tool_use"]
+        if (
+            msg.stop_reason != "tool_use" or len(calls) != 1
+            or calls[0].name != "submit_analysis"
+            or not isinstance(calls[0].input, dict)
+            or set(calls[0].input) != {"result"}
+        ):
+            raise LLMFormatError("AI provider did not return one complete structured analysis")
+        try:
+            return json.dumps(calls[0].input["result"], ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise LLMFormatError("AI provider returned invalid structured data") from exc
 
 
 class FakeLLMProvider(LLMProvider):
@@ -746,6 +808,8 @@ def _safe_json(raw: str) -> list | dict:
     propagate invalid or incomplete responses so the orchestrator can
     preserve the previous outputs.
     """
+    if not isinstance(raw, str):
+        raise LLMFormatError("AI response contains incomplete or invalid JSON")
     text = raw.strip()
     fence = "```"
     if text.startswith(fence):
@@ -771,7 +835,7 @@ def _safe_json(raw: str) -> list | dict:
     try:
         return json.loads(_escape_stray_quotes(text))
     except json.JSONDecodeError as exc:
-        raise LLMResponseError("AI response contains incomplete or invalid JSON") from exc
+        raise LLMFormatError("AI response contains incomplete or invalid JSON") from exc
 
 
 def _parse_llm_items(raw: str, *, context: str) -> list[dict]:
@@ -785,6 +849,59 @@ def _parse_llm_items(raw: str, *, context: str) -> list[dict]:
     ):
         raise LLMResponseError(f"{context}: expected a JSON array of non-empty objects")
     return items
+
+
+def _complete_json(
+    provider: LLMProvider, prompt: str, *, max_tokens: int,
+    context: str, response_type: str,
+) -> list | dict:
+    """Retry a format error once, without salvaging or dropping any records.
+
+    Transport errors, refusals and token exhaustion are not format retries.
+    The complete original source prompt is retained on the second attempt.
+    Logs contain diagnostics only, never document text or model responses.
+    """
+    retry_prefix = (
+        "FORMAT RETRY: Return the complete requested analysis in the required JSON "
+        "shape. Include every record and field. Do not substitute an empty result "
+        "for a formatting failure. Follow the original task and source below.\n\n"
+    )
+    for attempt in range(2):
+        try:
+            request_prompt = prompt if attempt == 0 else retry_prefix + prompt
+            complete_json = getattr(provider, "complete_json", None)
+            raw = (
+                complete_json(request_prompt, max_tokens=max_tokens, response_type=response_type)
+                if callable(complete_json) else provider.complete(request_prompt, max_tokens=max_tokens)
+            )
+            result = _safe_json(raw)
+            valid = (
+                isinstance(result, list) and all(isinstance(item, dict) and item for item in result)
+                if response_type == "array" else isinstance(result, dict) and bool(result)
+            )
+            if not valid:
+                raise LLMFormatError(f"AI response has an invalid JSON {response_type} shape")
+            return result
+        except LLMFormatError as exc:
+            logger.warning("llm_json_format_error context=%s attempt=%d reason=%s", context, attempt + 1, exc)
+            if attempt == 1:
+                raise LLMResponseError(f"{context}: invalid AI response format after 2 attempts ({exc})") from exc
+        except LLMResponseError as exc:
+            raise LLMResponseError(f"{context}: {exc}") from exc
+    raise AssertionError("Unreachable JSON retry state")
+
+
+def _complete_llm_items(
+    provider: LLMProvider, prompt: str, *, max_tokens: int, context: str,
+) -> list[dict]:
+    return _complete_json(
+        provider, prompt, max_tokens=max_tokens, context=context, response_type="array",
+    )
+
+
+def _complete_classification(provider: LLMProvider, prompt: str, *, context: str) -> dict:
+    result = _complete_json(provider, prompt, max_tokens=512, context=context, response_type="object")
+    return _parse_classification(json.dumps(result, ensure_ascii=False))
 
 
 VALID_DOCUMENT_TYPES = frozenset({
@@ -993,8 +1110,7 @@ class DealAnalysisAgent:
             filename=filename,
             text=text[:4000],
         )
-        raw = self._llm.complete(prompt, max_tokens=512)
-        return _parse_classification(raw)
+        return _complete_classification(self._llm, prompt, context="Document classification")
 
     def _extract_clauses(
         self, document_id: int, text: str, db: Session
@@ -1020,9 +1136,9 @@ class DealAnalysisAgent:
                     else ""
                 ),
             )
-            raw = self._llm.complete(prompt, max_tokens=12288)
-            items = _parse_llm_items(
-                raw, context=f"Contract document {document_id}, batch {batch_idx + 1}"
+            items = _complete_llm_items(
+                self._llm, prompt, max_tokens=12288,
+                context=f"Contract document {document_id}, batch {batch_idx + 1}"
             )
 
             for item in items:
@@ -1082,8 +1198,7 @@ class DealAnalysisAgent:
         )
 
         prompt = RED_FLAG_DETECTION_PROMPT.format(findings=findings_text)
-        raw = self._llm.complete(prompt, max_tokens=3072)
-        items = _parse_llm_items(raw, context=f"Red flags for deal {deal_id}")
+        items = _complete_llm_items(self._llm, prompt, max_tokens=3072, context=f"Red flags for deal {deal_id}")
 
         red_flags = []
         for item in items:

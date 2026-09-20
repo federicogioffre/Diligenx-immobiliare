@@ -44,7 +44,7 @@ from sqlalchemy.orm import Session
 
 from packages.agents.deal_analysis_agent import (
     LLMProvider,
-    _parse_llm_items,
+    _complete_llm_items,
     _normalize_severity,
     _parse_dd_area,
     get_llm_provider,
@@ -593,9 +593,8 @@ class RedFlagAggregationAgent:
                 language_instruction=lang_instruction,
                 recommendation_examples=recommendation_examples(output_lang),
             )
-            raw = self._llm.complete(prompt, max_tokens=12288)
-            results.extend(_parse_llm_items(
-                raw, context=f"Red flags for deal {deal_id}, batch {index}"
+            results.extend(_complete_llm_items(
+                self._llm, prompt, max_tokens=12288, context=f"Red flags for deal {deal_id}, batch {index}"
             ))
         return results
 
