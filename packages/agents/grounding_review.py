@@ -20,7 +20,7 @@ _NARRATIVE_FIELDS = ("title", "issue", "risk", "recommendation")
 _MAX_REVIEW_CHARS = 120_000
 _MAX_REVIEW_ITEMS = 8
 
-def _review_item_schema(kind: str) -> dict:
+def _review_item_schema(kind: str, *, partial: bool = False) -> dict:
     """Make the review envelope exact; factual support is still checked locally."""
     names = ("text",) if kind == "text" else _NARRATIVE_FIELDS
     fields = {
@@ -34,7 +34,7 @@ def _review_item_schema(kind: str) -> dict:
             "index": {"type": "integer"}, "supported": {"type": "boolean"},
             "fields": {"type": "object", "properties": fields,
                        "required": list(names), "additionalProperties": False},
-            "evidence": {"type": "array", "items": {
+            "evidence": {"type": "array", "minItems": 0 if partial else 1, "items": {
                 "type": "object", "additionalProperties": False,
                 "required": ["source_document_id", "quote", "fields"],
                 "properties": {
@@ -237,7 +237,9 @@ def _review(provider, *, kind: str, candidates: list[dict], documents: list[dict
     instructions = _REVIEW_INSTRUCTIONS
     if evidence_feedback is not None:
         instructions = instructions.replace("INPUT_JSON:\n", """A previous review failed deterministic source verification. The validation_feedback
-identifies the rejected citation, not a fact to trust. Recheck EVERY draft against
+lists ALL rejected citations and missing field links, not facts to trust.
+Address EVERY entry in validation_feedback.defects in the same response.
+Recheck EVERY draft against
 the original sources and return the complete review, including unchanged fields.
 Repair the cited document identity or copy a truly verbatim contiguous passage.
 If missing_fields are listed, add source quotations and field links for EVERY
@@ -259,7 +261,7 @@ INPUT_JSON:
 """)
     reviews = _complete_llm_items(
         provider, instructions + encoded, max_tokens=12288, context="Source-fidelity review",
-        item_schema=_review_item_schema(kind),
+        item_schema=_review_item_schema(kind, partial=partial),
         validate_shape=lambda values: _validate_review_shape(values, kind, len(candidates)),
     )
     # A bad citation in an earlier entry must not cause a later explicit
@@ -267,6 +269,7 @@ INPUT_JSON:
     if any(review.get("supported") is not True for review in reviews):
         raise LLMResponseError("Source-fidelity review could not support a draft")
     by_index = {}
+    defects = []
     for review in reviews:
         index = review["index"]
         fields = review["fields"]
@@ -288,8 +291,8 @@ INPUT_JSON:
         if kind == "flags" and len(fields["title"]) > 500:
             raise LLMResponseError("Source-fidelity title exceeds the supported field length")
         evidence = review.get("evidence")
-        if not isinstance(evidence, list) or (not evidence and not partial):
-            raise LLMResponseError("Source-fidelity review supplied no supporting quotations")
+        if not isinstance(evidence, list):
+            raise LLMResponseError("Source-fidelity review returned invalid evidence")
         verified = []
         for evidence_index, entry in enumerate(evidence):
             if not isinstance(entry, dict):
@@ -308,21 +311,10 @@ INPUT_JSON:
                   or any(field not in expected for field in linked_fields)):
                 reason = "quotation has invalid narrative field links"
             if reason is not None:
-                if evidence_feedback is None:
-                    # One corrective review, from the same original sources.
-                    # Its complete response passes every check again; no fuzzy
-                    # matching, dropped quotes or unverified fallback is allowed.
-                    return _review(
-                        provider, kind=kind, candidates=candidates, documents=documents,
-                        language=language, partial=partial,
-                        evidence_feedback={"draft_index": index, "evidence_index": evidence_index,
-                                           "source_document_id": doc_id, "reason": reason,
-                                           "rejected_quote": quote},
-                    )
-                raise LLMResponseError(
-                    f"Source-fidelity review cited unsupported evidence after correction: "
-                    f"draft {index}, evidence {evidence_index}: {reason}"
-                )
+                defects.append({"draft_index": index, "evidence_index": evidence_index,
+                                "source_document_id": doc_id, "reason": reason,
+                                "rejected_quote": quote})
+                continue
             page = verified_clause_page(
                 quote, [SimpleNamespace(**p) for p in doc.get("pages", [])], doc.get("page_count")
             )
@@ -333,13 +325,30 @@ INPUT_JSON:
             covered = {field for entry in verified for field in entry["fields"]}
             missing = sorted(field for field, value in fields.items()
                              if field != "recommendation" and value and field not in covered)
-            if missing and evidence_feedback is None:
-                return _review(
-                    provider, kind=kind, candidates=candidates, documents=documents,
-                    language=language, partial=partial,
-                    evidence_feedback={"draft_index": index, "missing_fields": missing,
-                                       "reason": "factual fields have no linked source quotations"},
-                )
+            if missing:
+                defects.append({"draft_index": index, "missing_fields": missing,
+                                "reason": "factual fields have no linked source quotations"})
+    if defects:
+        if evidence_feedback is None:
+            # Inspect the complete response before using the single correction
+            # budget. Otherwise the model can fix the first defect and hit a
+            # second omission that was never included in its feedback.
+            # Invalid entries remain fatal: none of this partial result returns.
+            return _review(
+                provider, kind=kind, candidates=candidates, documents=documents,
+                language=language, partial=partial,
+                evidence_feedback={"defects": defects},
+            )
+        citation_defect = next((d for d in defects if "evidence_index" in d), None)
+        if citation_defect:
+            raise LLMResponseError(
+                "Source-fidelity review cited unsupported evidence after correction: "
+                f"draft {citation_defect['draft_index']}, evidence {citation_defect['evidence_index']}: "
+                f"{citation_defect['reason']}"
+            )
+        raise LLMResponseError("Source-fidelity review left factual fields without evidence after correction")
+    if not partial:
+        for index in by_index:
             _require_coverage(by_index[index], kind)
     return [by_index[index] for index in range(len(candidates))]
 

@@ -106,7 +106,7 @@ class MutatingReview:
     (lambda result: result[0]["fields"].update(title="Un titolo " * 100), 1),
     (lambda result: result[0]["fields"].update(issue="Il covenant è violato (art. p.2)."), 1),
     (lambda result: result[0]["fields"].update(recommendation="Insert a specific indemnity in the SPA for the benefit of the Buyer."), 1),
-    (lambda result: result[0].update(evidence=[]), 1),
+    (lambda result: result[0].update(evidence=[]), 2),
     (lambda result: result[0]["evidence"][0].update(quote="The bank has already demanded payment."), 2),
     (lambda result: result[0]["evidence"][0].update(source_document_id=999), 2),
     (lambda result: [entry.update(fields=["title"]) for entry in result[0]["evidence"]], 2),
@@ -145,8 +145,9 @@ def test_citation_correction_receives_feedback_and_must_pass_verbatim_checks(rep
                 )
             else:
                 data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
-                assert data["validation_feedback"]["draft_index"] == 0
-                assert data["validation_feedback"]["reason"]
+                defect = data["validation_feedback"]["defects"][0]
+                assert defect["draft_index"] == 0
+                assert defect["reason"]
                 assert data["documents"][0]["text"] == replay["documents"][0]["text"]
             return json.dumps(response)
 
@@ -199,7 +200,7 @@ def test_missing_field_links_receive_precise_feedback_and_complete_verification(
                     entry["fields"] = ["title"]
             else:
                 data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
-                assert data["validation_feedback"]["missing_fields"] == ["issue", "risk"]
+                assert data["validation_feedback"]["defects"][0]["missing_fields"] == ["issue", "risk"]
             return json.dumps(response)
 
     reviewer = OnceUnlinked()
@@ -223,6 +224,68 @@ def test_quote_and_coverage_repairs_share_the_same_single_retry_budget(replay):
     with pytest.raises(LLMResponseError, match="without evidence"):
         review_grounded_flags(reviewer, replay["flags"][:1], replay["documents"], "it")
     assert len(reviewer.prompts) == 2
+
+
+def test_empty_evidence_can_be_completed_only_by_a_verified_corrective_review(replay):
+    class OnceEmpty(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            if len(self.prompts) == 1:
+                response[0]["evidence"] = []
+            else:
+                data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+                assert data["validation_feedback"]["defects"] == [{
+                    "draft_index": 0, "missing_fields": ["issue", "risk", "title"],
+                    "reason": "factual fields have no linked source quotations",
+                }]
+            return json.dumps(response)
+
+    reviewer = OnceEmpty()
+    result = review_grounded_flags(reviewer, replay["flags"][:1], replay["documents"], "it")
+    assert len(reviewer.prompts) == 2
+    assert result[0]["grounding_reviewed"] is True
+    assert result[0]["evidence"]
+
+
+def test_all_citation_and_coverage_defects_reach_the_single_corrective_review(replay):
+    class MultipleDefects(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            second = copy.deepcopy(response[0])
+            second["index"] = 1
+            response.append(second)
+            if len(self.prompts) == 1:
+                response[0]["evidence"][0]["quote"] = "Invented quotation"
+                response[0]["evidence"][1]["source_document_id"] = 999
+                response[1]["evidence"] = []
+            else:
+                data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+                defects = data["validation_feedback"]["defects"]
+                assert len(defects) == 3
+                assert [(d["draft_index"], d.get("evidence_index")) for d in defects] == [
+                    (0, 0), (0, 1), (1, None)]
+                assert defects[2]["missing_fields"] == ["issue", "risk", "title"]
+            return json.dumps(response)
+
+    reviewer = MultipleDefects()
+    result = review_grounded_flags(reviewer, [replay["flags"][0]] * 2, replay["documents"], "it")
+    assert len(reviewer.prompts) == 2
+    assert len(result) == 2
+    assert all(item["grounding_reviewed"] for item in result)
+
+
+def test_irrelevant_partial_window_can_leave_evidence_empty():
+    from packages.agents.grounding_review import _review
+
+    class IrrelevantWindow:
+        def complete(self, prompt, max_tokens=2048):
+            return json.dumps([{"index": 0, "supported": True,
+                                "fields": {"text": "A finding supported in another window."},
+                                "evidence": []}])
+
+    result = _review(IrrelevantWindow(), kind="text", candidates=[{"text": "A finding supported in another window."}],
+                     documents=[{"document_id": 1, "text": "Unrelated source."}], language="en", partial=True)
+    assert result[0]["evidence"] == []
 
 
 def test_review_happens_before_deleting_previous_outputs(db, test_deal, replay):
