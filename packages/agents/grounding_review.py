@@ -17,6 +17,7 @@ import unicodedata
 from collections import defaultdict
 from types import SimpleNamespace
 
+from packages.agents.concurrency import run_llm_tasks
 from packages.agents.deal_analysis_agent import LLMFormatError, LLMResponseError, _complete_llm_items
 from packages.agents.evidence import verified_clause_page
 
@@ -598,6 +599,9 @@ def review_grounded_flags(provider, flags: list[dict], documents: list[dict],
         groups[doc_id].append((index, flag))
     result = list(flags)
     dropped: dict[int, str] = {}
+    # Validate and assemble every batch before any request leaves, so a draft
+    # citing a document outside the deal fails the stage before it costs a call.
+    batches: list[tuple[int | None, list[tuple[int, dict]], list[dict], list[dict]]] = []
     for doc_id, group in groups.items():
         for start in range(0, len(group), _MAX_REVIEW_ITEMS):
             batch = group[start:start + _MAX_REVIEW_ITEMS]
@@ -613,30 +617,42 @@ def review_grounded_flags(provider, flags: list[dict], documents: list[dict],
                         raise LLMResponseError("Aggregation cited evidence outside this deal")
                     source_ids.add(source_id)
             sources = [available[source_id] for source_id in sorted(source_ids)]
-            logger.info("grounding_review_start drafts=%s source_documents=%s",
-                        [index for index, _ in batch], sorted(source_ids))
-            reviews = _review_batch(provider, drafts, sources, language)
-            for (index, flag), review in zip(batch, reviews):
-                if "rejected" in review:
-                    dropped[index] = review["rejected"]
-                    if rejections is not None:
-                        rejections.append({"flag": flag, "reason": review["rejected"],
-                                           "identity": f"draft {index}, document {doc_id}"})
-                    continue
-                evidence = review["evidence"]
-                coordinates = {(e["source_document_id"], e["source_page"]) for e in evidence}
-                source_pages = [
-                    {"source_document_id": source_id, "page": page}
-                    for source_id, page in sorted(coordinates, key=lambda pair: (pair[0], pair[1] or 0))
-                    if page is not None
-                ]
-                single = next(iter(coordinates)) if len(coordinates) == 1 else None
-                source_page = single[1] if single and single[0] == doc_id else None
-                result[index] = {**flag, **review["fields"], "source_page": source_page,
-                                 "evidence": evidence, "source_pages": source_pages,
-                                 "grounding_reviewed": True}
-            logger.info("grounding_review_complete drafts=%s rejected=%s",
-                        [index for index, _ in batch], sorted(i for i, _ in batch if i in dropped))
+            batches.append((doc_id, batch, drafts, sources))
+
+    def review_one(item: tuple[int | None, list[tuple[int, dict]], list[dict], list[dict]]) -> list[dict]:
+        _, batch, drafts, sources = item
+        logger.info("grounding_review_start drafts=%s source_documents=%s",
+                    [index for index, _ in batch], [doc["document_id"] for doc in sources])
+        return _review_batch(provider, drafts, sources, language)
+
+    # Document groups are independent, so they are reviewed on the bounded
+    # fan-out every other stage uses: a 66-document data room yields well over
+    # a hundred drafts, and reviewing them one group at a time on the judgment
+    # model took longer than the worker's job timeout. Persistence of the
+    # verdicts stays on this thread, in input order.
+    outcomes = run_llm_tasks(batches, review_one)
+    for (doc_id, batch, _, _), reviews in zip(batches, outcomes):
+        for (index, flag), review in zip(batch, reviews):
+            if "rejected" in review:
+                dropped[index] = review["rejected"]
+                if rejections is not None:
+                    rejections.append({"flag": flag, "reason": review["rejected"],
+                                       "identity": f"draft {index}, document {doc_id}"})
+                continue
+            evidence = review["evidence"]
+            coordinates = {(e["source_document_id"], e["source_page"]) for e in evidence}
+            source_pages = [
+                {"source_document_id": source_id, "page": page}
+                for source_id, page in sorted(coordinates, key=lambda pair: (pair[0], pair[1] or 0))
+                if page is not None
+            ]
+            single = next(iter(coordinates)) if len(coordinates) == 1 else None
+            source_page = single[1] if single and single[0] == doc_id else None
+            result[index] = {**flag, **review["fields"], "source_page": source_page,
+                             "evidence": evidence, "source_pages": source_pages,
+                             "grounding_reviewed": True}
+        logger.info("grounding_review_complete drafts=%s rejected=%s",
+                    [index for index, _ in batch], sorted(i for i, _ in batch if i in dropped))
     if dropped and len(dropped) == len(flags):
         raise LLMResponseError("Source-fidelity review rejected every draft: "
                                + "; ".join(dropped[index] for index in sorted(dropped)))

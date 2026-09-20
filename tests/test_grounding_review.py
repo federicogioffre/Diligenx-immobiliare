@@ -799,3 +799,45 @@ def test_a_later_rewrite_cannot_reuse_earlier_field_evidence():
     with pytest.raises(LLMResponseError, match="without evidence"):
         review_grounded_flags(RewritingWindow(), [{"title": "Default", "source_document_id": 1}],
                               [{"document_id": 1, "text": "30 day cure period.\n" + "Boilerplate.\n" * 18000}], "en")
+
+
+def test_document_groups_are_reviewed_in_parallel_and_reported_in_input_order(replay):
+    """Two document groups must be in flight at the same time.
+
+    Reviewing one group at a time on the judgment model took a 169-draft data
+    room past the worker's job timeout. The barrier trips only if both groups'
+    first review requests overlap; verdicts still land in input order.
+    """
+    import threading
+
+    class OverlappingReviewer(ReplayReviewer):
+        def __init__(self):
+            super().__init__()
+            self.barrier = threading.Barrier(2, timeout=5)
+            self.first_seen = set()
+            self.lock = threading.Lock()
+
+        def complete(self, prompt, max_tokens=2048):
+            if "GROUNDING REVIEW\n" in prompt:
+                doc_id = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])["documents"][0]["document_id"]
+                with self.lock:
+                    first = doc_id not in self.first_seen
+                    self.first_seen.add(doc_id)
+                if first:
+                    self.barrier.wait()  # BrokenBarrierError if reviewed sequentially
+            return super().complete(prompt, max_tokens)
+
+    reviewer = OverlappingReviewer()
+    flags = [replay["flags"][1], replay["flags"][0]]
+    result = review_grounded_flags(reviewer, flags, replay["documents"], "it")
+    assert [flag["source_document_id"] for flag in result] == [flag["source_document_id"] for flag in flags]
+    assert all(flag["grounding_reviewed"] for flag in result)
+    assert reviewer.first_seen == {flag["source_document_id"] for flag in flags}
+
+
+def test_a_draft_citing_a_foreign_document_fails_before_any_review_request(replay):
+    reviewer = ReplayReviewer()
+    flags = [replay["flags"][0], {**replay["flags"][1], "evidence": [{"source_document_id": 999999, "quote": "x"}]}]
+    with pytest.raises(LLMResponseError, match="outside this deal"):
+        review_grounded_flags(reviewer, flags, replay["documents"], "it")
+    assert reviewer.prompts == []

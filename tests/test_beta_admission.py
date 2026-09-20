@@ -48,7 +48,9 @@ def test_recovery_requires_stale_analysis_and_no_redis_job(client, db, test_deal
     from app.core.config import settings
     from app.main import _fastapi
     test_deal.status = DealStatus.analyzing
-    test_deal.updated_at = datetime.now(timezone.utc) - timedelta(hours=3)
+    # Stale means older than the whole-run job timeout plus its grace period,
+    # whatever that timeout is configured to.
+    test_deal.updated_at = datetime.now(timezone.utc) - timedelta(seconds=settings.WORKER_JOB_TIMEOUT_SECONDS + 120)
     db.commit()
     monkeypatch.setattr(settings, "REDIS_URL", "redis://configured")
     monkeypatch.setattr(_fastapi.state, "arq_pool", AsyncMock())
