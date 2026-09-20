@@ -39,7 +39,8 @@ def _review_item_schema(kind: str) -> dict:
                 "required": ["source_document_id", "quote", "fields"],
                 "properties": {
                     "source_document_id": {"type": "integer"}, "quote": {"type": "string"},
-                    "fields": {"type": "array", "items": {"type": "string", "enum": list(names)}},
+                    "fields": {"type": "array", "minItems": 1,
+                               "items": {"type": "string", "enum": list(names)}},
                 },
             }},
         },
@@ -90,6 +91,9 @@ every entry, including unchanged values; never return only a patch or omit keys.
 Provide evidence for EVERY nonempty factual field (title, issue, risk or text).
 Include separate quotes for facts supported by different passages or pages;
 never cite one convenient passage as support for unrelated claims.
+Each quote MUST be one contiguous passage copied exactly from one supplied source.
+Do not join non-adjacent sentences, insert ellipses, correct OCR, add accents or
+translate a quotation. Use separate evidence entries for separate passages.
 supported=true means the FINAL corrected fields are faithful, including all
 conditions and qualifications. If you cannot repair a draft using the supplied
 evidence, return supported=false. Never invent evidence or return an empty array.
@@ -181,7 +185,7 @@ def _require_coverage(review: dict, kind: str) -> None:
 
 
 def _review(provider, *, kind: str, candidates: list[dict], documents: list[dict],
-            language: str, partial: bool = False) -> list[dict]:
+            language: str, partial: bool = False, evidence_feedback: dict | None = None) -> list[dict]:
     # Page text need not be sent twice. It is retained locally for coordinate
     # checks; the reviewer sees complete source text, including limiting clauses.
     source_map = {doc["document_id"]: doc for doc in documents}
@@ -195,9 +199,11 @@ def _review(provider, *, kind: str, candidates: list[dict], documents: list[dict
             for doc in documents
         ],
     }
+    if evidence_feedback is not None:
+        payload["validation_feedback"] = evidence_feedback
     encoded = json.dumps(payload, ensure_ascii=False)
     if len(encoded) > _MAX_REVIEW_CHARS:
-        if partial:
+        if partial or evidence_feedback is not None:
             raise LLMResponseError("Source-fidelity draft exceeds its review budget")
         from packages.agents.document_coverage import text_batches
         # Sequential windows carry corrections forward. Evidence is accumulated
@@ -229,6 +235,16 @@ def _review(provider, *, kind: str, candidates: list[dict], documents: list[dict
             _require_coverage(review, kind)
         return accumulated
     instructions = _REVIEW_INSTRUCTIONS
+    if evidence_feedback is not None:
+        instructions = instructions.replace("INPUT_JSON:\n", """A previous review failed deterministic source verification. The validation_feedback
+identifies the rejected citation, not a fact to trust. Recheck EVERY draft against
+the original sources and return the complete review, including unchanged fields.
+Repair the cited document identity or copy a truly verbatim contiguous passage.
+Preserve all conditions and qualifications; use multiple quotes when needed.
+If the source cannot support the claim, correct the claim using the source or
+return supported=false. Never invent a replacement quotation to pass validation.
+INPUT_JSON:
+""")
     if partial:
         instructions = instructions.replace("INPUT_JSON:\n", """This is one source window of a longer review. Correct any contradictions and
 lost qualifications this window reveals, preserving corrections already present
@@ -244,11 +260,13 @@ INPUT_JSON:
         item_schema=_review_item_schema(kind),
         validate_shape=lambda values: _validate_review_shape(values, kind, len(candidates)),
     )
+    # A bad citation in an earlier entry must not cause a later explicit
+    # unsupported decision to be retried or accidentally overridden.
+    if any(review.get("supported") is not True for review in reviews):
+        raise LLMResponseError("Source-fidelity review could not support a draft")
     by_index = {}
     for review in reviews:
         index = review["index"]
-        if review.get("supported") is not True:
-            raise LLMResponseError("Source-fidelity review could not support a draft")
         fields = review["fields"]
         expected = ("text",) if kind == "text" else _NARRATIVE_FIELDS
         for field in expected:
@@ -271,17 +289,38 @@ INPUT_JSON:
         if not isinstance(evidence, list) or (not evidence and not partial):
             raise LLMResponseError("Source-fidelity review supplied no supporting quotations")
         verified = []
-        for entry in evidence:
+        for evidence_index, entry in enumerate(evidence):
             if not isinstance(entry, dict):
                 raise LLMResponseError("Source-fidelity review returned invalid evidence")
             doc_id, quote = entry.get("source_document_id"), entry.get("quote")
             doc = source_map.get(doc_id) if type(doc_id) is int else None
             linked_fields = entry.get("fields")
-            if (doc is None or not isinstance(quote, str) or not quote.strip()
-                    or _normalise(quote) not in _normalise(_source_text(doc))
-                    or not isinstance(linked_fields, list) or not linked_fields
-                    or any(field not in expected for field in linked_fields)):
-                raise LLMResponseError("Source-fidelity review cited unsupported evidence")
+            reason = None
+            if doc is None:
+                reason = "document identity is outside the supplied sources"
+            elif not isinstance(quote, str) or not quote.strip():
+                reason = "quotation is empty or not text"
+            elif _normalise(quote) not in _normalise(_source_text(doc)):
+                reason = "quotation is not a contiguous passage in the cited source"
+            elif (not isinstance(linked_fields, list) or not linked_fields
+                  or any(field not in expected for field in linked_fields)):
+                reason = "quotation has invalid narrative field links"
+            if reason is not None:
+                if evidence_feedback is None:
+                    # One corrective review, from the same original sources.
+                    # Its complete response passes every check again; no fuzzy
+                    # matching, dropped quotes or unverified fallback is allowed.
+                    return _review(
+                        provider, kind=kind, candidates=candidates, documents=documents,
+                        language=language, partial=partial,
+                        evidence_feedback={"draft_index": index, "evidence_index": evidence_index,
+                                           "source_document_id": doc_id, "reason": reason,
+                                           "rejected_quote": quote},
+                    )
+                raise LLMResponseError(
+                    f"Source-fidelity review cited unsupported evidence after correction: "
+                    f"draft {index}, evidence {evidence_index}: {reason}"
+                )
             page = verified_clause_page(
                 quote, [SimpleNamespace(**p) for p in doc.get("pages", [])], doc.get("page_count")
             )
