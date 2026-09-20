@@ -88,7 +88,10 @@ def test_review_schema_reaches_real_sdk_as_strict_tool_through_context(kind, par
     assert definition["input_schema"]["properties"]["result"]["items"] == schema
     expected = {"text"} if kind == "text" else {"title", "issue", "risk", "recommendation"}
     assert set(schema["properties"]["fields"]["required"]) == expected
-    assert schema["properties"]["evidence"]["minItems"] == (0 if partial else 1)
+    # Unsupported decisions may honestly have no quotations; acceptance still
+    # requires evidence coverage in the production reviewer.
+    assert schema["properties"]["evidence"]["minItems"] == 0
+    assert "support_reason" in schema["required"]
 
     def verify_objects(value):
         if isinstance(value, dict):
