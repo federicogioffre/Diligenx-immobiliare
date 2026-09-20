@@ -725,6 +725,10 @@ def run_deal_analysis_pipeline(
     checkpoint = validate_resume(db, deal_id) if resume else None
     from packages.agents.deal_context import with_deal_context
     llm = with_deal_context(provider or get_llm_provider(), db, deal_id)
+    # An explicitly injected provider serves every stage (tests, tooling);
+    # otherwise the judgment stages get their own, possibly stronger, model.
+    from packages.agents.deal_analysis_agent import get_judgment_provider
+    judgment = llm if provider is not None else with_deal_context(get_judgment_provider(), db, deal_id)
 
     logger.info("=== Pipeline START for deal %d ===", deal_id)
 
@@ -764,9 +768,9 @@ def run_deal_analysis_pipeline(
 
     # Aggregation and publication require a complete analysis. Leave the
     # previous findings/report intact when any prerequisite fails.
-    execute("red_flag_aggregation", lambda: _stage_red_flag_aggregation(deal_id, db, llm),
+    execute("red_flag_aggregation", lambda: _stage_red_flag_aggregation(deal_id, db, judgment),
             tuple(stages))
-    execute("report_generation", lambda: _stage_report_generation(deal_id, db, llm),
+    execute("report_generation", lambda: _stage_report_generation(deal_id, db, judgment),
             tuple(stages))
 
     # ── Finalise deal status ───────────────────────────────────────────

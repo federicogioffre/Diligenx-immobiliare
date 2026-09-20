@@ -853,10 +853,40 @@ def get_llm_provider() -> LLMProvider:
     return _llm_provider
 
 
+_judgment_provider: LLMProvider | None = None
+
+
+def get_judgment_provider() -> LLMProvider:
+    """Provider for the judgment stages (aggregation, grounding review, summary).
+
+    ``JUDGMENT_MODEL`` selects it; empty means the analysis provider. A test
+    stub installed with :func:`set_llm_provider` covers both roles, so no
+    test ever reaches a vendor. As with the analysis provider, the model's
+    own key is required: a missing key never falls back to another vendor.
+    """
+    global _judgment_provider
+    if _judgment_provider is not None:
+        return _judgment_provider
+    from app.core.config import settings
+    import os
+    base = get_llm_provider()
+    model = settings.JUDGMENT_MODEL
+    if not model or model == (settings.ANALYSIS_MODEL or DEFAULT_ANALYSIS_MODEL) or isinstance(base, FakeLLMProvider):
+        return base
+    key_name = analysis_api_key_name(model)
+    api_key = getattr(settings, key_name) or os.environ.get(key_name, "")
+    if not api_key:
+        raise RuntimeError(f"{key_name} is required for JUDGMENT_MODEL={model}")
+    _judgment_provider = create_llm_provider(api_key, model)
+    logger.info("Using %s (%s) for the judgment stages.", type(_judgment_provider).__name__, model)
+    return _judgment_provider
+
+
 def set_llm_provider(provider: LLMProvider | None) -> None:
     """Override the global LLM provider (useful in tests)."""
-    global _llm_provider
+    global _llm_provider, _judgment_provider
     _llm_provider = provider
+    _judgment_provider = None
 
 
 # ── JSON parsing helper ────────────────────────────────────────────────────
