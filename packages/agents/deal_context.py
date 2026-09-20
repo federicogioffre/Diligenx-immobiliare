@@ -144,10 +144,14 @@ class DealContextProvider(LLMProvider):
 
     def complete_json(
         self, prompt: str, max_tokens: int = 3072, *, response_type: str = "array",
+        item_schema: dict | None = None,
     ) -> str:
         complete_json = getattr(self.provider, "complete_json", None)
         if callable(complete_json):
-            return complete_json(self._prefix + prompt, max_tokens=max_tokens, response_type=response_type)
+            schema_options = {"item_schema": item_schema} if item_schema is not None else {}
+            return complete_json(
+                self._prefix + prompt, max_tokens=max_tokens, response_type=response_type, **schema_options,
+            )
         return self.complete(prompt, max_tokens=max_tokens)
 
 
