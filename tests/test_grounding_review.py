@@ -250,21 +250,77 @@ def test_unsupported_repair_must_still_pass_verbatim_verification(replay):
     assert len(reviewer.prompts) == 2
 
 
-def test_unrepairable_draft_error_keeps_global_index_and_document_without_source_text(replay):
+def test_unrepairable_draft_is_dropped_and_reported_without_failing_the_others(replay):
     class RejectLoan(ReplayReviewer):
         def complete(self, prompt, max_tokens=2048):
             response = json.loads(super().complete(prompt, max_tokens))
             data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
             if data["documents"][0]["document_id"] == 241:
-                response[0]["supported"] = False
+                response[0].update(supported=False, support_reason="Il rimedio non risulta esercitato.")
             return json.dumps(response)
 
     reviewer = RejectLoan()
     flags = [replay["flags"][1], replay["flags"][0]]
-    with pytest.raises(LLMResponseError, match="after correction: draft 1, document 241") as error:
-        review_grounded_flags(reviewer, flags, replay["documents"], "it")
-    assert flags[1]["title"] not in str(error.value)
+    rejections = []
+    result = review_grounded_flags(reviewer, flags, replay["documents"], "it", rejections=rejections)
+    # One doubtful draft never discards the verified flags of the whole deal.
+    assert [flag["source_document_id"] for flag in result] == [flags[0]["source_document_id"]]
+    assert result[0]["grounding_reviewed"] is True
+    assert len(rejections) == 1
+    rejection = rejections[0]
+    assert rejection["identity"] == "draft 1, document 241"
+    assert rejection["reason"].startswith("could not support a draft after correction: draft 1, document 241")
+    assert "Il rimedio non risulta esercitato." in rejection["reason"]
+    assert flags[1]["title"] not in rejection["reason"]
+    assert rejection["flag"]["title"] == flags[1]["title"]
     assert len(reviewer.prompts) == 3
+
+
+def test_every_draft_rejected_still_fails_closed(replay):
+    class RejectAll(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            response[0]["supported"] = False
+            return json.dumps(response)
+
+    reviewer = RejectAll()
+    with pytest.raises(LLMResponseError, match="rejected every draft.*draft 0, document 241.*draft 1, document 242"):
+        review_grounded_flags(reviewer, replay["flags"], replay["documents"], "it")
+    assert len(reviewer.prompts) == 4
+
+
+def test_a_draft_rejected_in_one_window_is_dropped_while_the_other_survives():
+    text = "First paragraph.\n" + ("Boilerplate.\n" * 18000) + "LAST SOURCE LIMITATION."
+
+    class WindowReviewer:
+        def complete(self, prompt, max_tokens=2048):
+            payload = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            source = payload["documents"][0]["text"]
+            reviews = []
+            for item in payload["items"]:
+                candidate = item["candidate"]
+                fields = {"title": candidate["title"], "issue": candidate["issue"],
+                          "risk": None, "recommendation": None}
+                if candidate["title"] == "Doubtful" and "LAST SOURCE LIMITATION." in source:
+                    reviews.append({"index": item["index"], "supported": False,
+                                    "support_reason": "Contradicted by the closing limitation.",
+                                    "fields": fields, "evidence": []})
+                    continue
+                reviews.append({"index": item["index"], "supported": True, "support_reason": None,
+                                "fields": fields, "evidence": [{"source_document_id": 1, "quote": source[:16],
+                                                                "fields": ["title", "issue"]}]})
+            return json.dumps(reviews)
+
+    rejections = []
+    flags = review_grounded_flags(
+        WindowReviewer(),
+        [{"title": "Review", "issue": "A source issue.", "source_document_id": 1},
+         {"title": "Doubtful", "issue": "A contradicted issue.", "source_document_id": 1}],
+        [{"document_id": 1, "text": text}], "en", rejections=rejections)
+    assert [flag["title"] for flag in flags] == ["Review"]
+    assert flags[0]["grounding_reviewed"] is True
+    assert [r["identity"] for r in rejections] == ["draft 1, document 1"]
+    assert "Contradicted by the closing limitation." in rejections[0]["reason"]
 
 
 def test_negative_review_schema_permits_missing_evidence_but_requires_explanation_field():
@@ -464,6 +520,55 @@ def test_persistence_records_verified_pages_and_corrected_prose(db, test_deal, r
     assert persisted[1].source_page == 1
     assert "non documentato" in persisted[1].title
     assert persisted[0].structured_payload_json["amount_eur"] == 250000
+
+
+def test_rejected_draft_becomes_an_open_question_and_verified_flags_replace_previous(db, test_deal, replay):
+    from app.models.document import Document, DocumentStatus
+    from app.models.open_question import OpenQuestion, Priority
+    from app.models.red_flag import RedFlag, Severity
+    from packages.agents.red_flag_aggregator import RedFlagAggregationAgent
+    test_deal.report_language = "it"
+    docs = replay["documents"]
+    flags = copy.deepcopy(replay["flags"])
+    for source, flag in zip(docs, flags):
+        document = Document(deal_id=test_deal.id, filename=source["filename"], file_path="/tmp/fixture",
+                            mime_type="application/pdf", file_size=100, status=DocumentStatus.processed,
+                            raw_text=source["text"], page_count=source["page_count"])
+        db.add(document)
+        db.flush()
+        flag["source_document_id"] = document.id
+    loan_document_id = flags[0]["source_document_id"]
+    db.add(RedFlag(deal_id=test_deal.id, title="Previous reviewed result", issue="Stale",
+                   category="liability", severity=Severity.high))
+    db.commit()
+
+    class RejectLoan(ReplayReviewer):
+        def complete(self, prompt, max_tokens=2048):
+            response = json.loads(super().complete(prompt, max_tokens))
+            if "GROUNDING REVIEW\n" in prompt:
+                data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+                if data["documents"][0]["document_id"] == loan_document_id:
+                    response[0].update(supported=False, evidence=[],
+                                       support_reason="Il rimborso non risulta richiesto.")
+            return json.dumps(response)
+
+    result = RedFlagAggregationAgent(RejectLoan(flags)).run(test_deal.id, db)
+    assert result["red_flags_count"] == 1
+    assert result["grounding_rejected"] == 1
+    persisted = db.query(RedFlag).filter_by(deal_id=test_deal.id).all()
+    assert [flag.title for flag in persisted] != ["Previous reviewed result"]
+    assert len(persisted) == 1
+    assert "non documentato" in persisted[0].title
+    questions = db.query(OpenQuestion).filter_by(deal_id=test_deal.id, priority=Priority.medium).all()
+    assert len(questions) == 1
+    question = questions[0]
+    assert question.agent_name == "red_flag_aggregation"
+    assert question.document_id == loan_document_id
+    assert question.question.startswith("Rilievo non pubblicato")
+    assert flags[0]["title"] in question.question
+    assert "Il rimborso non risulta richiesto." in question.question
+    # The dropped narrative itself is not republished through the question.
+    assert flags[0]["risk"] not in question.question
 
 
 def test_summary_review_repairs_epistemic_drift_against_reviewed_findings():
