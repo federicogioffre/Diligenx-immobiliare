@@ -276,6 +276,48 @@ def test_unrepairable_draft_is_dropped_and_reported_without_failing_the_others(r
     assert len(reviewer.prompts) == 3
 
 
+def test_a_truncated_review_response_rejects_only_the_draft_that_caused_it(replay):
+    """A reviewer that exhausts its output budget on one draft (e.g. by quoting a
+    ledger) must not fail the whole aggregation: the batch is split and only
+    the draft whose own review still fails is dropped, with the reason."""
+    quote = "Non e documentata una richiesta di rimborso anticipato gia inviata dalla banca."
+
+    class TruncatingOnLoan:
+        def __init__(self):
+            self.prompts = []
+
+        def complete(self, prompt, max_tokens=2048):
+            self.prompts.append(prompt)
+            payload = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            items = payload["items"]
+            if any("DSCR" in item["candidate"]["title"] for item in items):
+                raise LLMResponseError("AI response was truncated at the output token limit")
+            doc_id = payload["documents"][0]["document_id"]
+            return json.dumps([{
+                "index": item["index"], "supported": True, "support_reason": None,
+                "fields": {"title": "Nessuna richiesta di rimborso documentata",
+                           "issue": "Non è documentata una richiesta di rimborso anticipato.",
+                           "risk": None, "recommendation": None},
+                "evidence": [{"source_document_id": doc_id, "quote": quote, "fields": ["title", "issue"]}],
+            } for item in items])
+
+    reviewer = TruncatingOnLoan()
+    other = {"title": "Richiesta di rimborso", "issue": "Non è documentata una richiesta di rimborso anticipato.",
+             "source_document_id": 241, "category": "liability", "severity": "low"}
+    flags = [replay["flags"][0], other]
+    rejections = []
+    result = review_grounded_flags(reviewer, flags, replay["documents"], "it", rejections=rejections)
+    assert [flag["title"] for flag in result] == ["Nessuna richiesta di rimborso documentata"]
+    assert result[0]["grounding_reviewed"] is True
+    assert len(rejections) == 1
+    assert rejections[0]["identity"] == "draft 0, document 241"
+    assert rejections[0]["reason"].startswith("review request failed: ")
+    assert "truncated at the output token limit" in rejections[0]["reason"]
+    # One failed batch call, then one call per half: the loan draft fails again
+    # alone, the other draft is reviewed alone and kept.
+    assert len(reviewer.prompts) == 3
+
+
 def test_every_draft_rejected_still_fails_closed(replay):
     class RejectAll(ReplayReviewer):
         def complete(self, prompt, max_tokens=2048):
