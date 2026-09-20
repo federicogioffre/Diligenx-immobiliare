@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from collections import defaultdict
 from types import SimpleNamespace
 
@@ -147,8 +148,48 @@ def snapshot_documents(doc_map: dict, clause_findings=(), agent_findings=()) -> 
     ]
 
 
+_IGNORED_MARKS = str.maketrans("", "", "'\"\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u00ab\u00bb\u00ad")
+
+
 def _normalise(text: str) -> str:
+    """Whitespace-, case-, accent- and quote-insensitive form for verbatim checks.
+
+    OCR'd data rooms and model output disagree on accents (``è`` vs ``e'``),
+    curly quotes, soft hyphens and line-end hyphenation. None of those change
+    what a passage says, so none may fail a quotation that is otherwise the
+    contiguous text of the source.
+    """
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.translate(_IGNORED_MARKS)
+    text = re.sub(r"(?<=\w)-\s+(?=\w)", "", text)
     return " ".join(text.split()).casefold()
+
+
+_AMOUNT_OR_DATE = re.compile(r"\d{1,3}(?:[.\u00a0 ]\d{3})+(?:,\d{2})?|\d+,\d{2}|\d{2}/\d{2}/\d{4}")
+_PROPER_NAME = re.compile(
+    r"\b[A-Z\u00c0-\u00dd][A-Z\u00c0-\u00dd&.'-]{3,}(?:\s+[A-Z\u00c0-\u00dd][A-Z\u00c0-\u00dd&.'-]+)*\b"
+    r"|\b(?:[A-Z\u00c0-\u00dd][a-z\u00e0-\u00ff]+\s+)+[A-Z\u00c0-\u00dd][a-z\u00e0-\u00ff]+\b"
+)
+
+
+def _draft_locators(candidate: dict) -> list[str]:
+    """Names, amounts and dates a draft mentions: where its evidence must be.
+
+    A ledger runs to hundreds of pages; the passage a receivables finding
+    rests on is the few lines naming that customer and that balance. The
+    draft's own quotations are searched as well, but they are often not
+    verbatim, so these tokens locate the window when the quotation cannot.
+    """
+    parts = [candidate.get(field) for field in ("title", "issue", "risk")]
+    parts += [entry.get("quote") for entry in candidate.get("evidence", []) if isinstance(entry, dict)]
+    text = " ".join(part for part in parts if isinstance(part, str))
+    found = set(_AMOUNT_OR_DATE.findall(text))
+    for match in _PROPER_NAME.finditer(text):
+        name = match.group(0)
+        if any(len(word) >= 4 for word in name.split()):
+            found.add(name)
+    return sorted(token for token in found if len(token) >= 4)
 
 
 def _source_text(document: dict) -> str:
@@ -181,6 +222,15 @@ def _review_sources(documents: list[dict], candidates: list[dict]) -> list[dict]
             pattern = r"\s+".join(re.escape(word) for word in quote.split())
             for match in re.finditer(pattern, text, re.I):
                 spans.append((max(0, match.start() - 1000), min(len(text), match.end() + 1000)))
+        for candidate in candidates:
+            if candidate.get("source_document_id") not in (None, document["document_id"]):
+                continue
+            for locator in _draft_locators(candidate):
+                pattern = r"\s*".join(re.escape(word) for word in locator.split())
+                for hit, match in enumerate(re.finditer(pattern, text, re.I)):
+                    if hit >= 5:
+                        break
+                    spans.append((max(0, match.start() - 1500), min(len(text), match.end() + 1500)))
         for span in document.get("source_spans", []):
             start, end = span.get("start"), span.get("end")
             if type(start) is int and type(end) is int and 0 <= start < end <= len(text):
@@ -380,6 +430,13 @@ INPUT_JSON:
         if index in rejected:
             continue
         fields = review["fields"]
+        if review["supported"] is False and partial:
+            # One window cannot reject a draft: it may simply not hold the
+            # evidence. The draft stands as it is; coverage across every
+            # window decides at the end.
+            by_index[index] = {"fields": {name: candidates[index].get(name) for name in expected},
+                               "evidence": []}
+            continue
         if review["supported"] is False:
             defects.append({"draft_index": index, "reason": "unsupported_draft",
                             "support_reason": review.get("support_reason"),

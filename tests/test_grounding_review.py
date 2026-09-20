@@ -318,6 +318,81 @@ def test_a_truncated_review_response_rejects_only_the_draft_that_caused_it(repla
     assert len(reviewer.prompts) == 3
 
 
+def test_quotations_match_despite_accents_quotes_and_hyphenation():
+    source = "L\u2019obbligazione \u00e8 sca-\nduta il 31/12/2024 e il \u201cgarante\u201d non ha pagato."
+
+    class AsciiQuoter:
+        def complete(self, prompt, max_tokens=2048):
+            return json.dumps([{"index": 0, "supported": True, "support_reason": None,
+                                "fields": {"title": "Obbligazione scaduta", "issue": "L'obbligazione e scaduta.",
+                                           "risk": None, "recommendation": None},
+                                "evidence": [{"source_document_id": 1,
+                                              "quote": "L'obbligazione e scaduta il 31/12/2024 e il \"garante\" non ha pagato.",
+                                              "fields": ["title", "issue"]}]}])
+
+    rejections = []
+    result = review_grounded_flags(AsciiQuoter(), [{"title": "Scadenza", "issue": "Scaduta.", "source_document_id": 1}],
+                                   [{"document_id": 1, "text": source}], "it", rejections=rejections)
+    assert rejections == []
+    assert result[0]["grounding_reviewed"] is True
+    assert len(result[0]["evidence"]) == 1
+
+
+def test_a_window_without_the_evidence_cannot_reject_the_draft():
+    text = "First paragraph.\n" + ("Boilerplate.\n" * 18000) + "LAST SOURCE LIMITATION."
+    calls = []
+
+    class RejectsIrrelevantWindows:
+        def complete(self, prompt, max_tokens=2048):
+            payload = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            source = payload["documents"][0]["text"]
+            calls.append("validation_feedback" in payload)
+            fields = {"title": "Review", "issue": "A source issue.", "risk": None, "recommendation": None}
+            if "LAST SOURCE LIMITATION." not in source:
+                return json.dumps([{"index": 0, "supported": False, "fields": fields, "evidence": [],
+                                    "support_reason": "The available text does not contain the passage."}])
+            return json.dumps([{"index": 0, "supported": True, "support_reason": None, "fields": fields,
+                                "evidence": [{"source_document_id": 1, "quote": "LAST SOURCE LIMITATION.",
+                                              "fields": ["title", "issue"]}]}])
+
+    rejections = []
+    flags = review_grounded_flags(RejectsIrrelevantWindows(),
+                                  [{"title": "Review", "issue": "A source issue.", "source_document_id": 1}],
+                                  [{"document_id": 1, "text": text}], "en", rejections=rejections)
+    assert rejections == []
+    assert flags[0]["grounding_reviewed"] is True
+    assert flags[0]["evidence"][0]["quote"] == "LAST SOURCE LIMITATION."
+    # Every window is reviewed once; a negative verdict on an irrelevant
+    # window never spends the correction budget.
+    assert len(calls) > 1 and not any(calls)
+
+
+def test_ledger_windows_are_located_by_the_names_and_amounts_the_draft_mentions():
+    ledger_line = "AMCOR FLEXIBLES ARENZANO SRL 31/12/2020 saldo 3.883,00 INSOLUTO / RICHIAMO\n"
+    text = ("Boilerplate.\n" * 8000) + ledger_line + ("Boilerplate.\n" * 8000)
+    seen = []
+
+    class LedgerReviewer:
+        def complete(self, prompt, max_tokens=2048):
+            payload = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            source = payload["documents"][0]["text"]
+            seen.append(len(prompt))
+            assert "3.883,00" in source and "AMCOR FLEXIBLES" in source
+            return json.dumps([{"index": 0, "supported": True, "support_reason": None,
+                                "fields": {"title": "Credito Amcor Flexibles Arenzano Srl non incassato",
+                                           "issue": "Saldo di 3.883,00 con insoluto e richiamo.",
+                                           "risk": None, "recommendation": None},
+                                "evidence": [{"source_document_id": 1, "quote": "saldo 3.883,00 INSOLUTO / RICHIAMO",
+                                              "fields": ["title", "issue"]}]}])
+
+    draft = {"title": "Credito Amcor Flexibles Arenzano Srl non incassato",
+             "issue": "Saldo di 3.883,00 con insoluto e richiamo.", "source_document_id": 1}
+    flags = review_grounded_flags(LedgerReviewer(), [draft], [{"document_id": 1, "text": text}], "it")
+    assert flags[0]["grounding_reviewed"] is True
+    # One bounded request around the located lines, not a sweep of the ledger.
+    assert len(seen) == 1 and seen[0] < 20000
+
+
 def test_every_draft_rejected_still_fails_closed(replay):
     class RejectAll(ReplayReviewer):
         def complete(self, prompt, max_tokens=2048):
@@ -331,7 +406,7 @@ def test_every_draft_rejected_still_fails_closed(replay):
     assert len(reviewer.prompts) == 4
 
 
-def test_a_draft_rejected_in_one_window_is_dropped_while_the_other_survives():
+def test_a_draft_no_window_can_support_is_dropped_while_the_other_survives():
     text = "First paragraph.\n" + ("Boilerplate.\n" * 18000) + "LAST SOURCE LIMITATION."
 
     class WindowReviewer:
@@ -343,9 +418,10 @@ def test_a_draft_rejected_in_one_window_is_dropped_while_the_other_survives():
                 candidate = item["candidate"]
                 fields = {"title": candidate["title"], "issue": candidate["issue"],
                           "risk": None, "recommendation": None}
-                if candidate["title"] == "Doubtful" and "LAST SOURCE LIMITATION." in source:
+                if candidate["title"] == "Doubtful":
+                    # No window ever holds a passage for this draft.
                     reviews.append({"index": item["index"], "supported": False,
-                                    "support_reason": "Contradicted by the closing limitation.",
+                                    "support_reason": "Not in this window.",
                                     "fields": fields, "evidence": []})
                     continue
                 reviews.append({"index": item["index"], "supported": True, "support_reason": None,
@@ -357,12 +433,12 @@ def test_a_draft_rejected_in_one_window_is_dropped_while_the_other_survives():
     flags = review_grounded_flags(
         WindowReviewer(),
         [{"title": "Review", "issue": "A source issue.", "source_document_id": 1},
-         {"title": "Doubtful", "issue": "A contradicted issue.", "source_document_id": 1}],
+         {"title": "Doubtful", "issue": "An unsupported issue.", "source_document_id": 1}],
         [{"document_id": 1, "text": text}], "en", rejections=rejections)
     assert [flag["title"] for flag in flags] == ["Review"]
     assert flags[0]["grounding_reviewed"] is True
     assert [r["identity"] for r in rejections] == ["draft 1, document 1"]
-    assert "Contradicted by the closing limitation." in rejections[0]["reason"]
+    assert "without evidence" in rejections[0]["reason"]
 
 
 def test_negative_review_schema_permits_missing_evidence_but_requires_explanation_field():
