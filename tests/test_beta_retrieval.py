@@ -120,9 +120,10 @@ def test_qa_does_not_manufacture_citations(db, test_deal, monkeypatch, response)
         ChunkMatch(1, 10, "Potentially relevant text", 2, 0.9)
     ])
     provider = Mock()
-    provider.complete.return_value = response
+    provider.complete_json.return_value = response
     result = deal_qa_agent.answer_deal_question(test_deal.id, "Question", db,
                                                llm_provider=provider)
+    provider.complete_json.assert_called_once()
     assert result["sources"] == []
     assert "does not support a verifiable answer" in result["answer"]
     assert "Unsupported claim" not in result["answer"]
@@ -136,11 +137,12 @@ def test_qa_keeps_only_valid_model_citations(db, test_deal, monkeypatch):
         ChunkMatch(2, 11, "Unrelated clause", 3, 0.8),
     ])
     provider = Mock()
-    provider.complete.return_value = json.dumps({
+    provider.complete_json.return_value = json.dumps({
         "answer": "Thirty days notice", "cited_chunks": [0, 0, True, 99]
     })
     result = deal_qa_agent.answer_deal_question(test_deal.id, "Notice?", db,
                                                llm_provider=provider)
+    provider.complete_json.assert_called_once()
     assert result == {"answer": "Thirty days notice", "sources": [
         {"document_id": 10, "page_number": 2, "excerpt": "Thirty days notice"}
     ]}

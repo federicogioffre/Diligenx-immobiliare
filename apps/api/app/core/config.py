@@ -61,7 +61,7 @@ class Settings(BaseSettings):
 
     # AI Analysis
     ANTHROPIC_API_KEY: str = ""
-    ANALYSIS_MODEL: str = "claude-sonnet-5"
+    ANALYSIS_MODEL: str = "gpt-5.6-luna"
     # Max concurrent LLM calls within a pipeline stage (per-document fan-out).
     # The analysis pipeline parallelises independent per-document calls with a
     # bounded thread pool of this size; 1 restores fully sequential behaviour.

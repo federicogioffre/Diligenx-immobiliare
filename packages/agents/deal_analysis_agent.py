@@ -3,7 +3,7 @@
 Classifies documents, extracts contract clauses, and detects red flags.
 
 Design:
-- ``LLMProvider`` ABC makes the Claude client swappable in tests.
+- ``LLMProvider`` ABC makes the model client swappable in tests.
 - ``FakeLLMProvider`` returns deterministic JSON stubs — no network calls.
 - ``DealAnalysisAgent.analyze_deal()`` is idempotent: it clears previous
   ClauseFinding / RedFlag rows before writing new ones.
@@ -17,6 +17,7 @@ import unicodedata
 from abc import ABC, abstractmethod
 
 from sqlalchemy.orm import Session
+from packages.llm_config import DEFAULT_ANALYSIS_MODEL, analysis_api_key_name
 
 logger = logging.getLogger(__name__)
 
@@ -317,6 +318,113 @@ class AnthropicLLMProvider(LLMProvider):
             return json.dumps(calls[0].input["result"], ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError) as exc:
             raise LLMFormatError("AI provider returned invalid structured data") from exc
+
+
+class OpenAILLMProvider(LLMProvider):
+    """OpenAI Responses with one explicit data submission and no fallback model."""
+
+    def __init__(self, api_key: str, model: str = DEFAULT_ANALYSIS_MODEL):
+        from openai import OpenAI
+        self._client = OpenAI(api_key=api_key)
+        self._model = model
+
+    def _request(self, prompt: str, max_tokens: int, **options):
+        from time import monotonic
+        from packages.agents.provider_limits import llm_slot
+        started = monotonic()
+        with llm_slot():
+            response = self._client.responses.create(
+                model=self._model, input=prompt, max_output_tokens=max_tokens,
+                # Match the previous non-thinking workload: the existing stage
+                # limits remain answer budgets rather than hidden reasoning.
+                reasoning={"effort": "none"}, store=False, truncation="disabled",
+                **options,
+            )
+        usage = getattr(response, "usage", None)
+        logger.info(
+            "llm_usage provider=openai model=%s seconds=%.3f input_tokens=%s output_tokens=%s "
+            "cache_read_tokens=%s reasoning_tokens=%s status=%s",
+            self._model, monotonic() - started,
+            getattr(usage, "input_tokens", None), getattr(usage, "output_tokens", None),
+            getattr(getattr(usage, "input_tokens_details", None), "cached_tokens", None),
+            getattr(getattr(usage, "output_tokens_details", None), "reasoning_tokens", None),
+            response.status,
+        )
+        if any(getattr(part, "type", None) == "refusal"
+               for item in response.output for part in getattr(item, "content", [])):
+            raise LLMResponseError("AI provider refused the analysis request")
+        if response.status != "completed" or getattr(response, "error", None):
+            reason = getattr(getattr(response, "incomplete_details", None), "reason", None)
+            if reason == "max_output_tokens":
+                raise LLMResponseError("AI response was truncated at the output token limit")
+            raise LLMResponseError(f"AI response did not complete (status={response.status})")
+        return response
+
+    def complete(self, prompt: str, max_tokens: int = 3072) -> str:
+        response = self._request(prompt, max_tokens)
+        text = response.output_text
+        if not isinstance(text, str) or not text.strip():
+            raise LLMResponseError("AI response contained no text")
+        return text
+
+    def complete_json(
+        self, prompt: str, max_tokens: int = 3072, *, response_type: str = "array",
+        item_schema: dict | None = None,
+    ) -> str:
+        if response_type not in {"array", "object"}:
+            raise ValueError("Unsupported JSON response type")
+        schema = {"type": response_type}
+        if response_type == "array":
+            schema["items"] = item_schema if item_schema is not None else {"type": "object"}
+        elif item_schema is not None:
+            raise ValueError("An item schema requires an array response")
+        response = self._request(
+            prompt, max_tokens,
+            tools=[{
+                "type": "function", "name": "submit_analysis",
+                # Generic specialist records have prompt-defined fields. Do not
+                # let Responses auto-normalize those open objects into empty ones.
+                "strict": item_schema is not None,
+                "description": (
+                    "Submit the complete analysis requested in the user prompt. "
+                    "Put the requested JSON value in result, preserving all records, "
+                    "fields, source evidence, qualifications and requested language. "
+                    "An empty array is valid only when no items were found. "
+                    "Do not put analysis data in assistant text or call twice."
+                ),
+                "parameters": {"type": "object", "properties": {"result": schema},
+                               "required": ["result"], "additionalProperties": False},
+            }],
+            tool_choice={"type": "function", "name": "submit_analysis"},
+            parallel_tool_calls=False,
+        )
+        calls = [item for item in response.output if getattr(item, "type", None) == "function_call"]
+        if (len(calls) != 1 or calls[0].name != "submit_analysis"
+                or calls[0].status != "completed"):
+            raise LLMFormatError("AI provider did not return one complete structured analysis")
+        try:
+            def unique_object(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("Duplicate JSON field")
+                    result[key] = value
+                return result
+
+            envelope = json.loads(calls[0].arguments, object_pairs_hook=unique_object)
+            if not isinstance(envelope, dict) or set(envelope) != {"result"}:
+                raise ValueError("Invalid result envelope")
+            expected = list if response_type == "array" else dict
+            if not isinstance(envelope["result"], expected):
+                raise ValueError("Invalid result type")
+            return json.dumps(envelope["result"], ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise LLMFormatError("AI provider returned invalid structured data") from exc
+
+
+def create_llm_provider(api_key: str, model: str = DEFAULT_ANALYSIS_MODEL) -> LLMProvider:
+    provider_class = OpenAILLMProvider if analysis_api_key_name(model) == "OPENAI_API_KEY" else AnthropicLLMProvider
+    return provider_class(api_key=api_key, model=model)
 
 
 class FakeLLMProvider(LLMProvider):
@@ -706,14 +814,7 @@ _llm_provider: LLMProvider | None = None
 
 
 def get_llm_provider() -> LLMProvider:
-    """Return the configured LLM provider (auto-detects API key).
-
-    Reads ``ANTHROPIC_API_KEY`` from the app ``Settings`` object (which
-    loads from ``.env`` via pydantic-settings) so the key is found even
-    when it is not present in ``os.environ`` at process start.
-
-    Falls back to ``FakeLLMProvider`` only when the key is genuinely absent.
-    """
+    """Select by model, never by whichever vendor key happens to be present."""
     global _llm_provider
     if _llm_provider is not None:
         from app.core.config import settings
@@ -721,30 +822,22 @@ def get_llm_provider() -> LLMProvider:
             raise RuntimeError("BETA_MODE cannot use fake LLM analysis")
         return _llm_provider
 
-    # Prefer the pydantic-settings value (populated from .env) over the raw
-    # environment so the key is always found regardless of launch method.
+    from app.core.config import settings
     import os
-    try:
-        from app.core.config import settings as _settings
-        api_key = _settings.ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY", "")
-    except Exception:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-
+    model = settings.ANALYSIS_MODEL or DEFAULT_ANALYSIS_MODEL
+    key_name = analysis_api_key_name(model)
+    api_key = getattr(settings, key_name) or os.environ.get(key_name, "")
     if api_key:
-        model = "claude-sonnet-5"
-        try:
-            from app.core.config import settings as _settings
-            model = _settings.ANALYSIS_MODEL or model
-        except Exception:
-            pass
-        logger.info("Using AnthropicLLMProvider (%s).", model)
-        _llm_provider = AnthropicLLMProvider(api_key=api_key, model=model)
+        _llm_provider = create_llm_provider(api_key, model)
+        logger.info("Using %s (%s).", type(_llm_provider).__name__, model)
     else:
-        from app.core.config import settings
         if settings.BETA_MODE:
             raise RuntimeError("BETA_MODE cannot use fake LLM analysis")
+        if any(getattr(settings, name) or os.environ.get(name, "")
+               for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY")):
+            raise RuntimeError(f"{key_name} is required for ANALYSIS_MODEL={model}")
         logger.warning(
-            "ANTHROPIC_API_KEY not set — using FakeLLMProvider. "
+            "No provider keys set — using FakeLLMProvider. "
             "Analysis results will be deterministic stubs."
         )
         _llm_provider = FakeLLMProvider()

@@ -10,8 +10,9 @@ services:
     environment:
       - DATABASE_URL=${DATABASE_URL:-sqlite:///./diligenx.db}
       - SECRET_KEY=${SECRET_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANALYSIS_MODEL=${ANALYSIS_MODEL:-gpt-5.6-luna}
       - ALLOWED_ORIGINS=["http://localhost:3000"]
       - S3_BUCKET=${S3_BUCKET}
       - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}

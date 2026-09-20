@@ -31,7 +31,7 @@ ignorato da Git con queste variabili, valorizzate dal secret manager:
 BETA_DB_PASSWORD=<password casuale URL-safe del ruolo applicativo>
 BETA_DB_ADMIN_PASSWORD=<password casuale URL-safe del proprietario>
 SECRET_KEY=<segreto casuale di almeno 32 caratteri>
-ANTHROPIC_API_KEY=<chiave staging>
+ANALYSIS_MODEL=gpt-5.6-luna
 OPENAI_API_KEY=<chiave staging>
 S3_BUCKET=<bucket staging>
 S3_ENDPOINT_URL=<endpoint R2 oppure vuoto per AWS>
@@ -47,6 +47,11 @@ SENTRY_DSN=<DSN opzionale del progetto staging>
 docker compose -f docker-compose.yml -f docker-compose.beta.yml config --quiet
 docker compose -f docker-compose.yml -f docker-compose.beta.yml up --build -d
 ```
+
+API e worker usano GPT-5.6 Luna per analisi e Q&A, con la stessa configurazione.
+`ANTHROPIC_API_KEY` serve solo se si imposta esplicitamente un modello `claude-*`;
+la chiave OpenAI resta necessaria per gli embedding. Non esiste fallback automatico
+a un altro modello quando la chiave selezionata manca.
 
 Il Compose avvia PostgreSQL con pgvector, crea il ruolo applicativo, applica le
 migrazioni una sola volta tramite il servizio `migrate`, poi avvia API, worker

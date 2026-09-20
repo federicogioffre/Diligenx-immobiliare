@@ -18,7 +18,7 @@ def test_valid_beta_configuration(valid_beta):
 
 
 @pytest.mark.parametrize("name,value", [
-    ("REDIS_URL", ""), ("S3_BUCKET", ""), ("ANTHROPIC_API_KEY", ""),
+    ("REDIS_URL", ""), ("S3_BUCKET", ""),
     ("OPENAI_API_KEY", ""), ("DEBUG", True), ("AUTH_COOKIE_SECURE", False),
     ("DATABASE_URL", "sqlite:///test.db"), ("SECRET_KEY", "short"),
     ("WORKER_MAX_JOBS", 0),
@@ -38,3 +38,16 @@ def test_beta_cannot_reuse_cached_fake_providers(valid_beta, monkeypatch):
         llm.get_llm_provider()
     with pytest.raises(RuntimeError, match="fake"):
         embeddings.get_embedding_provider()
+
+
+def test_openai_beta_does_not_require_an_anthropic_key(valid_beta, monkeypatch):
+    monkeypatch.setattr(settings, "ANALYSIS_MODEL", "gpt-5.6-luna")
+    monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "")
+    validate_beta_configuration()
+
+
+def test_claude_beta_requires_its_selected_provider_key(valid_beta, monkeypatch):
+    monkeypatch.setattr(settings, "ANALYSIS_MODEL", "claude-sonnet-5")
+    monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "")
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        validate_beta_configuration()

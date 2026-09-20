@@ -1,6 +1,6 @@
 # Diligenx
 
-AI-powered deal intelligence platform. Analyze, score, and track deals using Claude AI.
+AI-powered deal intelligence platform. Analyze, score, and track deals using OpenAI GPT-5.6 Luna.
 
 ## Stack
 
@@ -8,7 +8,7 @@ AI-powered deal intelligence platform. Analyze, score, and track deals using Cla
 |-------|------|
 | Backend | FastAPI + SQLAlchemy + Pydantic v2 |
 | Frontend | Next.js 15 (App Router) |
-| AI | Anthropic Claude (claude-sonnet-5) |
+| AI | OpenAI GPT-5.6 Luna (gpt-5.6-luna) |
 | Database | SQLite (dev) / PostgreSQL (prod) |
 | Containers | Docker + docker-compose |
 
@@ -45,11 +45,19 @@ docker-compose up --build
 
 ## Analysis model
 
-The default model is `claude-sonnet-5`. Sonnet 5 calls explicitly disable
-thinking so the output budget remains available for extraction and report text.
-Answer limits include additional headroom for its tokenizer; actual usage is
-recorded in the `llm_usage` logs. Existing `ANALYSIS_MODEL` environment overrides
-still take precedence: update both the API and worker environments if set.
+The default model is `gpt-5.6-luna`, used for every analysis stage, source review,
+report generation and document Q&A. OpenAI Responses calls use `reasoning.effort=none`
+so existing limits remain answer budgets, `store=false`, and no automatic input
+truncation. Structured results use one forced function call; source reviews also
+enforce their strict schema. Refusals and incomplete results fail before publication.
+Token usage (including cached input and reasoning) is recorded in `llm_usage` logs.
+
+Set `OPENAI_API_KEY` on both API and worker. Existing `ANALYSIS_MODEL` overrides
+take precedence and must be updated on both services. An explicitly configured
+`claude-*` model still uses Anthropic and requires `ANTHROPIC_API_KEY`; a missing
+selected-provider key never triggers a switch to the other provider. Development
+without either key may use deterministic test data; beta deployments cannot.
+Embeddings continue using `text-embedding-3-small` and their existing dimensions.
 
 ## Project Structure
 
@@ -70,8 +78,9 @@ tests/          → pytest test suite
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_API_KEY` | Claude API key |
-| `ANALYSIS_MODEL` | Claude model, default `claude-sonnet-5` |
+| `OPENAI_API_KEY` | OpenAI API key for analysis and embeddings |
+| `ANTHROPIC_API_KEY` | Optional key for explicitly selected Claude models |
+| `ANALYSIS_MODEL` | Analysis and Q&A model, default `gpt-5.6-luna` |
 | `SECRET_KEY` | JWT signing key |
 | `DATABASE_URL` | DB connection string |
 | `ALLOWED_ORIGINS` | CORS origins (JSON array) |
