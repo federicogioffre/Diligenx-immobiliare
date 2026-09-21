@@ -1,6 +1,8 @@
 """Review protocol, stale analysis and preservation of published reports."""
 import json
 
+from packages.agents.grounding_review import review_payload
+
 import pytest
 
 from app.models.red_flag import RedFlag, Severity
@@ -30,7 +32,7 @@ class SummaryReviewer(FakeLLMProvider):
         # Neither generation nor review should hold an idle DB connection.
         assert not self.db.in_transaction()
         if 'GROUNDING REVIEW\n' in prompt:
-            data = json.loads(prompt.rsplit('INPUT_JSON:\n', 1)[1])
+            data = review_payload(prompt)
             self.review_payload = data
             context = json.loads(data['documents'][0]['text'])
             assert context['documents_reviewed'] == 1

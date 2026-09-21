@@ -505,7 +505,8 @@ class FakeLLMProvider(LLMProvider):
         if "GROUNDING REVIEW\n" in prompt:
             # Deterministic protocol stub only. Tests for unsupported prose use
             # explicit adversarial review responses instead of this provider.
-            payload = json.loads(prompt.rsplit("INPUT_JSON:\n", 1)[1])
+            from packages.agents.grounding_review import review_payload
+            payload = review_payload(prompt)
             reviewed = []
             for item in payload["items"]:
                 candidate = item["candidate"]

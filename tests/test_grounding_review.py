@@ -10,7 +10,9 @@ from pathlib import Path
 import pytest
 
 from packages.agents.deal_analysis_agent import FakeLLMProvider, LLMResponseError, PromptSegment, prompt_text
-from packages.agents.grounding_review import review_grounded_flags, review_grounded_text
+from packages.agents.grounding_review import (
+    review_grounded_flags, review_grounded_text, review_payload,
+)
 
 
 @pytest.fixture
@@ -28,7 +30,7 @@ class ReplayReviewer:
         if "GROUNDING REVIEW\n" not in prompt:
             return json.dumps(self.flags)
         self.prompts.append(prompt)
-        payload = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+        payload = review_payload(prompt)
         document = payload["documents"][0]
         draft = payload["items"][0]["candidate"]
         doc_id = document["document_id"]
@@ -144,7 +146,7 @@ def test_citation_correction_receives_feedback_and_must_pass_verbatim_checks(rep
                     {"source_document_id": 999} if wrong_document else {"quote": "DSCR ... 0,85"}
                 )
             else:
-                data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+                data = review_payload(prompt)
                 defect = data["validation_feedback"]["defects"][0]
                 assert defect["draft_index"] == 0
                 assert defect["reason"]
@@ -195,7 +197,7 @@ def test_unsupported_draft_gets_one_informed_repair_without_losing_source_condit
     class RepairableDraft(ReplayReviewer):
         def complete(self, prompt, max_tokens=2048):
             response = json.loads(super().complete(prompt, max_tokens))
-            data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            data = review_payload(prompt)
             if len(self.prompts) == 1:
                 response[0].update(supported=False, support_reason="Il rimborso non è automaticamente dovuto.",
                                    evidence=[])
@@ -254,7 +256,7 @@ def test_unrepairable_draft_is_dropped_and_reported_without_failing_the_others(r
     class RejectLoan(ReplayReviewer):
         def complete(self, prompt, max_tokens=2048):
             response = json.loads(super().complete(prompt, max_tokens))
-            data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            data = review_payload(prompt)
             if data["documents"][0]["document_id"] == 241:
                 response[0].update(supported=False, support_reason="Il rimedio non risulta esercitato.")
             return json.dumps(response)
@@ -288,7 +290,7 @@ def test_a_truncated_review_response_rejects_only_the_draft_that_caused_it(repla
 
         def complete(self, prompt, max_tokens=2048):
             self.prompts.append(prompt)
-            payload = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            payload = review_payload(prompt)
             items = payload["items"]
             if any("DSCR" in item["candidate"]["title"] for item in items):
                 raise LLMResponseError("AI response was truncated at the output token limit")
@@ -344,7 +346,7 @@ def test_a_window_without_the_evidence_cannot_reject_the_draft():
 
     class RejectsIrrelevantWindows:
         def complete(self, prompt, max_tokens=2048):
-            payload = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            payload = review_payload(prompt)
             source = payload["documents"][0]["text"]
             calls.append("validation_feedback" in payload)
             fields = {"title": "Review", "issue": "A source issue.", "risk": None, "recommendation": None}
@@ -374,7 +376,7 @@ def test_ledger_windows_are_located_by_the_names_and_amounts_the_draft_mentions(
 
     class LedgerReviewer:
         def complete(self, prompt, max_tokens=2048):
-            payload = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            payload = review_payload(prompt)
             source = payload["documents"][0]["text"]
             seen.append(len(prompt))
             assert "3.883,00" in source and "AMCOR FLEXIBLES" in source
@@ -411,7 +413,7 @@ def test_a_draft_no_window_can_support_is_dropped_while_the_other_survives():
 
     class WindowReviewer:
         def complete(self, prompt, max_tokens=2048):
-            payload = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            payload = review_payload(prompt)
             source = payload["documents"][0]["text"]
             reviews = []
             for item in payload["items"]:
@@ -496,7 +498,7 @@ def test_missing_field_links_receive_precise_feedback_and_complete_verification(
                 for entry in response[0]["evidence"]:
                     entry["fields"] = ["title"]
             else:
-                data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+                data = review_payload(prompt)
                 assert data["validation_feedback"]["defects"][0]["missing_fields"] == ["issue", "risk"]
             return json.dumps(response)
 
@@ -530,7 +532,7 @@ def test_empty_evidence_can_be_completed_only_by_a_verified_corrective_review(re
             if len(self.prompts) == 1:
                 response[0]["evidence"] = []
             else:
-                data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+                data = review_payload(prompt)
                 assert data["validation_feedback"]["defects"] == [{
                     "draft_index": 0, "missing_fields": ["issue", "risk", "title"],
                     "reason": "factual fields have no linked source quotations",
@@ -556,7 +558,7 @@ def test_all_citation_and_coverage_defects_reach_the_single_corrective_review(re
                 response[0]["evidence"][1]["source_document_id"] = 999
                 response[1]["evidence"] = []
             else:
-                data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+                data = review_payload(prompt)
                 defects = data["validation_feedback"]["defects"]
                 assert len(defects) == 3
                 assert [(d["draft_index"], d.get("evidence_index")) for d in defects] == [
@@ -664,7 +666,7 @@ def test_rejected_draft_becomes_an_open_question_and_verified_flags_replace_prev
         def complete(self, prompt, max_tokens=2048):
             response = json.loads(super().complete(prompt, max_tokens))
             if "GROUNDING REVIEW\n" in prompt:
-                data = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+                data = review_payload(prompt)
                 if data["documents"][0]["document_id"] == loan_document_id:
                     response[0].update(supported=False, evidence=[],
                                        support_reason="Il rimborso non risulta richiesto.")
@@ -695,7 +697,7 @@ def test_summary_review_repairs_epistemic_drift_against_reviewed_findings():
 
     class SummaryReviewer:
         def complete(self, prompt, max_tokens=2048):
-            payload = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            payload = review_payload(prompt)
             assert payload["kind"] == "text"
             assert payload["items"][0]["candidate"]["text"] == original
             assert payload["documents"][0]["text"] == source
@@ -724,7 +726,7 @@ def test_large_source_without_anchors_is_fully_covered_in_bounded_windows():
 
     class WindowReviewer:
         def complete(self, prompt, max_tokens=2048):
-            payload = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            payload = review_payload(prompt)
             source = payload["documents"][0]["text"]
             seen.append(source)
             return json.dumps([{"index": 0, "supported": True, "fields": {
@@ -754,7 +756,7 @@ def test_nonempty_summary_without_evidence_fails_closed():
 def test_secondary_sources_are_visible_to_the_reviewer():
     class CrossFileReviewer:
         def complete(self, prompt, max_tokens=2048):
-            payload = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            payload = review_payload(prompt)
             assert {source["document_id"] for source in payload["documents"]} == {1, 2}
             return json.dumps([{"index": 0, "supported": True, "fields": {
                 "title": "Notice disputed", "issue": "Notice was issued but then withdrawn.",
@@ -772,7 +774,7 @@ def test_secondary_sources_are_visible_to_the_reviewer():
 def test_discontinuous_source_windows_cannot_manufacture_a_verbatim_quote():
     class WindowQuote:
         def complete(self, prompt, max_tokens=2048):
-            payload = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])
+            payload = review_payload(prompt)
             source = payload["documents"][0]["text"]
             assert "[... source interval ...]" in source
             return json.dumps([{"index": 0, "supported": True, "fields": {
@@ -819,7 +821,7 @@ def test_document_groups_are_reviewed_in_parallel_and_reported_in_input_order(re
 
         def complete(self, prompt, max_tokens=2048):
             if "GROUNDING REVIEW\n" in prompt:
-                doc_id = json.loads(prompt.split("INPUT_JSON:\n", 1)[1])["documents"][0]["document_id"]
+                doc_id = review_payload(prompt)["documents"][0]["document_id"]
                 with self.lock:
                     first = doc_id not in self.first_seen
                     self.first_seen.add(doc_id)
@@ -875,11 +877,72 @@ def test_review_prompt_is_segmented_so_the_sources_are_a_reusable_prefix(replay)
     for segments in (first, correction):
         assert [segment.cache for segment in segments] == [True, True, False]
         assert segments[0].text.startswith("GROUNDING REVIEW\n")
-        payload = json.loads(prompt_text(segments).split("INPUT_JSON:\n", 1)[1])
+        payload = review_payload(prompt_text(segments))
         assert list(payload)[:3] == ["kind", "language", "documents"]
         assert "items" in payload
-    # The source head is reused by the correction pass; only the tail changes.
+    # Both cached blocks are reused by the correction pass: the corrective
+    # instruction rides in the unmarked tail, behind them, so the source block
+    # is read back instead of being written to the cache a second time.
+    assert first[0] == correction[0]
     assert first[1] == correction[1]
-    assert first[0].text != correction[0].text  # the correction instruction differs
     assert first[2] != correction[2]
-    assert "validation_feedback" in json.loads(prompt_text(correction).split("INPUT_JSON:\n", 1)[1])
+    assert "CORRECTION PASS" not in first[2].text
+    assert correction[2].text.rstrip().endswith("to obtain a positive verdict.")
+    assert "validation_feedback" in review_payload(prompt_text(correction))
+
+
+def test_batches_of_one_document_run_in_order_while_documents_run_in_parallel():
+    """Two batches of the same source must not be in flight at once.
+
+    They share their whole source block, so running them in order lets the
+    second read what the first put in the provider's prompt cache. Run
+    together they both miss, and a long document is written to the cache once
+    per batch at the write premium. Different documents still overlap.
+    """
+    import threading
+
+    documents = [{"document_id": 1, "text": "ALPHA CLAUSE."}, {"document_id": 2, "text": "BETA CLAUSE."}]
+    quotes = {1: "ALPHA CLAUSE.", 2: "BETA CLAUSE."}
+
+    class Recorder:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.in_flight = set()
+            self.overlapped = []
+            self.started = set()
+            self.barrier = threading.Barrier(2, timeout=5)
+
+        def complete(self, prompt, max_tokens=2048):
+            payload = review_payload(prompt)
+            doc_id = payload["documents"][0]["document_id"]
+            with self.lock:
+                if doc_id in self.in_flight:
+                    self.overlapped.append(doc_id)
+                self.in_flight.add(doc_id)
+                first = doc_id not in self.started
+                self.started.add(doc_id)
+            if first:
+                self.barrier.wait()  # BrokenBarrierError if documents were serialised
+            try:
+                return json.dumps([
+                    {"index": item["index"], "supported": True, "support_reason": None,
+                     "fields": {"title": "Rilievo", "issue": "Il documento riporta la clausola.",
+                                "risk": None, "recommendation": None},
+                     "evidence": [{"source_document_id": doc_id, "quote": quotes[doc_id],
+                                   "fields": ["title", "issue"]}]}
+                    for item in payload["items"]
+                ])
+            finally:
+                with self.lock:
+                    self.in_flight.discard(doc_id)
+
+    flags = [{"title": "Rilievo", "issue": "Il documento riporta la clausola.", "source_document_id": 1}
+             for _ in range(9)]
+    flags.append({"title": "Rilievo", "issue": "Il documento riporta la clausola.", "source_document_id": 2})
+
+    reviewer = Recorder()
+    result = review_grounded_flags(reviewer, flags, documents, "it")
+    assert len(result) == 10 and all(flag["grounding_reviewed"] for flag in result)
+    # Nine drafts on document 1 exceed the batch size, so it is reviewed twice.
+    assert reviewer.overlapped == []
+    assert reviewer.started == {1, 2}
