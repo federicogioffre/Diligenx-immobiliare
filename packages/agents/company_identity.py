@@ -37,8 +37,73 @@ def normalize_company_name(value: str | None) -> str:
     return " ".join(name.split())
 
 
+_PUNCTUATION = re.compile(r"[^\w\s]+", re.UNICODE)
+
+
 def _value_key(value: str) -> str:
-    return " ".join(value.casefold().split())
+    """Group renderings of the same value, keeping different values apart.
+
+    Accents, apostrophes, case and punctuation are formatting, and a data room
+    disagrees with itself on all of them: `societa' a responsabilita' limitata`
+    and `Società a responsabilità limitata` are one legal form, not two. Digits
+    and words survive untouched, so 20812 and 20051 stay different addresses.
+    """
+    folded = unicodedata.normalize("NFKD", value.casefold())
+    folded = "".join(char for char in folded if not unicodedata.combining(char))
+    return " ".join(_PUNCTUATION.sub(" ", folded).split())
+
+
+#: How far a document can be trusted for the identity table, most authoritative
+#: first. A due-diligence introduction states what the registry extract says and
+#: footnotes the rest; a tax return is the last place to read a registered
+#: office from. Unrecognised filenames fall to the last bucket.
+_SOURCE_RANKS = (
+    (re.compile(r"visur", re.I), 0),
+    (re.compile(r"statut|atto\s*costitutiv|costituzion", re.I), 1),
+    (re.compile(r"libro\s*soci|decision[ei]\s*soci|patto|quot", re.I), 2),
+    (re.compile(r"verbal|consiglio|assemble|cda", re.I), 3),
+    (re.compile(r"bilanc|nota\s*integrativ", re.I), 4),
+)
+_UNRANKED_SOURCE = len(_SOURCE_RANKS) + 1
+_DATE_PATTERNS = (
+    re.compile(r"(?P<y>(?:19|20)\d{2})[.\-_/ ](?P<m>\d{1,2})[.\-_/ ](?P<d>\d{1,2})"),
+    re.compile(r"(?P<d>\d{1,2})[.\-_/ ](?P<m>\d{1,2})[.\-_/ ](?P<y>(?:19|20)\d{2})"),
+)
+_YEAR_PATTERN = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+
+
+def _source_rank(filename: str | None) -> int:
+    if not filename:
+        return _UNRANKED_SOURCE
+    for pattern, rank in _SOURCE_RANKS:
+        if pattern.search(filename):
+            return rank
+    return _UNRANKED_SOURCE
+
+
+def _source_date(filename: str | None) -> tuple[int, int, int]:
+    """The document's own date as written in its name, or the zero date.
+
+    Upload order says nothing about which corporate fact is current, and the
+    profile carries no document date, so the filename is the only signal
+    available without re-reading every document.
+    """
+    if not filename:
+        return (0, 0, 0)
+    for pattern in _DATE_PATTERNS:
+        for match in pattern.finditer(filename):
+            year, month, day = (int(match.group(name)) for name in ("y", "m", "d"))
+            if 1 <= month <= 12 and 1 <= day <= 31:
+                return (year, month, day)
+    years = [int(value) for value in _YEAR_PATTERN.findall(filename)]
+    return (max(years), 0, 0) if years else (0, 0, 0)
+
+
+def _authority(profile) -> tuple:
+    """Sort key: the most authoritative source first, then the most recent."""
+    filename = _source_filename(profile)
+    year, month, day = _source_date(filename)
+    return (_source_rank(filename), -year, -month, -day)
 
 
 def _profile_order(profile) -> tuple:
@@ -66,9 +131,12 @@ def consolidate_company_profiles(
 ) -> list[SimpleNamespace]:
     """Return one view per matching target, in confirmed-target order.
 
-    Non-empty disagreements are retained in the field and named in
-    ``conflicting_fields``. Source rows and their individual values are never
-    replaced by this view. Missing scope returns an empty list.
+    Each field carries a single value, taken from the most authoritative and
+    most recent source that states it (see ``_authority``). Every distinct
+    value survives in ``field_sources`` with its documents, and a field whose
+    sources disagree is named in ``conflicting_fields``, so the report can
+    state one figure and still show what else the data room says. Source rows
+    are never mutated. Missing scope returns an empty list.
     """
     if not target_company_names or isinstance(target_company_names, (str, bytes)):
         return []
@@ -99,35 +167,45 @@ def consolidate_company_profiles(
         field_sources = {}
         for field in PROFILE_FIELDS:
             alternatives = {}
-            for profile in members:
+            standing = {}
+            for position, profile in enumerate(members):
                 raw = getattr(profile, field, None)
-                if raw is not None and str(raw).strip():
-                    evidence = alternatives.setdefault(_value_key(str(raw)), {
-                        "value": str(raw).strip(), "source_document_ids": [],
-                        "source_filenames": [], "profile_ids": [],
-                    })
-                    source_id = getattr(profile, "source_document_id", None)
-                    profile_id = getattr(profile, "id", None)
-                    filename = _source_filename(profile)
-                    for attribute, item in (("source_document_ids", source_id), ("profile_ids", profile_id)):
-                        if isinstance(item, int) and not isinstance(item, bool) and item not in evidence[attribute]:
-                            evidence[attribute].append(item)
-                    if filename and filename not in evidence["source_filenames"]:
-                        evidence["source_filenames"].append(filename)
+                if raw is None or not str(raw).strip():
+                    continue
+                key_of_value = _value_key(str(raw))
+                rank = (_authority(profile), position)
+                evidence = alternatives.setdefault(key_of_value, {
+                    "value": str(raw).strip(), "source_document_ids": [],
+                    "source_filenames": [], "profile_ids": [],
+                })
+                # Renderings that differ only in accents, case or punctuation
+                # are one value, so the group is shown as its best source
+                # spells it: the registry extract, not whichever verbale
+                # happened to be read first.
+                if rank < standing.get(key_of_value, rank):
+                    evidence["value"] = str(raw).strip()
+                standing[key_of_value] = min(standing.get(key_of_value, rank), rank)
+                source_id = getattr(profile, "source_document_id", None)
+                profile_id = getattr(profile, "id", None)
+                filename = _source_filename(profile)
+                for attribute, item in (("source_document_ids", source_id), ("profile_ids", profile_id)):
+                    if isinstance(item, int) and not isinstance(item, bool) and item not in evidence[attribute]:
+                        evidence[attribute].append(item)
+                if filename and filename not in evidence["source_filenames"]:
+                    evidence["source_filenames"].append(filename)
             for evidence in alternatives.values():
                 evidence["source_document_ids"].sort()
                 evidence["profile_ids"].sort()
             field_sources[field] = list(alternatives.values())
             if len(alternatives) > 1:
                 conflicting_fields.append(field)
-            # Preserve every distinct line without multiplying repeated lines
-            # in multi-line fields such as shareholders and managing bodies.
-            lines = {}
-            for alternative in alternatives.values():
-                for line in alternative["value"].splitlines():
-                    if line.strip():
-                        lines.setdefault(_value_key(line), line.strip())
-            values[field] = "\n".join(lines.values()) or None
+            # One value per field, from the most authoritative and most recent
+            # source. Merging every rendering instead gave an introduction with
+            # eight spellings of one legal form and twenty-five of one
+            # registered office; the alternatives stay in field_sources and the
+            # report lists them under the table for the fields that disagree.
+            best = min(standing, key=standing.__getitem__, default=None)
+            values[field] = alternatives[best]["value"] if best is not None else None
 
         sources = {}
         for profile in members:
