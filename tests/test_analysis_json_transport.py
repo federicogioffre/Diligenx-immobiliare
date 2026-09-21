@@ -9,7 +9,7 @@ import pytest
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.document import Document, DocumentStatus
 from packages.agents.deal_analysis_agent import (
-    AnthropicLLMProvider, FakeLLMProvider, LLMProvider, LLMResponseError,
+    AnthropicLLMProvider, FakeLLMProvider, LLMProvider, LLMResponseError, PromptSegment,
     _complete_llm_items, _safe_json,
 )
 from packages.agents.deal_context import DealContext, DealContextProvider
@@ -56,7 +56,7 @@ def test_sdk_structured_transport_preserves_all_records_and_ignores_prose():
     }
     assert payload["thinking"] == {"type": "disabled"}
     assert payload["tools"][0]["input_schema"]["properties"]["result"]["type"] == "array"
-    assert payload["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in payload["messages"][0]["content"][0]
     assert payload["max_tokens"] == 6144
     assert "temperature" not in payload
 
@@ -236,3 +236,56 @@ def test_failed_stage_retains_actual_elapsed_time(db, test_deal, monkeypatch, ra
     run = db.query(AgentRun).filter_by(agent_name="tax_analysis").one()
     assert run.status == AgentRunStatus.failed
     assert (run.completed_at - run.started_at).total_seconds() == 51
+
+
+SEGMENTS = (
+    PromptSegment("GROUNDING REVIEW\nINPUT_JSON:\n", cache=True),
+    PromptSegment('{"documents": [{"document_id": 1, "text": "fonte"}]', cache=True),
+    PromptSegment(', "items": [{"index": 0}]}'),
+)
+
+
+def test_segmented_prompt_reaches_the_sdk_as_marked_blocks_in_order():
+    provider, requests = sdk_provider([("tool_use", [tool([{"index": 0}])])])
+    assert _complete_llm_items(provider, SEGMENTS, max_tokens=2048, context="review") == [{"index": 0}]
+    content = requests[0]["messages"][0]["content"]
+    assert [block["text"] for block in content] == [segment.text for segment in SEGMENTS]
+    assert [("cache_control" in block) for block in content] == [True, True, False]
+
+
+def test_format_retry_prepends_its_instruction_without_moving_the_cache_markers():
+    provider, requests = sdk_provider([
+        ("tool_use", [tool("not a list")]),
+        ("tool_use", [tool([{"index": 0}])]),
+    ])
+    assert _complete_llm_items(provider, SEGMENTS, max_tokens=2048, context="review") == [{"index": 0}]
+    retry = requests[1]["messages"][0]["content"]
+    assert retry[0]["text"].startswith("FORMAT RETRY:") and "cache_control" not in retry[0]
+    assert [block["text"] for block in retry[1:]] == [segment.text for segment in SEGMENTS]
+    assert [("cache_control" in block) for block in retry[1:]] == [True, True, False]
+
+
+def test_deal_context_joins_the_cached_head_of_a_segmented_prompt():
+    provider, requests = sdk_provider([("tool_use", [tool([{"index": 0}])])])
+    context = DealContext(4, ("Alfa S.p.A.",), (), 0, 0)
+    wrapped = DealContextProvider(provider, context)
+    assert wrapped.supports_prompt_segments is True
+    _complete_llm_items(wrapped, SEGMENTS, max_tokens=2048, context="review")
+    content = requests[0]["messages"][0]["content"]
+    # The context is stable for the run: it sits in front, and the first
+    # marked segment now covers it as part of the reusable prefix.
+    assert content[0]["text"] == context.prompt_prefix() and "cache_control" not in content[0]
+    assert [block["text"] for block in content[1:]] == [segment.text for segment in SEGMENTS]
+    assert [("cache_control" in block) for block in content[1:]] == [True, True, False]
+
+
+def test_text_only_providers_receive_the_flattened_prompt():
+    seen = []
+
+    class Recorder(FakeLLMProvider):
+        def complete(self, prompt, max_tokens=3072):
+            seen.append(prompt)
+            return "[{\"index\": 0}]"
+
+    assert _complete_llm_items(Recorder(), SEGMENTS, max_tokens=2048, context="review") == [{"index": 0}]
+    assert seen == ["".join(segment.text for segment in SEGMENTS)]

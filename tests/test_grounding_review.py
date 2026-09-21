@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from packages.agents.deal_analysis_agent import FakeLLMProvider, LLMResponseError
+from packages.agents.deal_analysis_agent import FakeLLMProvider, LLMResponseError, PromptSegment, prompt_text
 from packages.agents.grounding_review import review_grounded_flags, review_grounded_text
 
 
@@ -841,3 +841,45 @@ def test_a_draft_citing_a_foreign_document_fails_before_any_review_request(repla
     with pytest.raises(LLMResponseError, match="outside this deal"):
         review_grounded_flags(reviewer, flags, replay["documents"], "it")
     assert reviewer.prompts == []
+
+
+def test_review_prompt_is_segmented_so_the_sources_are_a_reusable_prefix(replay):
+    """Instructions and sources form the cacheable head, byte-identical between
+    the first pass and the correction pass of the same batch; the drafts and
+    the feedback are the unmarked tail. Joined, the halves are still the one
+    JSON payload the reviewer has always received."""
+
+    class SegmentRecorder(ReplayReviewer):
+        supports_prompt_segments = True
+
+        def __init__(self):
+            super().__init__()
+            self.segmented = []
+            self.rejected_once = False
+
+        def complete_json(self, prompt, max_tokens=2048, *, response_type="array", item_schema=None):
+            assert not isinstance(prompt, str)
+            self.segmented.append(tuple(prompt))
+            response = json.loads(super().complete(prompt_text(prompt), max_tokens))
+            if not self.rejected_once:
+                # First pass: no quotations, so a correction pass follows.
+                self.rejected_once = True
+                response[0]["evidence"] = []
+            return json.dumps(response)
+
+    reviewer = SegmentRecorder()
+    flags = [replay["flags"][1]]
+    result = review_grounded_flags(reviewer, flags, replay["documents"], "it")
+    assert len(result) == 1 and result[0]["grounding_reviewed"] is True
+    first, correction = reviewer.segmented
+    for segments in (first, correction):
+        assert [segment.cache for segment in segments] == [True, True, False]
+        assert segments[0].text.startswith("GROUNDING REVIEW\n")
+        payload = json.loads(prompt_text(segments).split("INPUT_JSON:\n", 1)[1])
+        assert list(payload)[:3] == ["kind", "language", "documents"]
+        assert "items" in payload
+    # The source head is reused by the correction pass; only the tail changes.
+    assert first[1] == correction[1]
+    assert first[0].text != correction[0].text  # the correction instruction differs
+    assert first[2] != correction[2]
+    assert "validation_feedback" in json.loads(prompt_text(correction).split("INPUT_JSON:\n", 1)[1])

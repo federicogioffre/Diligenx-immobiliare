@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from packages.agents.deal_analysis_agent import LLMProvider
+from packages.agents.deal_analysis_agent import LLMProvider, prepend_prompt
 
 
 DEAL_CONTEXT_VERSION = 1
@@ -139,18 +139,30 @@ class DealContextProvider(LLMProvider):
     def __post_init__(self):
         object.__setattr__(self, "_prefix", self.context.prompt_prefix())
 
-    def complete(self, prompt: str, max_tokens: int = 3072) -> str:
-        return self.provider.complete(self._prefix + prompt, max_tokens=max_tokens)
+    @property
+    def supports_prompt_segments(self) -> bool:  # type: ignore[override]
+        return bool(getattr(self.provider, "supports_prompt_segments", False))
+
+    def _prefixed(self, prompt):
+        # The transaction context is stable for a whole run, so it belongs to
+        # the cacheable head: a segmented prompt keeps its own markers and the
+        # first marked segment now covers the context as well.
+        if not self._prefix:
+            return prompt
+        return prepend_prompt(self._prefix, prompt)
+
+    def complete(self, prompt, max_tokens: int = 3072) -> str:
+        return self.provider.complete(self._prefixed(prompt), max_tokens=max_tokens)
 
     def complete_json(
-        self, prompt: str, max_tokens: int = 3072, *, response_type: str = "array",
+        self, prompt, max_tokens: int = 3072, *, response_type: str = "array",
         item_schema: dict | None = None,
     ) -> str:
         complete_json = getattr(self.provider, "complete_json", None)
         if callable(complete_json):
             schema_options = {"item_schema": item_schema} if item_schema is not None else {}
             return complete_json(
-                self._prefix + prompt, max_tokens=max_tokens, response_type=response_type, **schema_options,
+                self._prefixed(prompt), max_tokens=max_tokens, response_type=response_type, **schema_options,
             )
         return self.complete(prompt, max_tokens=max_tokens)
 
