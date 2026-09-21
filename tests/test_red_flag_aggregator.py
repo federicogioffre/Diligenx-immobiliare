@@ -458,6 +458,32 @@ class TestContextBuilding:
         RedFlagAggregationAgent(provider=llm).run(test_deal.id, db)
         assert "Veto Right on Major Decisions" in llm.last_prompt
 
+    def test_clause_extraction_summary_never_reaches_the_corpus(self, db, test_deal):
+        """The contract stage's own bookkeeping is not evidence about the target.
+
+        Its per-document note ("found 0 clause(s). No clauses identified.") used
+        to reach the model, which drafted findings from it; the source-fidelity
+        review then rejected them because the sentence is in no document, and
+        the deal paid three model calls per draft to end up with an open
+        question about its own tooling. Coverage gaps travel through
+        MissingDocument and the unanalysed-document OpenQuestions instead.
+        """
+        doc = _make_doc(db, test_deal)
+        _make_agent_finding(
+            db, test_deal, doc=doc, agent_name="contract_analysis",
+            category="clause_extraction_summary",
+            title="Extracted 0 clause(s) from 'privacy.pdf'",
+            description="Contract analysis of 'privacy.pdf' found 0 clause(s). No clauses identified.",
+        )
+        _make_agent_finding(db, test_deal, doc=doc, title="Veto Right on Major Decisions")
+
+        llm = self._ContextCaptureLLM()
+        RedFlagAggregationAgent(provider=llm).run(test_deal.id, db)
+        assert "No clauses identified" not in llm.last_prompt
+        assert "found 0 clause(s)" not in llm.last_prompt
+        # A real specialist finding on the same document still reaches the model.
+        assert "Veto Right on Major Decisions" in llm.last_prompt
+
     def test_document_id_appears_in_context(self, db, test_deal):
         """Document ID is shown in the context headers."""
         doc = _make_doc(db, test_deal)

@@ -500,14 +500,26 @@ class RedFlagAggregationAgent:
             .all()
         )
 
+    #: Categories that record what the pipeline did, not what a document says.
+    #: They must never reach the aggregation corpus: the model reads a line
+    #: such as "Contract analysis of 'X.pdf' found 0 clause(s)" as a fact about
+    #: the target and drafts a finding from it, the source-fidelity review then
+    #: rejects it because that sentence appears in no document, and the deal
+    #: pays three model calls to end up with an open question about its own
+    #: tooling. Coverage gaps already have their own channels: MissingDocument
+    #: rows and the unanalysed-document OpenQuestions of each stage.
+    BOOKKEEPING_CATEGORIES = frozenset({"clause_extraction_summary"})
+
     def _gather_agent_findings(self, db: Session, deal_id: int) -> list:
-        """Return ``AgentFinding`` rows from specialist agents.
+        """Return the specialist ``AgentFinding`` rows that describe documents.
 
         Excludes:
         * This agent's own output rows (defensive — it doesn't write any).
         * ``document_router`` rows (classification metadata; low signal for
           risk detection).
+        * Pipeline bookkeeping rows (see ``BOOKKEEPING_CATEGORIES``).
         """
+        from sqlalchemy import or_
         from app.models.agent_finding import AgentFinding
         return (
             db.query(AgentFinding)
@@ -515,6 +527,8 @@ class RedFlagAggregationAgent:
                 AgentFinding.deal_id == deal_id,
                 AgentFinding.agent_name != self.AGENT_NAME,
                 AgentFinding.agent_name != "document_router",
+                or_(AgentFinding.category.is_(None),
+                    AgentFinding.category.notin_(sorted(self.BOOKKEEPING_CATEGORIES))),
             )
             .all()
         )
