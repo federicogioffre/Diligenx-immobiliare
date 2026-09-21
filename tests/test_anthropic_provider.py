@@ -1,8 +1,8 @@
 """Tests for AnthropicLLMProvider.
 
 The provider wraps the real Anthropic SDK, so we mock the underlying client
-and assert on the shape of the payload — in particular that every prompt is
-sent with a ``cache_control`` breakpoint so prompt caching is in effect.
+and assert on the shape of the payload — in particular that cache markers
+land exactly where the prompt's segments ask for them.
 """
 
 from unittest.mock import MagicMock, patch
@@ -10,7 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from packages.agents.deal_analysis_agent import AnthropicLLMProvider, LLMResponseError
+from packages.agents.deal_analysis_agent import (
+    AnthropicLLMProvider, LLMResponseError, PromptSegment, prompt_text,
+)
 
 
 def _make_provider_with_mock_client(
@@ -33,33 +35,56 @@ def test_complete_returns_text_from_response():
     assert provider.complete("any prompt") == "hello world"
 
 
-def test_complete_sends_prompt_with_cache_control_marker():
-    """Every call must tag its content block with cache_control=ephemeral.
-
-    This is what enables prompt caching: Anthropic caches the prefix up to
-    and including the marked block. Without this, the idempotent re-runs of
-    /analyze would pay full input cost every time.
-    """
+def test_plain_prompt_is_one_block_without_a_cache_marker():
+    """A one-shot prompt has nothing to reuse, so it must not pay the cache
+    write premium (125% of the input price) that a marker implies."""
     provider, mock_client = _make_provider_with_mock_client()
     provider.complete("classify this contract")
 
     mock_client.messages.create.assert_called_once()
     kwargs = mock_client.messages.create.call_args.kwargs
-
     messages = kwargs["messages"]
-    assert len(messages) == 1
-    assert messages[0]["role"] == "user"
-
+    assert len(messages) == 1 and messages[0]["role"] == "user"
     content = messages[0]["content"]
-    # Must be the structured (list-of-blocks) form, not a bare string —
-    # cache_control only attaches to content blocks.
-    assert isinstance(content, list)
-    assert len(content) == 1
+    assert content == [{"type": "text", "text": "classify this contract"}]
 
-    block = content[0]
-    assert block["type"] == "text"
-    assert block["text"] == "classify this contract"
-    assert block["cache_control"] == {"type": "ephemeral"}
+
+def test_segments_become_blocks_with_markers_only_where_asked():
+    """Each segment is one content block; ``cache=True`` puts the breakpoint on
+    that block, so the prefix up to it is reusable by the next request that
+    repeats the same bytes. Empty segments are dropped (the API rejects empty
+    text blocks) and the variable tail carries no marker."""
+    provider, mock_client = _make_provider_with_mock_client()
+    provider.complete((
+        PromptSegment("INSTRUCTIONS\n", cache=True),
+        PromptSegment(""),
+        PromptSegment('{"documents": []', cache=True),
+        PromptSegment(', "items": []}'),
+    ))
+    content = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert content == [
+        {"type": "text", "text": "INSTRUCTIONS\n", "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": '{"documents": []', "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": ', "items": []}'},
+    ]
+    assert "".join(block["text"] for block in content) == prompt_text((
+        PromptSegment("INSTRUCTIONS\n", cache=True), PromptSegment('{"documents": []', cache=True),
+        PromptSegment(', "items": []}'),
+    ))
+
+
+def test_at_most_four_cache_markers_are_sent_and_the_last_ones_win():
+    provider, mock_client = _make_provider_with_mock_client()
+    provider.complete(tuple(PromptSegment(f"part {i}\n", cache=True) for i in range(6)))
+    content = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert [("cache_control" in block) for block in content] == [False, False, True, True, True, True]
+
+
+def test_an_empty_prompt_is_refused_before_any_request():
+    provider, mock_client = _make_provider_with_mock_client()
+    with pytest.raises(ValueError):
+        provider.complete((PromptSegment(""),))
+    mock_client.messages.create.assert_not_called()
 
 
 def test_complete_uses_configured_model_and_temperature():

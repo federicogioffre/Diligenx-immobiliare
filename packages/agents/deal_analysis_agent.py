@@ -15,6 +15,8 @@ import logging
 import re
 import unicodedata
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 from packages.llm_config import DEFAULT_ANALYSIS_MODEL, analysis_api_key_name
@@ -174,8 +176,55 @@ class LLMTruncatedError(LLMResponseError):
 
 
 
+@dataclass(frozen=True)
+class PromptSegment:
+    """One contiguous part of a prompt, optionally ending a cacheable prefix.
+
+    Prompt caching is prefix-based: a provider can reuse the tokens up to a
+    marked segment only when every byte before it is identical to an earlier
+    request. Stages that send many requests sharing a stable head (the same
+    instructions, the same source document) build their prompt as segments
+    and mark the stable ones with ``cache=True``; the variable tail follows
+    unmarked, so it is billed at the base price rather than as a cache write
+    that nothing ever reads. A plain string prompt carries no marker.
+    """
+
+    text: str
+    cache: bool = False
+
+
+Prompt = str | Sequence[PromptSegment]
+
+
+def prompt_segments(prompt: Prompt) -> tuple[PromptSegment, ...]:
+    if isinstance(prompt, str):
+        return (PromptSegment(prompt),)
+    return tuple(prompt)
+
+
+def prompt_text(prompt: Prompt) -> str:
+    """The prompt as one string: what a provider without segment support sees."""
+    if isinstance(prompt, str):
+        return prompt
+    return "".join(segment.text for segment in prompt)
+
+
+def prepend_prompt(text: str, prompt: Prompt) -> Prompt:
+    """Put ``text`` in front of the prompt without touching its cache markers."""
+    if isinstance(prompt, str):
+        return text + prompt
+    return (PromptSegment(text), *prompt)
+
+
 class LLMProvider(ABC):
-    """Abstract interface for LLM completion providers."""
+    """Abstract interface for LLM completion providers.
+
+    ``supports_prompt_segments`` tells the JSON transport whether the provider
+    accepts a sequence of :class:`PromptSegment` (and can honour its cache
+    markers) or must be handed the flattened string.
+    """
+
+    supports_prompt_segments: bool = False
 
     @abstractmethod
     def complete(self, prompt: str, max_tokens: int = 3072) -> str:
@@ -193,16 +242,17 @@ class LLMProvider(ABC):
 class AnthropicLLMProvider(LLMProvider):
     """Claude via the Anthropic SDK.
 
-    Uses Anthropic prompt caching: every prompt is sent as a single
-    ``text`` content block tagged with ``cache_control={"type":"ephemeral"}``.
-
-    The pipeline is idempotent — re-running ``/analyze`` for the same deal
-    sends the same document text through the same prompt templates. With
-    caching, the second pass within Anthropic's 5-minute TTL pays the cheap
-    cache-read price (~10% of input cost) instead of re-tokenising the full
-    prompt prefix. For prompts shorter than the model's minimum cache size
-    (1024 tokens on Sonnet/Opus) the ``cache_control`` marker is silently
-    ignored by the API, so flagging every prompt is safe.
+    Prompt caching follows the :class:`PromptSegment` markers: each segment
+    becomes one ``text`` content block, and a segment with ``cache=True``
+    carries ``cache_control={"type":"ephemeral"}``, so the prefix up to it is
+    reused by any later request that repeats the same bytes (10% of the input
+    price instead of a 125% cache write). A plain string prompt is sent as a
+    single unmarked block: a one-shot request has nothing to reuse, and
+    marking it only paid the write premium. Before this, every request of
+    the source-fidelity review wrote its whole prompt to the cache and no
+    request ever read it back, because the drafts came before the sources.
+    For a prefix shorter than the model's minimum cache size the marker is
+    silently ignored by the API, so marking a short head is safe.
 
     Sampling: ``temperature=0`` keeps the analysis output as repeatable as
     possible across re-runs. The 1.x Anthropic SDK removed ``temperature``
@@ -213,20 +263,37 @@ class AnthropicLLMProvider(LLMProvider):
     parameter with a 400, so for those the request carries no temperature.
     """
 
+    supports_prompt_segments = True
+
     def __init__(self, api_key: str, model: str = "claude-sonnet-5"):
         import anthropic
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model
+
+    @staticmethod
+    def _content_blocks(prompt: Prompt) -> list[dict]:
+        """One text block per non-empty segment; at most four cache markers."""
+        segments = [segment for segment in prompt_segments(prompt) if segment.text]
+        if not segments:
+            raise ValueError("Cannot send an empty prompt")
+        marked = [index for index, segment in enumerate(segments) if segment.cache]
+        allowed = set(marked[-4:])
+        return [
+            {"type": "text", "text": segment.text,
+             **({"cache_control": {"type": "ephemeral"}} if index in allowed else {})}
+            for index, segment in enumerate(segments)
+        ]
 
     def _extra_body(self) -> dict | None:
         if _accepts_sampling_params(self._model):
             return {"temperature": 0}
         return None
 
-    def _request(self, prompt: str, max_tokens: int, **options):
+    def _request(self, prompt: Prompt, max_tokens: int, **options):
         from time import monotonic
         from packages.agents.provider_limits import llm_slot
         started = monotonic()
+        content = self._content_blocks(prompt)
         # Sonnet 5 enables thinking by default. Preserve the pipeline
         # contract: max_tokens is reserved for the extracted answer.
         thinking_options = (
@@ -241,18 +308,7 @@ class AnthropicLLMProvider(LLMProvider):
                 extra_body=self._extra_body(),
                 **thinking_options,
                 **options,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": prompt,
-                                "cache_control": {"type": "ephemeral"},
-                            }
-                        ],
-                    }
-                ],
+                messages=[{"role": "user", "content": content}],
             )
         usage = getattr(msg, "usage", None)
         logger.info(
@@ -268,7 +324,7 @@ class AnthropicLLMProvider(LLMProvider):
             raise LLMTruncatedError("AI response was truncated at the output token limit")
         return msg
 
-    def complete(self, prompt: str, max_tokens: int = 3072) -> str:
+    def complete(self, prompt: Prompt, max_tokens: int = 3072) -> str:
         msg = self._request(prompt, max_tokens)
         text = "".join(
             block.text for block in msg.content
@@ -279,7 +335,7 @@ class AnthropicLLMProvider(LLMProvider):
         return text
 
     def complete_json(
-        self, prompt: str, max_tokens: int = 3072, *, response_type: str = "array",
+        self, prompt: Prompt, max_tokens: int = 3072, *, response_type: str = "array",
         item_schema: dict | None = None,
     ) -> str:
         """Get data through a single tool input, separate from assistant prose.
@@ -989,7 +1045,7 @@ def _parse_llm_items(raw: str, *, context: str) -> list[dict]:
 
 
 def _complete_json(
-    provider: LLMProvider, prompt: str, *, max_tokens: int,
+    provider: LLMProvider, prompt: Prompt, *, max_tokens: int,
     context: str, response_type: str, item_schema: dict | None = None, validate_shape=None,
 ) -> list | dict:
     """Retry a format error or a truncated answer once, never dropping records.
@@ -1012,9 +1068,11 @@ def _complete_json(
         "passage that matters. Follow the original task and source below.\n\n"
     )
     retry_prefix = format_prefix
+    if not getattr(provider, "supports_prompt_segments", False):
+        prompt = prompt_text(prompt)
     for attempt in range(2):
         try:
-            request_prompt = prompt if attempt == 0 else retry_prefix + prompt
+            request_prompt = prompt if attempt == 0 else prepend_prompt(retry_prefix, prompt)
             complete_json = getattr(provider, "complete_json", None)
             schema_options = {"item_schema": item_schema} if item_schema is not None else {}
             raw = (
@@ -1047,7 +1105,7 @@ def _complete_json(
 
 
 def _complete_llm_items(
-    provider: LLMProvider, prompt: str, *, max_tokens: int, context: str,
+    provider: LLMProvider, prompt: Prompt, *, max_tokens: int, context: str,
     item_schema: dict | None = None, validate_shape=None,
 ) -> list[dict]:
     return _complete_json(

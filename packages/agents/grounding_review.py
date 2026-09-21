@@ -18,7 +18,7 @@ from collections import defaultdict
 from types import SimpleNamespace
 
 from packages.agents.concurrency import run_llm_tasks
-from packages.agents.deal_analysis_agent import LLMFormatError, LLMResponseError, _complete_llm_items
+from packages.agents.deal_analysis_agent import LLMFormatError, LLMResponseError, PromptSegment, _complete_llm_items
 from packages.agents.evidence import verified_clause_page
 
 _NARRATIVE_FIELDS = ("title", "issue", "risk", "recommendation")
@@ -331,19 +331,26 @@ def _review(provider, *, kind: str, candidates: list[dict], documents: list[dict
     # Page text need not be sent twice. It is retained locally for coordinate
     # checks; the reviewer sees complete source text, including limiting clauses.
     source_map = {doc["document_id"]: doc for doc in documents}
-    payload = {
+    # The payload is one JSON object, split into a stable head (kind, language,
+    # documents) and a variable tail (items, feedback) so the head can be a
+    # cached prefix: the correction pass and the later batches of the same
+    # document repeat it byte for byte. Joined, the two halves are the same
+    # JSON a single dump would give.
+    head = json.dumps({
         "kind": kind,
         "language": language,
-        "items": [{"index": index, "candidate": item} for index, item in enumerate(candidates)],
         "documents": [
             {"document_id": doc["document_id"], "filename": doc.get("filename", ""),
              "text": doc.get("review_text", _source_text(doc))}
             for doc in documents
         ],
-    }
+    }, ensure_ascii=False)
+    variable = {"items": [{"index": index, "candidate": item} for index, item in enumerate(candidates)]}
     if evidence_feedback is not None:
-        payload["validation_feedback"] = evidence_feedback
-    encoded = json.dumps(payload, ensure_ascii=False)
+        variable["validation_feedback"] = evidence_feedback
+    tail = json.dumps(variable, ensure_ascii=False)
+    head, tail = head[:-1], ", " + tail[1:]
+    encoded = head + tail
     if len(encoded) > _MAX_REVIEW_CHARS:
         if partial or evidence_feedback is not None:
             raise LLMResponseError("Source-fidelity draft exceeds its review budget")
@@ -419,7 +426,9 @@ across all windows by the application.
 INPUT_JSON:
 """)
     reviews = _complete_llm_items(
-        provider, instructions + encoded, max_tokens=12288, context="Source-fidelity review",
+        provider,
+        (PromptSegment(instructions, cache=True), PromptSegment(head, cache=True), PromptSegment(tail)),
+        max_tokens=12288, context="Source-fidelity review",
         item_schema=_review_item_schema(kind, partial=partial),
         validate_shape=lambda values: _validate_review_shape(values, kind, len(candidates)),
     )
