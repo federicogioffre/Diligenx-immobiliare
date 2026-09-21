@@ -67,22 +67,66 @@ def test_merges_complementary_fields_duplicate_values_and_keeps_sources():
     assert rows == before
 
 
-def test_conflicting_values_are_preserved_flagged_and_stable_under_input_reordering():
+def test_the_registry_extract_states_the_field_and_the_rest_stays_as_alternatives():
+    """One value per field, from the most authoritative source.
+
+    The introduction of a due-diligence report states what the visura says and
+    footnotes the rest. Unioning every rendering instead produced eight
+    spellings of one legal form and twenty-five of one registered office.
+    """
     rows = [profile(3, source_id=30, corporate_capital="Euro 20.000", registered_office="Roma",
-                    shareholders="Alice — 50%\nBob — 50%", source_filename="later.pdf"),
+                    shareholders="Alice — 50%\nBob — 50%", source_filename="verbale 30.03.2021.pdf"),
             profile(1, source_id=10, corporate_capital="Euro 10.000", registered_office="Milano",
-                    shareholders="Alice — 50%\nCarlo — 50%", source_filename="earlier.pdf")]
+                    shareholders="Alice — 50%\nCarlo — 50%", source_filename="Visura aggiornata 2022.pdf")]
     forward = consolidate_company_profiles(rows, ["TargetCo S.p.A."])[0]
     reverse = consolidate_company_profiles(reversed(rows), ["TargetCo S.p.A."])[0]
     assert vars(forward) == vars(reverse)
-    assert forward.corporate_capital == "Euro 10.000\nEuro 20.000"
-    assert forward.registered_office == "Milano\nRoma"
-    assert forward.shareholders == "Alice — 50%\nCarlo — 50%\nBob — 50%"
+    assert forward.corporate_capital == "Euro 10.000"
+    assert forward.registered_office == "Milano"
+    assert forward.shareholders == "Alice — 50%\nCarlo — 50%"
+    # Every discarded value stays available with the document that carried it.
     assert forward.conflicting_fields == ["registered_office", "corporate_capital", "shareholders"]
     assert forward.field_sources["corporate_capital"] == [
-        {"value": "Euro 10.000", "source_document_ids": [10], "source_filenames": ["earlier.pdf"], "profile_ids": [1]},
-        {"value": "Euro 20.000", "source_document_ids": [30], "source_filenames": ["later.pdf"], "profile_ids": [3]},
+        {"value": "Euro 10.000", "source_document_ids": [10],
+         "source_filenames": ["Visura aggiornata 2022.pdf"], "profile_ids": [1]},
+        {"value": "Euro 20.000", "source_document_ids": [30],
+         "source_filenames": ["verbale 30.03.2021.pdf"], "profile_ids": [3]},
     ]
+
+
+def test_the_most_recent_document_of_one_kind_wins():
+    rows = [profile(1, source_id=10, registered_office="Milano",
+                    source_filename="verbale 30.03.2019.cda.pdf"),
+            profile(2, source_id=20, registered_office="Roma",
+                    source_filename="verbale 16.12.2021.cda.pdf")]
+    assert consolidate_company_profiles(rows, ["TargetCo S.p.A."])[0].registered_office == "Roma"
+
+
+def test_accents_case_and_punctuation_are_formatting_not_a_conflict():
+    """A data room spells one legal form eight ways; that is not a discrepancy."""
+    rows = [profile(1, source_id=10, legal_form="societa' a responsabilita' limitata",
+                    source_filename="verbale 30.03.2021.cda.pdf"),
+            profile(2, source_id=20, legal_form="Società a responsabilità limitata",
+                    source_filename="Visura aggiornata 2022.pdf"),
+            profile(3, source_id=30, legal_form="SOCIETÀ A RESPONSABILITÀ LIMITATA.",
+                    source_filename="bilancio 2020.pdf")]
+    combined = consolidate_company_profiles(rows, ["TargetCo S.p.A."])[0]
+    assert combined.conflicting_fields == []
+    # One value, spelled as the registry extract spells it.
+    assert combined.legal_form == "Società a responsabilità limitata"
+    assert len(combined.field_sources["legal_form"]) == 1
+    assert combined.field_sources["legal_form"][0]["source_document_ids"] == [10, 20, 30]
+
+
+def test_a_different_figure_is_still_a_conflict_after_normalisation():
+    rows = [profile(1, source_id=10, registered_office="Via Bruni 14, 20812 Limbiate (MB)",
+                    source_filename="Visura aggiornata 2022.pdf"),
+            profile(2, source_id=20, registered_office="VIA BRUNI 14, 20051 LIMBIATE (MB)",
+                    source_filename="redditi sc 2019.pdf")]
+    combined = consolidate_company_profiles(rows, ["TargetCo S.p.A."])[0]
+    assert combined.conflicting_fields == ["registered_office"]
+    assert combined.registered_office == "Via Bruni 14, 20812 Limbiate (MB)"
+    assert len(combined.field_sources["registered_office"]) == 2
 
 
 def test_duplicate_values_retain_each_supporting_document_without_guessing_equivalence():
@@ -95,7 +139,7 @@ def test_duplicate_values_retain_each_supporting_document_without_guessing_equiv
         "source_filenames": ["a.pdf", "b.pdf"], "profile_ids": [1, 2],
     }
     assert combined.conflicting_fields == ["corporate_capital"]
-    assert combined.corporate_capital == "EUR 10.000\n10,000 euros"
+    assert combined.corporate_capital == "EUR 10.000"
 
 
 def test_never_lazy_loads_unavailable_source_document():
@@ -118,3 +162,26 @@ def test_missing_source_and_confidence_are_allowed_without_losing_a_profile():
     assert result.source_document_id is None
     assert result.source_document_ids == []
     assert result.source_filenames == []
+
+
+def test_a_board_is_never_assembled_from_two_different_dates():
+    """Merging lines across sources invented bodies that never sat together.
+
+    The 2021 minutes name five directors, the 2022 registry extract four after
+    a resignation. The union listed five, so the report stated a board that did
+    not exist on any date.
+    """
+    board_2021 = "Arcari Palmira (Presidente)\nZappella Daniela\nBrun Mirko"
+    board_2022 = "Arcari Palmira (Presidente)\nZappella Daniela"
+    rows = [profile(1, source_id=10, managing_body=board_2021,
+                    source_filename="verbale 16.12.2021.cda.pdf"),
+            profile(2, source_id=20, managing_body=board_2022,
+                    source_filename="Visura aggiornata 2022.pdf")]
+    combined = consolidate_company_profiles(rows, ["TargetCo S.p.A."])[0]
+    assert combined.managing_body == board_2022
+    assert "Brun Mirko" not in combined.managing_body
+    # The superseded composition stays visible with the minutes that stated it.
+    assert combined.conflicting_fields == ["managing_body"]
+    assert [evidence["value"] for evidence in combined.field_sources["managing_body"]] == [
+        board_2021, board_2022,
+    ]

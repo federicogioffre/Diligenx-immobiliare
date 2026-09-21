@@ -245,7 +245,11 @@ def _md_cell(text: str | None) -> str:
     """
     if not text:
         return "n/a"
-    return text.replace("|", "\\|").replace("\n", " ").strip()
+    # A list that occupies several lines (shareholders, board members) becomes
+    # one cell, so the entries are separated rather than run together: without
+    # a separator a cap table reads as "PALMIRA - 68% DANIELA - 10,67%".
+    joined = "; ".join(line.strip() for line in text.splitlines() if line.strip())
+    return joined.replace("|", "\\|").strip()
 
 
 def _render_introduction(deal_title: str, areas_reviewed: list[str], lang: str) -> str:
@@ -532,10 +536,14 @@ def _render_corporate_intro(
             fields = ", ".join(label for attr, label in _INTRO_FIELDS[lang] if attr in conflicts)
             message = (
                 f"Different values appear in the sources for: {fields}. "
-                "The alternatives are retained above and require verification."
+                "The table states the value of the most authoritative and most "
+                "recent source; the alternatives are listed below with their "
+                "documents and require verification."
                 if lang == "en" else
                 f"Le fonti riportano valori diversi per: {fields}. "
-                "Le alternative sono conservate sopra e richiedono verifica."
+                "La tabella riporta il valore della fonte più autorevole e più "
+                "recente; le alternative sono elencate di seguito con i relativi "
+                "documenti e richiedono verifica."
             )
             parts.append(f"_{message}_\n")
             for attr, label in _INTRO_FIELDS[lang]:
