@@ -247,6 +247,66 @@ def _draft_locators(candidate: dict) -> list[str]:
     return sorted(token for token in found if len(token) >= 4)
 
 
+_ORDINAL = r"(?:bis|ter|quater|quinquies|sexies|septies|octies|novies|decies)\b"
+# "art. 8", "art.8", "Art . 8", "articolo 21", "artt. 8 e 9", "art. 2482-bis c.c.".
+_ARTICLE_REFERENCE = re.compile(
+    r"\b(?:artt?\s*\.?|articol[oi])\s*"
+    r"(\d{1,4}(?:[\s-]*" + _ORDINAL + r")?"
+    r"(?:\s*(?:,|ed|e|-)\s*\d{1,4}(?:[\s-]*" + _ORDINAL + r")?)*)",
+    re.I,
+)
+_ARTICLE_NUMBER = re.compile(r"(\d{1,4})(?:[\s-]*(" + _ORDINAL[:-2] + r"))?\b", re.I)
+
+
+def _article_references(candidate: dict) -> list[str]:
+    """Article numbers a draft relies on, such as "8", "21" or "2482-bis".
+
+    Names, amounts and dates locate a ledger line; they do not locate a clause
+    of a statuto, where the company name is in every article and a finding is
+    about "art. 8". On the Arcari run five findings from the new statuto were
+    rejected because the windows followed the name into the first articles and
+    never reached the one the draft was about. A civil-code reference such as
+    "art. 2477 c.c." is located the same way, where the document cites it.
+    """
+    parts = [candidate.get(field) for field in ("title", "issue", "risk")]
+    text = " ".join(part for part in parts if isinstance(part, str))
+    found = set()
+    for match in _ARTICLE_REFERENCE.finditer(text):
+        for number, suffix in _ARTICLE_NUMBER.findall(match.group(1)):
+            found.add(f"{int(number)}-{suffix.lower()}" if suffix else str(int(number)))
+    return sorted(found, key=lambda ref: (int(ref.split("-")[0]), ref))
+
+
+def _article_pattern(reference: str) -> re.Pattern:
+    """Match that article and no other: 8 is not 80, 8-bis or 2482."""
+    number, _, suffix = reference.partition("-")
+    tail = rf"[\s-]*{suffix}\b" if suffix else rf"(?!\d)(?![\s-]*{_ORDINAL})"
+    return re.compile(rf"\b(?:artt?\s*\.?|articol[oi])\s*{number}{tail}", re.I)
+
+
+def _article_spans(text: str, reference: str) -> list[tuple[int, int]]:
+    """Windows for one article: its body where it is headed, its context where cited.
+
+    A heading starts a line, and the article runs on after it, so the window
+    extends forward far enough for a whole clause. A citation elsewhere gets the
+    same symmetric window as any other locator.
+    """
+    spans = []
+    headings = inline = 0
+    for match in _article_pattern(reference).finditer(text):
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        if not text[line_start:match.start()].strip(" \t*#-_.()[]"):
+            if headings < 3:
+                spans.append((max(0, match.start() - 300), min(len(text), match.start() + 6000)))
+                headings += 1
+        elif inline < 5:
+            spans.append((max(0, match.start() - 1500), min(len(text), match.end() + 1500)))
+            inline += 1
+        if headings >= 3 and inline >= 5:
+            break
+    return spans
+
+
 def _source_text(document: dict) -> str:
     return document.get("text") or "\n".join(
         page.get("content", "") for page in document.get("pages", [])
@@ -286,6 +346,8 @@ def _review_sources(documents: list[dict], candidates: list[dict]) -> list[dict]
                     if hit >= 5:
                         break
                     spans.append((max(0, match.start() - 1500), min(len(text), match.end() + 1500)))
+            for reference in _article_references(candidate):
+                spans.extend(_article_spans(text, reference))
         for span in document.get("source_spans", []):
             start, end = span.get("start"), span.get("end")
             if type(start) is int and type(end) is int and 0 <= start < end <= len(text):

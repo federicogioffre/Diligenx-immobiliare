@@ -946,3 +946,111 @@ def test_batches_of_one_document_run_in_order_while_documents_run_in_parallel():
     # Nine drafts on document 1 exceed the batch size, so it is reviewed twice.
     assert reviewer.overlapped == []
     assert reviewer.started == {1, 2}
+
+
+def _long_bylaws():
+    """A statuto long enough to be reviewed in windows, as the Arcari one is.
+
+    The company name recurs in every article, so the name locator only ever
+    reaches the first few; the article a draft is about sits deep in the text.
+    """
+    articles = []
+    for number in range(1, 31):
+        body = (f"ARCARI S.R.L. disciplina in questo articolo la materia numero {number}. " * 24)
+        if number == 8:
+            body += ("Le quote sono trasferibili solo previo esercizio del diritto di prelazione "
+                     "spettante agli altri soci, da esercitarsi entro trenta giorni dalla comunicazione. ")
+        if number == 21:
+            body += ("Qualsiasi controversia tra i soci sarà devoluta ad un arbitro unico nominato "
+                     "dal Presidente del Tribunale, ai sensi dell'art. 34 del D.Lgs. 5/2003. ")
+        if number == 25:
+            body += "Si applica quanto previsto dall'art. 2477 c.c. in materia di organo di controllo. "
+        articles.append(f"\nArticolo {number} - Materia {number}\n{body}")
+    text = "".join(articles)
+    assert len(text) > 40_000
+    return text
+
+
+def test_a_draft_about_an_article_is_shown_that_article_of_a_long_statute():
+    """The review of a long statuto must see the article the draft is about.
+
+    On the Arcari run five findings from the new statuto (pre-emption, consent
+    clause, withdrawal value, arbitration) were rejected with "the available
+    extract does not contain art. 8": the windows followed the company name,
+    which fills the first articles, and never reached article 8.
+    """
+    from packages.agents.grounding_review import _review_sources
+
+    text = _long_bylaws()
+    document = {"document_id": 188, "text": text}
+    draft = {"title": "Prelazione sulle quote (art. 8 dello statuto)",
+             "issue": "L'art. 8 dello statuto di ARCARI S.R.L. prevede un diritto di prelazione.",
+             "source_document_id": 188}
+    window = _review_sources([document], [draft])[0]["review_text"]
+    assert "diritto di prelazione" in window
+    assert "Articolo 8 - Materia 8" in window
+
+
+def test_article_references_do_not_bleed_into_longer_numbers():
+    """An article locator narrows the review to that article, not to its neighbours.
+
+    Without any locator the review sweeps the whole statuto window by window;
+    "art. 21" must reach article 21 without pulling article 2 in by prefix.
+    """
+    from packages.agents.grounding_review import _review_sources
+
+    text = _long_bylaws()
+    draft = {"title": "Clausola compromissoria",
+             "issue": "L'articolo 21 devolve le controversie ad un arbitro unico.",
+             "source_document_id": 188}
+    window = _review_sources([{"document_id": 188, "text": text}], [draft])[0]["review_text"]
+    assert "arbitro unico" in window
+    # Article 2 is not article 21, and article 21 is not article 210.
+    assert "Articolo 2 - Materia 2\n" not in window
+
+
+def test_a_civil_code_reference_locates_where_the_statute_cites_it():
+    from packages.agents.grounding_review import _review_sources
+
+    text = _long_bylaws()
+    draft = {"title": "Organo di controllo",
+             "issue": "Lo statuto di ARCARI S.R.L. richiama l'art. 2477 c.c. per la nomina "
+                      "dell'organo di controllo.",
+             "source_document_id": 188}
+    window = _review_sources([{"document_id": 188, "text": text}], [draft])[0]["review_text"]
+    assert "dall'art. 2477 c.c. in materia di organo di controllo" in window
+
+
+def test_a_pre_emption_finding_on_a_long_statute_now_survives_the_review():
+    """End to end: the Arcari failure, replayed, now ends in a verified flag."""
+    text = _long_bylaws()
+    clause = ("Le quote sono trasferibili solo previo esercizio del diritto di prelazione "
+              "spettante agli altri soci, da esercitarsi entro trenta giorni dalla comunicazione.")
+    prompts = []
+
+    class StatuteReviewer:
+        def complete(self, prompt, max_tokens=2048):
+            payload = review_payload(prompt)
+            source = payload["documents"][0]["text"]
+            prompts.append(len(prompt))
+            fields = {"title": "Prelazione sulle quote (art. 8 dello statuto)",
+                      "issue": "Le quote sono trasferibili solo previo esercizio della prelazione.",
+                      "risk": None, "recommendation": None}
+            if clause not in source:
+                return json.dumps([{"index": 0, "supported": False, "fields": fields, "evidence": [],
+                                    "support_reason": "L'estratto disponibile non contiene l'art. 8."}])
+            return json.dumps([{"index": 0, "supported": True, "support_reason": None, "fields": fields,
+                                "evidence": [{"source_document_id": 188, "quote": clause,
+                                              "fields": ["title", "issue"]}]}])
+
+    draft = {"title": "Prelazione sulle quote (art. 8 dello statuto)",
+             "issue": "L'art. 8 dello statuto di ARCARI S.R.L. subordina il trasferimento alla prelazione.",
+             "source_document_id": 188}
+    rejections = []
+    flags = review_grounded_flags(StatuteReviewer(), [draft], [{"document_id": 188, "text": text}],
+                                  "it", rejections=rejections)
+    assert rejections == []
+    assert flags[0]["grounding_reviewed"] is True
+    assert flags[0]["evidence"][0]["quote"] == clause
+    # One focused request on the located articles, not a sweep of the statuto.
+    assert len(prompts) == 1 and prompts[0] < len(text)
