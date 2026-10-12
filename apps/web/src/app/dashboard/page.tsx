@@ -11,7 +11,7 @@ import Spinner from '@/components/ui/Spinner'
 import StatusBadge from '@/components/ui/StatusBadge'
 
 const inputClass =
-  'w-full border border-slate-200 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow bg-white'
+  'w-full border border-slate-200 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 shadow-sm focus:outline-none focus:ring-4 focus:ring-blue-500/15 focus:border-blue-500 transition-all bg-white'
 
 function loiFileError(file: File | null): string {
   if (!file) return ''
@@ -180,17 +180,17 @@ export default function DashboardPage() {
   return (
     <div>
       {/* Page header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-wrap items-end justify-between gap-4 mb-8">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Deals</h1>
-          <p className="text-sm text-slate-500 mt-0.5">
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Deals</h1>
+          <p className="text-sm text-slate-500 mt-1">
             {!loading && `${deals.length} deal${deals.length !== 1 ? 's' : ''} nel workspace`}
           </p>
         </div>
         <button
           onClick={() => { if (showForm && createdDeal) resetCreateForm(); setShowForm((v) => !v) }}
           disabled={creating}
-          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm disabled:opacity-50"
+          className="flex items-center gap-2 bg-ink hover:bg-ink-800 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-all shadow-md active:scale-[0.98] disabled:opacity-50"
         >
           {showForm ? (
             <>
@@ -212,11 +212,11 @@ export default function DashboardPage() {
 
       {/* Create form */}
       {showForm && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-6">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-lg p-6 sm:p-7 mb-8 animate-fade-up">
           <h2 className="text-base font-semibold text-slate-900 mb-4">Nuovo Deal</h2>
           <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="sm:col-span-2">
-              <label htmlFor="new-deal-title" className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Titolo *</label>
+              <label htmlFor="new-deal-title" className="block text-sm font-medium text-slate-700 mb-1.5">Titolo *</label>
               <input
                 id="new-deal-title"
                 required
@@ -228,7 +228,7 @@ export default function DashboardPage() {
               />
             </div>
             <div className="sm:col-span-2">
-              <label htmlFor="new-deal-targets" className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Società target *</label>
+              <label htmlFor="new-deal-targets" className="block text-sm font-medium text-slate-700 mb-1.5">Società target *</label>
               <textarea
                 id="new-deal-targets"
                 required
@@ -245,7 +245,7 @@ export default function DashboardPage() {
               </p>
             </div>
             <div className="sm:col-span-2">
-              <label htmlFor="new-deal-description" className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Descrizione</label>
+              <label htmlFor="new-deal-description" className="block text-sm font-medium text-slate-700 mb-1.5">Descrizione</label>
               <textarea
                 id="new-deal-description"
                 disabled={creating || !!createdDeal}
@@ -257,7 +257,7 @@ export default function DashboardPage() {
               />
             </div>
             <div>
-              <label htmlFor="new-deal-value" className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Valore deal (€)</label>
+              <label htmlFor="new-deal-value" className="block text-sm font-medium text-slate-700 mb-1.5">Valore deal (€)</label>
               <input
                 id="new-deal-value"
                 disabled={creating || !!createdDeal}
@@ -271,7 +271,7 @@ export default function DashboardPage() {
               />
             </div>
             <div className="sm:col-span-2">
-              <label htmlFor="new-deal-loi" className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Lettera di intenti (LOI) — facoltativa</label>
+              <label htmlFor="new-deal-loi" className="block text-sm font-medium text-slate-700 mb-1.5">Lettera di intenti (LOI) — facoltativa</label>
               <input
                 ref={loiInputRef}
                 id="new-deal-loi"
@@ -333,17 +333,17 @@ export default function DashboardPage() {
           return (
             <div
               key={deal.id}
-              className="group bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
+              className="group relative flex flex-col bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-lg hover:-translate-y-0.5 hover:border-slate-300 transition-all duration-300"
             >
-              <Link href={`/deals/${deal.id}`} className="block p-5">
+              <Link href={`/deals/${deal.id}`} className="block flex-1 p-5 rounded-t-2xl">
                 {/* Status + date row */}
                 <div className="flex items-center justify-between mb-3">
                   <StatusBadge status={deal.status} />
-                  <span className="text-xs text-slate-400">{deal.created_at.slice(0, 10)}</span>
+                  <span className="text-xs text-slate-400 font-mono">{deal.created_at.slice(0, 10)}</span>
                 </div>
 
                 {/* Title */}
-                <h2 className="font-semibold text-slate-900 text-sm leading-snug mb-1.5 group-hover:text-blue-600 transition-colors line-clamp-2">
+                <h2 className="font-semibold text-slate-900 text-[15px] leading-snug mb-1.5 group-hover:text-blue-600 transition-colors line-clamp-2">
                   {deal.title}
                 </h2>
 
@@ -354,7 +354,7 @@ export default function DashboardPage() {
 
                 {/* Value */}
                 {deal.value != null && (
-                  <div className="flex items-center gap-1 text-sm font-semibold text-slate-700 mt-auto">
+                  <div className="flex items-center gap-1 text-base font-semibold text-slate-800 tabular-nums mt-auto">
                     <span className="text-xs text-slate-400 font-normal">€</span>
                     {deal.value.toLocaleString('it-IT')}
                   </div>
@@ -362,7 +362,7 @@ export default function DashboardPage() {
               </Link>
 
               {/* Action strip */}
-              <div className="border-t border-slate-100 px-5 py-2.5 flex gap-2">
+              <div className="border-t border-slate-100 bg-slate-50/50 rounded-b-2xl px-4 py-2 flex gap-1">
                 <button
                   onClick={(e) => openEdit(deal, e)}
                   className="text-xs text-slate-500 hover:text-slate-800 font-medium flex items-center gap-1 hover:bg-slate-50 px-2 py-1 rounded-md transition-colors"
@@ -390,7 +390,7 @@ export default function DashboardPage() {
 
       {/* Edit modal */}
       {editDeal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 backdrop-blur-sm animate-fade-in">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 border border-slate-200">
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-base font-semibold text-slate-900">Modifica Deal</h2>
@@ -405,15 +405,15 @@ export default function DashboardPage() {
             </div>
             <form onSubmit={handleSaveEdit} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Titolo *</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Titolo *</label>
                 <input required value={editTitle} onChange={(e) => setEditTitle(e.target.value)} className={inputClass} />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Descrizione</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Descrizione</label>
                 <textarea rows={3} value={editDescription} onChange={(e) => setEditDescription(e.target.value)} className={inputClass + ' resize-none'} />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Valore (€)</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Valore (€)</label>
                 <input type="number" min="0" step="any" value={editValue} onChange={(e) => setEditValue(e.target.value)} className={inputClass} />
               </div>
               {editError && <p className="text-red-600 text-sm">{editError}</p>}
