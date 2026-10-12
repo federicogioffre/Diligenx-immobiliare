@@ -16,6 +16,18 @@ export interface UserRead {
   full_name: string | null
   is_active: boolean
   created_at: string
+  /** False for an account that signs in only with Microsoft or Google. */
+  has_password: boolean
+  auth_providers: OAuthProvider[]
+}
+
+export type OAuthProvider = 'microsoft' | 'google'
+
+/** Where the browser goes to sign in with a provider: a full-page
+ *  navigation, never a fetch, since the provider's pages must load. */
+export function oauthStartUrl(provider: OAuthProvider, next?: string): string {
+  const query = next ? `?next=${encodeURIComponent(next)}` : ''
+  return `${BASE}/auth/oauth/${provider}/start${query}`
 }
 
 export interface WorkspaceRead {
@@ -368,6 +380,17 @@ export const api = {
       })
     },
 
+    /** Sign-in providers this deployment offers; none when unreachable. */
+    async oauthProviders(): Promise<OAuthProvider[]> {
+      try {
+        const res = await fetch(`${BASE}/auth/oauth/providers`)
+        if (!res.ok) return []
+        return (await res.json()).providers
+      } catch {
+        return []
+      }
+    },
+
     /** Start the password-reset flow. Always resolves (202) — the backend
      *  never reveals whether the address exists. */
     async forgotPassword(email: string): Promise<void> {
@@ -404,14 +427,20 @@ export const api = {
       return res.blob()
     },
     /** GDPR art. 17 — erase the account. Requires the password as a
-     *  deliberate-action check; 403 means wrong password. */
-    async deleteAccount(password: string): Promise<void> {
+     *  deliberate-action check; an account without one (Microsoft/Google
+     *  sign-in) passes null and needs a sign-in from the last ten minutes. */
+    async deleteAccount(password: string | null): Promise<void> {
       const res = await fetch(`${BASE}/users/me`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password }),
       })
-      if (res.status === 403) throw new Error('Password errata')
+      if (res.status === 403) {
+        const detail = await res.text()
+        throw new Error(detail.includes('reauth_required')
+          ? 'Accesso scaduto: accedi di nuovo per confermare.'
+          : 'Password errata')
+      }
       if (await handle401IfNeeded(res)) throw new Error('Unauthorized')
       if (!res.ok) throw parseApiError(await res.text(), res.status)
     },

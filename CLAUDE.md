@@ -3,7 +3,7 @@
 ## Stack
 - **Backend:** FastAPI + SQLAlchemy 2.0 (mapped_column style) + Pydantic v2
 - **Database:** PostgreSQL (default) + pgvector extension; SQLite for tests
-- **Auth:** JWT via HttpOnly session cookie (browser) or Bearer header (API clients) → `python-jose` + `bcrypt` (no passlib); SSE authenticated by short-lived deal-scoped tickets
+- **Auth:** JWT via HttpOnly session cookie (browser) or Bearer header (API clients) → `python-jose` + `bcrypt` (no passlib); sign-in with Microsoft / Google over OpenID Connect (code + PKCE, `docs/OAUTH_SETUP.md`); SSE authenticated by short-lived deal-scoped tickets
 - **Migrations:** Alembic (`apps/api/alembic/`)
 - **Embeddings:** OpenAI `text-embedding-3-small` (1536 dims); `FakeEmbeddingProvider` for tests
 - **LLM:** OpenAI GPT-5.6 Luna (`gpt-5.6-luna` by default) for every analysis stage and document Q&A; `FakeLLMProvider` for tests
@@ -13,7 +13,7 @@
 - **Env:** `.env` via `pydantic-settings`
 - **Frontend:** Next.js 15 (App Router, TypeScript) — login + dashboard + insights + deals UI, server-side auth via cookie
 - **Frontend tests:** Playwright smoke suite (3 tests) in `apps/web/tests/e2e/`
-- **Tests:** pytest + FastAPI TestClient (SQLite), **1576 passing**
+- **Tests:** pytest + FastAPI TestClient (SQLite), **1604 passing**
 
 ## Project Root
 ```
@@ -34,7 +34,8 @@ Diligenx/
 │   │   ├── db/session.py                 # engine, SessionLocal, Base, get_db(); WAL + busy_timeout on SQLite
 │   │   ├── models/
 │   │   │   ├── base.py                   # TimestampMixin (created_at, updated_at)
-│   │   │   ├── user.py                   # User → owns Workspaces
+│   │   │   ├── user.py                   # User → owns Workspaces; `has_password` false for Microsoft/Google-only accounts
+│   │   │   ├── oauth_identity.py         # OAuthIdentity (provider + subject) → User
 │   │   │   ├── workspace.py              # Workspace → owner_id FK to User
 │   │   │   ├── deal.py                   # Deal + DealStatus(draft|analyzing|reviewed|closed) → workspace_id FK
 │   │   │   ├── document.py               # Document + DocumentStatus(pending|processing|processed|failed) + language + raw_text
@@ -52,7 +53,8 @@ Diligenx/
 │   │   │   ├── clause_finding.py, red_flag.py, report.py
 │   │   │   └── agent_run.py
 │   │   ├── services/
-│   │   │   ├── auth.py                   # get_current_user() — HTTPBearer dependency
+│   │   │   ├── auth.py                   # get_current_user() / get_current_session() — Bearer or cookie
+│   │   │   ├── oauth.py                  # OIDC providers: discovery, PKCE, code exchange, ID-token verification
 │   │   │   ├── storage.py                # S3/R2 client + save_file/read_file (local fallback)
 │   │   │   ├── jobs.py                   # enqueue_or_run() — Arq pool if REDIS_URL set, else BackgroundTasks
 │   │   │   └── report_export.py          # Markdown → PDF (reportlab) / DOCX (python-docx)
@@ -60,6 +62,7 @@ Diligenx/
 │   │   └── api/routes/
 │   │       ├── health.py                 # GET /health
 │   │       ├── auth.py                   # POST /auth/register, /auth/login
+│   │       ├── oauth.py                  # GET /auth/oauth/providers, /{provider}/start, /{provider}/callback
 │   │       ├── workspaces.py             # CRUD + /workspaces/{id}/insights aggregate
 │   │       ├── deals.py                  # CRUD + /analyze /report /ask /agent-runs /risk-score /open-questions /missing-documents
 │   │       └── documents.py              # /upload, /upload-batch, list, delete
@@ -114,7 +117,7 @@ Diligenx/
 │       └── vector_store.py               # cosine similarity over DocumentChunk.embedding
 │
 ├── infra/, scripts/, docker-compose.yml, railway.toml
-├── tests/                                # 1576 passing
+├── tests/                                # 1604 passing
 └── CLAUDE.md                             # ← this file
 ```
 
@@ -138,6 +141,9 @@ User 1──* Workspace 1──* Deal 1──* Document 1──* DocumentChunk (
 | POST | `/auth/register` | Register → UserRead |
 | POST | `/auth/login` | Login (form) → Token + HttpOnly session cookie |
 | POST | `/auth/logout` | Clear session cookies (unauthenticated by design) |
+| GET | `/auth/oauth/providers` | Sign-in providers configured (`microsoft`, `google`) |
+| GET | `/auth/oauth/{provider}/start` | Redirect to Microsoft/Google (state, nonce and PKCE verifier in a signed 10-min cookie) |
+| GET | `/auth/oauth/{provider}/callback` | Verify the ID token, link or create the account, set the session cookie → `/login/complete` |
 | GET/POST/PATCH/DELETE | `/workspaces/...` | Workspace CRUD (last workspace and non-empty workspaces protected from deletion) |
 | GET/POST | `/deals/?workspace_id=N` | List / create deals in workspace |
 | GET/PATCH/DELETE | `/deals/{deal_id}` | Deal CRUD (PATCH also sets `report_language`: it\|en\|auto) |
@@ -204,7 +210,7 @@ pnpm install && pnpm dev      # http://localhost:3000
 
 ```bash
 cd apps/api
-python -m pytest ../../tests -q   # 1576 passed
+python -m pytest ../../tests -q   # 1604 passed
 ```
 
 ## Key Design Decisions
@@ -225,6 +231,8 @@ python -m pytest ../../tests -q   # 1576 passed
 - **Anthropic SDK 1.x**: `requirements.txt` pins `anthropic>=1,<2`. The 1.x SDK removed `temperature`/`top_p`/`top_k` from the `messages.create()` signature (passing them is a `TypeError`), so `AnthropicLLMProvider` sends `temperature=0` through `extra_body`, and only for model families that still accept sampling parameters (Claude 4.6/4.5 line and older — `_accepts_sampling_params`). Opus 4.7+, Sonnet 5 and the Claude 5 family reject sampling parameters with a 400, so for those the request carries none.
 - **Parallel LLM fan-out**: per-document LLM work inside each pipeline stage (routing, contract, corporate, corporate-intro) runs on a bounded thread pool via `packages/agents/concurrency.run_llm_tasks` (`LLM_MAX_CONCURRENCY`, default 4). Worker functions are pure (LLM + parse only — no `Session` access); persistence happens on the caller's thread in input order. Contract analysis now inserts only the clauses that survive filtering (no insert-then-delete churn). **One document's failed request never discards the stage** (`isolate_failures=True`, also on `document_coverage.collect_documents_payloads` for the financial batch queue): a document whose model request fails (output truncated at the token limit after the single compact retry, refusal, malformed JSON) comes back as a `TaskFailure` in its slot, the stage persists the other documents, records the gap through `packages/agents/stage_failures.record_unanalysed_documents` (a medium-priority `OpenQuestion` per document in the report language, replaced on every run of the stage, plus `failed_documents` in the stage result) and completes. A stage still fails when *every* document failed, so a systemic fault (credentials, a broken prompt) stays loud. A truncated answer (`LLMTruncatedError`) is retried once by `_complete_json` with a compactness instruction, since a runaway generation is stochastic; the partial records of a truncated answer are never used. Clause extraction caps its output budget at the batch length (min 3072 tokens), because clauses are quotations of the batch and a runaway on a two-page contract must stop early.
 - **No DB transaction across the LLM phase** (`packages/agents/stage_tx.release_connection_before_llm`): every fan-out stage (routing, contract, corporate, corporate-intro, tax, financial) opens its running `AgentRun`, copies the worker inputs out of the ORM into plain values, **commits** (connection back to the pool, running row visible to the SSE stream), fans out, and only then — in a fresh transaction — deletes the previous outputs and persists the new ones. Before this, the contract stage held an idle transaction for 925 s on a 66-document data room; the managed Postgres proxy closed the connection and the first write failed with `SSL connection has been closed unexpectedly`, rolling back the whole stage. A failed stage still rolls its deletes back (previous outputs survive). Worker lambdas must never touch ORM instances (expired after the commit). Belt and braces: `db/session.py` sets TCP keepalives + `pool_recycle=1800` on Postgres connections.
+
+- **Sign-in with Microsoft and Google** (`app/services/oauth.py`, `app/api/routes/oauth.py`): OpenID Connect authorization code + PKCE; both browser legs go through the frontend's `/api` proxy, so the redirect URI is `{FRONTEND_URL}/api/auth/oauth/{provider}/callback` and the session cookie lands on the frontend origin like the password login's. State, nonce and PKCE verifier travel in a signed 10-minute HttpOnly cookie (`dm_oauth`), nothing server-side. The ID token is the only identity evidence: RS256 signature against the provider's JWKS (one refetch on an unknown `kid`), issuer (Microsoft's `{tenantid}` template filled from the token's `tid`), audience, expiry, nonce. An identity is keyed by provider + subject; a first sign-in links to the account with the same email, or creates one, **only when the provider vouches for the address** (Google `email_verified`; Microsoft `xms_edov` or the consumer tenant), since a Microsoft tenant admin can put any address on a work account. Accounts created this way store an unusable marker (`!` + random) as `hashed_password`, so the session/reset fingerprints keep working, no password matches, and "Password dimenticata?" gives them one. Deleting such an account needs a session issued in the last ten minutes (`iat`, `reauth_required`) instead of the password; the account page sends the person through the provider again with `?confirm=delete`. `oauth_identities` is not under RLS (read before a tenant is known), like `users`.
 
 - **Postgres Row-Level Security (RLS)** — defense-in-depth on top of the application-level filters. Migration `012` enables RLS + `FORCE` + tenant-isolation policies on every workspace/deal/document-scoped table (incl. `company_profiles`). The auth dependency and every fresh `SessionLocal` (HTTP request, BackgroundTask, Arq worker, SSE stream) bind the tenant via `set_tenant_context(db, user_id)`, which writes the `app.current_user_id` GUC. A pool `checkin` event clears the GUC when a connection is returned. SQLite (test env) and superuser Postgres connections are no-ops — see "Enforcing RLS in production" below.
 
@@ -262,6 +270,9 @@ Enforcement tests live in `tests/test_rls_isolation.py` (opt-in: set `RLS_TEST_D
 | `MIGRATIONS_DATABASE_URL` | _(empty)_ | Optional DDL-capable URL used only by Alembic (`alembic/env.py`); falls back to `DATABASE_URL`. Set it to the `postgres` owner when `DATABASE_URL` uses the RLS role `diligenx_app` |
 | `SECRET_KEY` | `change-me-in-production` | JWT signing key (startup guard refuses the default in production) |
 | `AUTH_COOKIE_SECURE` | `true` | Secure attribute on auth cookies; set `false` only for local http dev |
+| `MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET` | _(empty)_ | Entra ID app registration; both set → "Accedi con Microsoft" on the login page. ID tokens need the optional claims `email` and `xms_edov` |
+| `MICROSOFT_TENANT` | `organizations` | `organizations` (work accounts), `common` (also personal) or one tenant id |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | _(empty)_ | Google OAuth web client; both set → "Accedi con Google" |
 | `ALLOWED_ORIGINS` | `["http://localhost:3000"]` | CORS origins |
 | `UPLOAD_DIR` | `uploads` | Local file upload directory (when `S3_BUCKET` empty) |
 | `MAX_UPLOAD_SIZE_MB` | `50` | Max upload size |

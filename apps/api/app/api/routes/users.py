@@ -27,7 +27,7 @@ from app.core.security import verify_password
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.user import UserRead
-from app.services.auth import get_current_user
+from app.services.auth import get_current_session, get_current_user
 from app.services.storage import delete_file
 
 logger = logging.getLogger(__name__)
@@ -187,8 +187,13 @@ def export_my_data(
     )
 
 
+# An account without a password (Microsoft or Google sign-in only) confirms
+# a deletion by signing in again: its session must be this recent.
+REAUTH_WINDOW_SECONDS = 600
+
+
 class AccountDeleteRequest(BaseModel):
-    password: str
+    password: str | None = None
 
 
 @router.delete("/me", status_code=204)
@@ -198,13 +203,15 @@ def delete_my_account(
     response: Response,
     payload: AccountDeleteRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    session: tuple[User, dict] = Depends(get_current_session),
 ):
     """Erase the account and all its data (GDPR art. 17).
 
     Requires the current password in the body as a deliberate-action
     check — an XSS-hijacked session alone must not be able to wipe an
-    account.
+    account. An account without a password instead needs a session opened
+    in the last ten minutes: the person signs in again with Microsoft or
+    Google to confirm (403 ``reauth_required`` otherwise).
 
     Deletion order:
     1. stored files on R2/local (retain references on a storage failure)
@@ -213,8 +220,15 @@ def delete_my_account(
        missing documents and company profiles with them
     3. the user row
     """
-    if not verify_password(payload.password, current_user.hashed_password):
-        raise HTTPException(status_code=403, detail="Password errata")
+    current_user, claims = session
+    if current_user.has_password:
+        if not verify_password(payload.password or "", current_user.hashed_password):
+            raise HTTPException(status_code=403, detail="Password errata")
+    else:
+        issued_at = claims.get("iat")
+        now = datetime.now(timezone.utc).timestamp()
+        if not isinstance(issued_at, int) or now - issued_at > REAUTH_WINDOW_SECONDS:
+            raise HTTPException(status_code=403, detail="reauth_required")
 
     from app.models.workspace import Workspace
 

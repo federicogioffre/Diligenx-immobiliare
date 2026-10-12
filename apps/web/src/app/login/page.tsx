@@ -1,9 +1,20 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
-import { setWorkspaceId } from '@/lib/auth'
+import { safeNextPath, selectInitialWorkspace } from '@/lib/session'
+import OAuthButtons from '@/components/auth/OAuthButtons'
+
+// Codes the Microsoft/Google callback sends back in ?oauth_error=.
+const OAUTH_ERRORS: Record<string, string> = {
+  cancelled: 'Accesso annullato.',
+  email_not_verified:
+    "Il provider non conferma che l'indirizzo e-mail sia verificato. Accedi con e-mail e password, oppure chiedi all'amministratore del tuo account.",
+  email_missing: 'Il tuo account non comunica un indirizzo e-mail. Accedi con e-mail e password.',
+  account_disabled: 'Questo account è disattivato.',
+  invalid_state: 'La richiesta di accesso è scaduta o non è valida. Riprova.',
+}
 
 type Tab = 'login' | 'register'
 
@@ -20,19 +31,21 @@ export default function LoginPage() {
 
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [next, setNext] = useState('/dashboard')
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    setNext(safeNextPath(params.get('next')))
+    const code = params.get('oauth_error')
+    if (code) setError(OAUTH_ERRORS[code] ?? 'Accesso non riuscito. Riprova, oppure accedi con e-mail e password.')
+  }, [])
 
   async function doLogin(email: string, password: string) {
     // The backend sets the HttpOnly session cookie on this response; the
     // browser applies it before the fetch promise resolves, so the calls
     // below are already authenticated.
     await api.auth.login(email, password)
-    const workspaces = await api.workspaces.list()
-    if (workspaces.length > 0) {
-      setWorkspaceId(workspaces[0].id)
-    } else {
-      const ws = await api.workspaces.create({ name: 'My Workspace' })
-      setWorkspaceId(ws.id)
-    }
+    await selectInitialWorkspace()
     router.push('/dashboard')
   }
 
@@ -203,6 +216,8 @@ export default function LoginPage() {
               </button>
             </form>
           )}
+
+          <OAuthButtons next={next} divider />
         </div>
       </div>
     </div>
