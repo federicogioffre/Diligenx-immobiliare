@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { api, UserRead } from '@/lib/api'
+import { api, oauthStartUrl, UserRead } from '@/lib/api'
+import { providerName } from '@/components/auth/OAuthButtons'
 import { clearAuth } from '@/lib/auth'
 import ErrorAlert from '@/components/ui/ErrorAlert'
 import Spinner from '@/components/ui/Spinner'
@@ -10,7 +11,9 @@ import Spinner from '@/components/ui/Spinner'
 // Account self-service: profile info, GDPR data export (art. 20) and
 // account deletion (art. 17). The deletion flow requires re-typing the
 // password and an explicit textual confirmation — this is the most
-// destructive action in the product.
+// destructive action in the product. An account that signs in only with
+// Microsoft or Google confirms by signing in again, which brings the person
+// back here with ?confirm=delete and a fresh session.
 export default function AccountPage() {
   const [user, setUser] = useState<UserRead | null>(null)
   const [loading, setLoading] = useState(true)
@@ -23,6 +26,14 @@ export default function AccountPage() {
   const [confirmText, setConfirmText] = useState('')
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
+  const [reauthenticated, setReauthenticated] = useState(false)
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('confirm') === 'delete') {
+      setReauthenticated(true)
+      setConfirmOpen(true)
+    }
+  }, [])
 
   useEffect(() => {
     api.users
@@ -59,11 +70,14 @@ export default function AccountPage() {
     setDeleting(true)
     setDeleteError('')
     try {
-      await api.users.deleteAccount(password)
+      await api.users.deleteAccount(user?.has_password === false ? null : password)
       await clearAuth()
       window.location.href = '/'
     } catch (err: unknown) {
-      setDeleteError(err instanceof Error ? err.message : 'Eliminazione fallita')
+      const message = err instanceof Error ? err.message : 'Eliminazione fallita'
+      // The ten-minute window passed: offer the sign-in again.
+      if (message.startsWith('Accesso scaduto')) setReauthenticated(false)
+      setDeleteError(message)
       setDeleting(false)
     }
   }
@@ -92,6 +106,14 @@ export default function AccountPage() {
               <dt className="text-slate-500">Email</dt>
               <dd className="text-slate-900 font-medium">{user.email}</dd>
             </div>
+            {user.auth_providers.length > 0 && (
+              <div className="flex justify-between">
+                <dt className="text-slate-500">Accesso con</dt>
+                <dd className="text-slate-900 font-medium">
+                  {user.auth_providers.map(providerName).join(', ')}
+                </dd>
+              </div>
+            )}
             {user.full_name && (
               <div className="flex justify-between">
                 <dt className="text-slate-500">Nome</dt>
@@ -153,18 +175,41 @@ export default function AccountPage() {
         ) : (
           <div className="space-y-3 border-t border-slate-100 pt-4">
             <ErrorAlert error={deleteError} />
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">
-                Conferma la tua password
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-200"
-                autoComplete="current-password"
-              />
-            </div>
+            {user?.has_password === false ? (
+              reauthenticated ? (
+                <p className="text-sm text-slate-600">
+                  Identità confermata. Hai dieci minuti per completare l&apos;eliminazione.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-sm text-slate-600">
+                    Per confermare che sei tu, accedi di nuovo.
+                  </p>
+                  {user.auth_providers.map((p) => (
+                    <a
+                      key={p}
+                      href={oauthStartUrl(p, '/account?confirm=delete')}
+                      className="inline-flex items-center bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-4 py-2 rounded-lg text-sm font-semibold mr-2"
+                    >
+                      Accedi di nuovo con {providerName(p)}
+                    </a>
+                  ))}
+                </div>
+              )
+            ) : (
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Conferma la tua password
+                </label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-200"
+                  autoComplete="current-password"
+                />
+              </div>
+            )}
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">
                 Scrivi <span className="font-mono font-semibold">ELIMINA</span>{' '}
@@ -180,7 +225,11 @@ export default function AccountPage() {
             <div className="flex items-center gap-2 pt-1">
               <button
                 onClick={handleDelete}
-                disabled={deleting || confirmText !== 'ELIMINA' || !password}
+                disabled={
+                  deleting ||
+                  confirmText !== 'ELIMINA' ||
+                  (user?.has_password === false ? !reauthenticated : !password)
+                }
                 className="inline-flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
               >
                 {deleting && <Spinner size="sm" tone="white" />}

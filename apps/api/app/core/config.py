@@ -37,6 +37,18 @@ class Settings(BaseSettings):
     # http://localhost, unlike Chrome/Firefox).
     AUTH_COOKIE_SECURE: bool = True
 
+    # Sign-in with Microsoft / Google (OpenID Connect). A provider is offered
+    # only when both its client id and secret are set. The redirect URI to
+    # register with each provider is
+    #   {FRONTEND_URL}/api/auth/oauth/{microsoft|google}/callback
+    # MICROSOFT_TENANT: "organizations" (any work or school account),
+    # "common" (also personal accounts) or one tenant's id.
+    MICROSOFT_CLIENT_ID: str = ""
+    MICROSOFT_CLIENT_SECRET: str = ""
+    MICROSOFT_TENANT: str = "organizations"
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+
     # CORS
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
 

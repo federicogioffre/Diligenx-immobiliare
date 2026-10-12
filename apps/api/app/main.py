@@ -23,7 +23,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.limiter import limiter
-from app.api.routes import health, auth, deals, documents, users, workspaces
+from app.api.routes import health, auth, deals, documents, oauth, users, workspaces
 
 # ── Error monitoring ──────────────────────────────────────────────────────
 # Initialised only when SENTRY_DSN is configured, so the SDK is inert in
@@ -156,6 +156,7 @@ _fastapi.add_middleware(
 
 _fastapi.include_router(health.router)
 _fastapi.include_router(auth.router, prefix="/auth", tags=["auth"])
+_fastapi.include_router(oauth.router, prefix="/auth/oauth", tags=["auth"])
 _fastapi.include_router(deals.router, prefix="/deals", tags=["deals"])
 _fastapi.include_router(documents.router, prefix="/documents", tags=["documents"])
 _fastapi.include_router(users.router, prefix="/users", tags=["users"])

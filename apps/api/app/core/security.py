@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -20,8 +21,23 @@ def validate_password(password: str) -> None:
         raise ValueError("La password deve avere almeno 8 caratteri e non superare 72 byte UTF-8")
 
 
+# Prefix of the marker stored for accounts that sign in only through Microsoft
+# or Google. It is never a bcrypt hash, so no password matches it, and it is
+# random, so the session and reset-link fingerprints derived from it stay
+# unguessable. A password reset replaces it with a real hash.
+UNUSABLE_PASSWORD_PREFIX = "!"
+
+
+def make_unusable_password() -> str:
+    return UNUSABLE_PASSWORD_PREFIX + secrets.token_urlsafe(32)
+
+
+def has_usable_password(hashed: str) -> bool:
+    return not hashed.startswith(UNUSABLE_PASSWORD_PREFIX)
+
+
 def verify_password(plain: str, hashed: str) -> bool:
-    if len(plain.encode("utf-8")) > 72:
+    if len(plain.encode("utf-8")) > 72 or not has_usable_password(hashed):
         return False
     try:
         return bcrypt.checkpw(plain.encode(), hashed.encode())
@@ -30,8 +46,11 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_access_token(subject: str, *, user_id: int, hashed_password: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": subject, "exp": expire, "typ": "access", "uid": user_id,
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    # `iat` lets an account without a password prove a recent sign-in where
+    # others re-type their password (account deletion).
+    payload = {"sub": subject, "iat": int(now.timestamp()), "exp": expire, "typ": "access", "uid": user_id,
                "fp": _password_fingerprint(hashed_password)}
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 

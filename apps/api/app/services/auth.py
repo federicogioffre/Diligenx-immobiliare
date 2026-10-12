@@ -12,12 +12,12 @@ from app.models.user import User
 bearer = HTTPBearer(auto_error=False)
 
 
-def get_current_user(
+def get_current_session(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     dm_token: str | None = Cookie(None, alias="dm_token"),
     db: Session = Depends(get_db),
-) -> User:
-    """Resolve the authenticated user from a Bearer header or session cookie.
+) -> tuple[User, dict]:
+    """Resolve the authenticated user and the claims of the session token.
 
     The Bearer header wins when both are present (API clients, tests); the
     browser client relies on the HttpOnly ``dm_token`` cookie set at login.
@@ -33,4 +33,8 @@ def get_current_user(
     # on, Postgres row-level policies restrict every query to this user's
     # rows — even if a handler forgets an ownership filter. No-op on SQLite.
     set_tenant_context(db, user.id)
-    return user
+    return user, claims
+
+
+def get_current_user(session: tuple[User, dict] = Depends(get_current_session)) -> User:
+    return session[0]

@@ -21,6 +21,9 @@ class UserRead(BaseModel):
     full_name: str | None
     is_active: bool
     created_at: datetime
+    # False for an account that signs in only with Microsoft or Google.
+    has_password: bool = True
+    auth_providers: list[str] = []
 
     model_config = {"from_attributes": True}
 
