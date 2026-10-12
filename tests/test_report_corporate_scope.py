@@ -49,20 +49,22 @@ def test_two_explicit_targets_stay_separate_and_follow_scope_order():
 
 
 @pytest.mark.parametrize("lang,label,warning", [
-    ("it", "Capitale Sociale", "richiedono verifica"),
-    ("en", "Corporate Capital", "require verification"),
+    ("it", "Capitale Sociale", "richiede verifica"),
+    ("en", "Corporate Capital", "requires verification"),
 ])
-def test_conflicting_values_and_both_sources_remain_visible(lang, label, warning):
+def test_a_conflict_is_one_line_under_the_table_not_a_list_of_alternatives(lang, label, warning):
+    """Listing every other rendering with its document repeated the introduction."""
     profiles = [
         _profile(corporate_capital="EUR 10,000"),
         _profile(identity=2, document=11, filename="atto costitutivo.pdf", corporate_capital="EUR 20,000"),
     ]
     markdown = _render_corporate_intro(profiles, lang, ["Alfa S.r.l."])
-    assert "EUR 10,000" in markdown and "EUR 20,000" in markdown
+    assert f"| {label} | EUR 10,000 |" in markdown
+    assert "EUR 20,000" not in markdown
     assert "visura.pdf" in markdown and "atto costitutivo.pdf" in markdown
-    assert label in markdown and warning in markdown
-    assert f"- **{label}:** EUR 10,000 (visura.pdf)." in markdown
-    assert f"- **{label}:** EUR 20,000 (atto costitutivo.pdf)." in markdown
+    assert warning in markdown
+    assert label in markdown.split(warning)[0].rsplit("\n", 1)[-1]
+    assert "\n- " not in markdown
 
 
 def test_source_document_id_is_visible_when_filename_is_unavailable():
@@ -134,7 +136,7 @@ def test_refresh_fails_closed_for_missing_or_ambiguous_layout(content):
         refresh_corporate_intro_section(content, [_profile()], ["Alfa SRL"], "en")
 
 
-def test_alternatives_under_the_table_come_from_corporate_records_only():
+def test_only_corporate_records_raise_the_note_under_the_table():
     profiles = [
         _profile(business="Produzione di nastri trasportatori", filename="1-3-10.Visura aggiornata 2022.pdf"),
         _profile(identity=2, document=11, filename="2.1.nuovo statuto .pdf",
@@ -147,7 +149,7 @@ def test_alternatives_under_the_table_come_from_corporate_records_only():
 
     markdown = _render_corporate_intro(profiles, "it", ["Alfa S.r.l."])
 
-    assert markdown.count("- **Oggetto Sociale:**") == 2
+    assert "\n- " not in markdown
     assert "Sostegno" not in markdown
-    assert "- **Esercizio Sociale:**" not in markdown
-    assert "Oggetto Sociale" in markdown.split("valori diversi per:")[1].split(".")[0]
+    note = markdown.split("valori diversi per:")[1].split(".")[0]
+    assert "Oggetto Sociale" in note and "Esercizio Sociale" not in note
