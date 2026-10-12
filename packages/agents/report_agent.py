@@ -533,32 +533,21 @@ def _render_corporate_intro(
             parts.append(f"**{label}:** {'; '.join(_md_cell(source) for source in sources)}.\n")
         conflicts = set(getattr(p, "conflicting_fields", []))
         if conflicts:
+            # One line naming the fields, not the alternatives themselves: the
+            # list of every other rendering with its document repeated the
+            # introduction field by field. The alternatives stay in the deal's
+            # company profile (field_sources) for whoever verifies them.
             fields = ", ".join(label for attr, label in _INTRO_FIELDS[lang] if attr in conflicts)
             message = (
-                f"Different values appear in the sources for: {fields}. "
+                f"The corporate records state different values for: {fields}. "
                 "The table states the value of the most authoritative and most "
-                "recent source; the alternatives are listed below with their "
-                "documents and require verification."
+                "recent source; the point requires verification."
                 if lang == "en" else
-                f"Le fonti riportano valori diversi per: {fields}. "
+                f"Gli atti societari riportano valori diversi per: {fields}. "
                 "La tabella riporta il valore della fonte più autorevole e più "
-                "recente; le alternative sono elencate di seguito con i relativi "
-                "documenti e richiedono verifica."
+                "recente; il punto richiede verifica."
             )
             parts.append(f"_{message}_\n")
-            for attr, label in _INTRO_FIELDS[lang]:
-                if attr not in conflicts:
-                    continue
-                for evidence in getattr(p, "field_sources", {}).get(attr, []):
-                    evidence_sources = evidence.get("source_filenames", [])
-                    if not evidence_sources:
-                        document_label = "Document" if lang == "en" else "Documento"
-                        evidence_sources = [f"{document_label} #{doc_id}" for doc_id in evidence.get("source_document_ids", [])]
-                    source_text = "; ".join(_md_cell(source) for source in evidence_sources)
-                    if not source_text:
-                        source_text = "source unavailable" if lang == "en" else "fonte non disponibile"
-                    parts.append(f"- **{label}:** {_md_cell(evidence.get('value'))} ({source_text}).")
-            parts.append("")
     return "\n".join(parts)
 
 
