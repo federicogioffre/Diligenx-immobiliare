@@ -122,7 +122,7 @@ def test_a_different_figure_is_still_a_conflict_after_normalisation():
     rows = [profile(1, source_id=10, registered_office="Via Bruni 14, 20812 Limbiate (MB)",
                     source_filename="Visura aggiornata 2022.pdf"),
             profile(2, source_id=20, registered_office="VIA BRUNI 14, 20051 LIMBIATE (MB)",
-                    source_filename="redditi sc 2019.pdf")]
+                    source_filename="statuto 2019.pdf")]
     combined = consolidate_company_profiles(rows, ["TargetCo S.p.A."])[0]
     assert combined.conflicting_fields == ["registered_office"]
     assert combined.registered_office == "Via Bruni 14, 20812 Limbiate (MB)"
@@ -185,3 +185,38 @@ def test_a_board_is_never_assembled_from_two_different_dates():
     assert [evidence["value"] for evidence in combined.field_sources["managing_body"]] == [
         board_2021, board_2022,
     ]
+
+
+def test_only_corporate_records_can_contradict_the_table():
+    """A loan contract, a tax return or a set of accounts is not a discrepancy.
+
+    On a real data room the alternatives under the identity table listed the
+    oggetto sociale as "sostegno dell'attività aziendale" (the purpose of a bank
+    loan) and one fiscal year per bilancio and tax return, burying the real
+    alternatives under a page of repetitions. They stay as evidence.
+    """
+    rows = [profile(1, source_id=10, business="Produzione di nastri trasportatori",
+                    fiscal_year="31 dicembre di ogni anno", source_filename="2.1.nuovo statuto.pdf"),
+            profile(2, source_id=20, business="Sostegno dell'attività aziendale",
+                    source_filename="BPM 04582087.pdf"),
+            profile(3, source_id=30, fiscal_year="31/12/2018", source_filename="bil2018-1129_view.pdf"),
+            profile(4, source_id=40, fiscal_year="31/12/2017 (periodo d'imposta 2017)",
+                    source_filename="redditi sc 2018.pdf")]
+    combined = consolidate_company_profiles(rows, ["TargetCo S.p.A."])[0]
+    assert combined.business == "Produzione di nastri trasportatori"
+    assert combined.fiscal_year == "31 dicembre di ogni anno"
+    assert combined.conflicting_fields == []
+    assert combined.conflict_sources["business"] == combined.field_sources["business"][:1]
+    assert len(combined.field_sources["business"]) == 2
+    assert len(combined.field_sources["fiscal_year"]) == 3
+
+
+def test_without_a_corporate_record_equally_ranked_sources_still_disagree():
+    rows = [profile(1, source_id=10, fiscal_year="31/12/2018", source_filename="bilancio 2018.pdf"),
+            profile(2, source_id=20, fiscal_year="30/06/2019", source_filename="bilancio 2019.pdf"),
+            profile(3, source_id=30, fiscal_year="31/12/2017", source_filename="redditi sc 2018.pdf")]
+    combined = consolidate_company_profiles(rows, ["TargetCo S.p.A."])[0]
+    assert combined.fiscal_year == "30/06/2019"
+    assert combined.conflicting_fields == ["fiscal_year"]
+    assert [item["value"] for item in combined.conflict_sources["fiscal_year"]] == [
+        "31/12/2018", "30/06/2019"]
