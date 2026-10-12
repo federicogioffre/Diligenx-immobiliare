@@ -13,7 +13,7 @@
 - **Env:** `.env` via `pydantic-settings`
 - **Frontend:** Next.js 15 (App Router, TypeScript) — login + dashboard + insights + deals UI, server-side auth via cookie
 - **Frontend tests:** Playwright smoke suite (3 tests) in `apps/web/tests/e2e/`
-- **Tests:** pytest + FastAPI TestClient (SQLite), **1607 passing**
+- **Tests:** pytest + FastAPI TestClient (SQLite), **1616 passing**
 
 ## Project Root
 ```
@@ -36,6 +36,7 @@ Diligenx/
 │   │   │   ├── base.py                   # TimestampMixin (created_at, updated_at)
 │   │   │   ├── user.py                   # User → owns Workspaces; `has_password` false for Microsoft/Google-only accounts
 │   │   │   ├── oauth_identity.py         # OAuthIdentity (provider + subject) → User
+│   │   │   ├── credit_transaction.py     # CreditTransaction ledger (grant/charge/refund) behind users.credit_balance
 │   │   │   ├── workspace.py              # Workspace → owner_id FK to User
 │   │   │   ├── deal.py                   # Deal + DealStatus(draft|analyzing|reviewed|closed) → workspace_id FK
 │   │   │   ├── document.py               # Document + DocumentStatus(pending|processing|processed|failed) + language + raw_text
@@ -56,8 +57,10 @@ Diligenx/
 │   │   │   ├── auth.py                   # get_current_user() / get_current_session() — Bearer or cookie
 │   │   │   ├── oauth.py                  # OIDC providers: discovery, PKCE, code exchange, ID-token verification
 │   │   │   ├── storage.py                # S3/R2 client + save_file/read_file (local fallback)
+│   │   │   ├── credits.py                # prepaid credits: analysis_cost (pages), atomic charge (402), refund, signup grant
 │   │   │   ├── jobs.py                   # enqueue_or_run() — Arq pool if REDIS_URL set, else BackgroundTasks
 │   │   │   └── report_export.py          # Markdown → PDF (reportlab) / DOCX (python-docx)
+│   │   ├── credits_cli.py                # `python -m app.credits_cli list|balance|grant` — top up credits
 │   │   ├── worker.py                     # Arq WorkerSettings; consumes jobs enqueued by the API
 │   │   └── api/routes/
 │   │       ├── health.py                 # GET /health
@@ -117,7 +120,7 @@ Diligenx/
 │       └── vector_store.py               # cosine similarity over DocumentChunk.embedding
 │
 ├── infra/, scripts/, docker-compose.yml, railway.toml
-├── tests/                                # 1607 passing
+├── tests/                                # 1616 passing
 └── CLAUDE.md                             # ← this file
 ```
 
@@ -147,7 +150,9 @@ User 1──* Workspace 1──* Deal 1──* Document 1──* DocumentChunk (
 | GET/POST/PATCH/DELETE | `/workspaces/...` | Workspace CRUD (last workspace and non-empty workspaces protected from deletion) |
 | GET/POST | `/deals/?workspace_id=N` | List / create deals in workspace |
 | GET/PATCH/DELETE | `/deals/{deal_id}` | Deal CRUD (PATCH also sets `report_language`: it\|en\|auto) |
-| POST | `/deals/{deal_id}/analyze` | **202** → queues multi-agent pipeline in BackgroundTask |
+| POST | `/deals/{deal_id}/analyze` | **202** → queues multi-agent pipeline in BackgroundTask (**402** `insufficient_credits` when credits are on and the balance is short) |
+| GET | `/deals/{deal_id}/analysis-cost` | Credits the analysis would cost now (pages of processed documents) vs. balance |
+| GET | `/users/me/credits` | Credit balance + last 50 ledger movements |
 | GET | `/deals/{deal_id}/agent-runs` | List AgentRun rows in pipeline order |
 | POST | `/deals/{deal_id}/stream-ticket` | Short-lived deal-scoped ticket for the SSE stream |
 | GET | `/deals/{deal_id}/analysis-stream` | SSE stream of pipeline progress (`?ticket=` from stream-ticket) |
@@ -210,7 +215,7 @@ pnpm install && pnpm dev      # http://localhost:3000
 
 ```bash
 cd apps/api
-python -m pytest ../../tests -q   # 1607 passed
+python -m pytest ../../tests -q   # 1616 passed
 ```
 
 ## Key Design Decisions
@@ -231,6 +236,8 @@ python -m pytest ../../tests -q   # 1607 passed
 - **Anthropic SDK 1.x**: `requirements.txt` pins `anthropic>=1,<2`. The 1.x SDK removed `temperature`/`top_p`/`top_k` from the `messages.create()` signature (passing them is a `TypeError`), so `AnthropicLLMProvider` sends `temperature=0` through `extra_body`, and only for model families that still accept sampling parameters (Claude 4.6/4.5 line and older — `_accepts_sampling_params`). Opus 4.7+, Sonnet 5 and the Claude 5 family reject sampling parameters with a 400, so for those the request carries none.
 - **Parallel LLM fan-out**: per-document LLM work inside each pipeline stage (routing, contract, corporate, corporate-intro) runs on a bounded thread pool via `packages/agents/concurrency.run_llm_tasks` (`LLM_MAX_CONCURRENCY`, default 4). Worker functions are pure (LLM + parse only — no `Session` access); persistence happens on the caller's thread in input order. Contract analysis now inserts only the clauses that survive filtering (no insert-then-delete churn). **One document's failed request never discards the stage** (`isolate_failures=True`, also on `document_coverage.collect_documents_payloads` for the financial batch queue): a document whose model request fails (output truncated at the token limit after the single compact retry, refusal, malformed JSON) comes back as a `TaskFailure` in its slot, the stage persists the other documents, records the gap through `packages/agents/stage_failures.record_unanalysed_documents` (a medium-priority `OpenQuestion` per document in the report language, replaced on every run of the stage, plus `failed_documents` in the stage result) and completes. A stage still fails when *every* document failed, so a systemic fault (credentials, a broken prompt) stays loud. A truncated answer (`LLMTruncatedError`) is retried once by `_complete_json` with a compactness instruction, since a runaway generation is stochastic; the partial records of a truncated answer are never used. Clause extraction caps its output budget at the batch length (min 3072 tokens), because clauses are quotations of the batch and a runaway on a two-page contract must stop early.
 - **No DB transaction across the LLM phase** (`packages/agents/stage_tx.release_connection_before_llm`): every fan-out stage (routing, contract, corporate, corporate-intro, tax, financial) opens its running `AgentRun`, copies the worker inputs out of the ORM into plain values, **commits** (connection back to the pool, running row visible to the SSE stream), fans out, and only then — in a fresh transaction — deletes the previous outputs and persists the new ones. Before this, the contract stage held an idle transaction for 925 s on a 66-document data room; the managed Postgres proxy closed the connection and the first write failed with `SSL connection has been closed unexpectedly`, rolling back the whole stage. A failed stage still rolls its deletes back (previous outputs survive). Worker lambdas must never touch ORM instances (expired after the commit). Belt and braces: `db/session.py` sets TCP keepalives + `pool_recycle=1800` on Postgres connections.
+
+- **Prepaid credits** (`app/services/credits.py`, migration `023`): off unless `CREDITS_ENABLED`. One credit = one analysed page (`page_count`, else 3000 characters a page, at least 1 per document), because the model bill grows with the data room, not the number of runs. `/analyze` charges at admission in the same commit as the `analyzing` claim (a rejected claim rolls the charge back) and refunds when the job cannot be queued; `/resume-analysis` is free, since it finishes a run already paid. `/ask` and `POST /report` charge `ASK_CREDIT_COST` / `REPORT_CREDIT_COST`, committed before the model call, and refund on failure. The charge is a conditional `UPDATE ... WHERE credit_balance >= cost` (no overspend under concurrency) plus a `credit_transactions` row; insufficient balance → **402** with `code=insufficient_credits`, `required`, `balance`. New accounts (password or Microsoft/Google) receive `SIGNUP_CREDITS`; existing ones start at 0. `CREDITS_UNLIMITED_EMAILS` are never charged. The ledger is not under RLS (user-scoped, like `users`), is in the GDPR export and cascades on account deletion. The deal page shows cost and balance next to "Avvia Analisi".
 
 - **Sign-in with Microsoft and Google** (`app/services/oauth.py`, `app/api/routes/oauth.py`): OpenID Connect authorization code + PKCE; both browser legs go through the frontend's `/api` proxy, so the redirect URI is `{FRONTEND_URL}/api/auth/oauth/{provider}/callback` and the session cookie lands on the frontend origin like the password login's. State, nonce and PKCE verifier travel in a signed 10-minute HttpOnly cookie (`dm_oauth`), nothing server-side. The ID token is the only identity evidence: RS256 signature against the provider's JWKS (one refetch on an unknown `kid`), issuer (Microsoft's `{tenantid}` template filled from the token's `tid`), audience, expiry, nonce. An identity is keyed by provider + subject; a first sign-in links to the account with the same email, or creates one, **only when the provider vouches for the address** (Google `email_verified`; Microsoft `xms_edov` or the consumer tenant), since a Microsoft tenant admin can put any address on a work account. Accounts created this way store an unusable marker (`!` + random) as `hashed_password`, so the session/reset fingerprints keep working, no password matches, and "Password dimenticata?" gives them one. Deleting such an account needs a session issued in the last ten minutes (`iat`, `reauth_required`) instead of the password; the account page sends the person through the provider again with `?confirm=delete`. `oauth_identities` is not under RLS (read before a tenant is known), like `users`. Migration `022` grants it to every role that has DML on `users` (the production API runs as a non-owner role, and 021 left the table unreadable to it: the first sign-in failed with `permission denied`), and sets default privileges so tables created by later migrations are granted too.
 
@@ -286,6 +293,10 @@ Enforcement tests live in `tests/test_rls_isolation.py` (opt-in: set `RLS_TEST_D
 | `ANTHROPIC_API_KEY` | _(empty)_ | Required only for an explicit `claude-*` analysis model |
 | `ANALYSIS_MODEL` | `gpt-5.6-luna` | Model for the bulk-reading stages (routing, contract, corporate, corporate-intro, tax, financial) and document Q&A, shared by API and worker |
 | `JUDGMENT_MODEL` | _(empty = `ANALYSIS_MODEL`)_ | Model for the judgment stages: red-flag aggregation, source-fidelity review, executive summary. Production runs `claude-sonnet-5` (needs `ANTHROPIC_API_KEY` on worker and API). A `set_llm_provider` test stub covers both roles |
+| `CREDITS_ENABLED` | `false` | Charge prepaid credits for analyses, questions and report regeneration |
+| `SIGNUP_CREDITS` | `300` | Opening balance of every new account |
+| `ASK_CREDIT_COST` / `REPORT_CREDIT_COST` | `1` / `5` | Credits per document question / per regenerated report (an analysis costs one per page) |
+| `CREDITS_UNLIMITED_EMAILS` | `[]` | JSON list of addresses never charged (e.g. the owner) |
 | `LLM_MAX_CONCURRENCY` | `4` | Max parallel per-document LLM calls within an analysis stage (`1` = sequential) |
 | `WORKER_JOB_TIMEOUT_SECONDS` | `10800` | Arq job timeout for one whole analysis run (every stage, including the aggregation and its source-fidelity review); the child process gets the same deadline. A 66-document data room needs well over the previous default of one hour |
 | `REDIS_URL` | _(empty)_ | If set, `/analyze` and `/upload` enqueue jobs to Arq instead of FastAPI BackgroundTasks. Run a worker alongside the API: `arq app.worker.WorkerSettings`. Format: `redis://default:<pw>@host:port` or `rediss://...` (TLS, recommended on Upstash). |

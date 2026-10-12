@@ -7,6 +7,7 @@ from datetime import timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from app.core.limiter import limiter
+from app.core.config import settings
 from sqlalchemy.orm import Session, selectinload
 from starlette.concurrency import run_in_threadpool
 
@@ -282,6 +283,9 @@ async def analyze_deal(
     previous_status = deal.status
     await _require_inactive_analysis_job(request, deal_id)
     user_id = current_user.id
+    from app.services import credits
+    # Commits with the admission below, so a rejected claim rolls it back.
+    charged = credits.charge(db, current_user, credits.analysis_cost(db, deal_id), "analysis", deal_id=deal_id)
     # Compare-and-set also protects SQLite, where FOR UPDATE is ignored.
     claimed = db.query(Deal).filter(
         Deal.id == deal_id, Deal.status != DealStatus.analyzing,
@@ -306,6 +310,7 @@ async def analyze_deal(
         db.query(Deal).filter(Deal.id == deal_id, Deal.status == DealStatus.analyzing).update(
             {Deal.status: previous_status}, synchronize_session=False,
         )
+        credits.refund(db, user_id, charged, deal_id=deal_id, note="analysis not queued")
         db.commit()
         raise
 
@@ -320,6 +325,21 @@ async def analyze_deal(
         report_id=None,
         stages=None,
     )
+
+
+@router.get("/{deal_id}/analysis-cost")
+def analysis_cost(
+    deal_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    """What starting an analysis now would cost, against the user's balance."""
+    from app.services import credits
+    deal = db.query(Deal).filter(Deal.id == deal_id, Deal.workspace.has(owner_id=current_user.id)).first()
+    if deal is None:
+        raise HTTPException(404, "Deal not found")
+    cost = credits.analysis_cost(db, deal_id)
+    charged = credits.is_charged(current_user)
+    return {"cost": cost, "balance": current_user.credit_balance, "charged": charged,
+            "sufficient": not charged or current_user.credit_balance >= cost}
 
 
 @router.get("/{deal_id}/analysis-checkpoint")
@@ -472,18 +492,36 @@ def generate_report(
     )
     from app.models.deal import DealStatus
 
+    from app.services import credits
+
+    if deal.status == DealStatus.analyzing:
+        raise HTTPException(status_code=409, detail="Analisi in corso: attendi il completamento.")
+    # Committed before the deal is locked, since generation may commit on its own.
+    user_id = current_user.id
+    charged = credits.charge(db, current_user, settings.REPORT_CREDIT_COST, "report", deal_id=deal_id)
+    db.commit()
+
+    def _refund(note: str) -> None:
+        db.rollback()
+        credits.refund(db, user_id, charged, deal_id=deal_id, note=note)
+        db.commit()
+
     deal = db.query(Deal).filter(Deal.id == deal_id).with_for_update().populate_existing().one()
     if deal.status == DealStatus.analyzing:
+        _refund("analysis running")
         raise HTTPException(status_code=409, detail="Analisi in corso: attendi il completamento.")
 
     try:
         result = generate_due_diligence_report(deal_id, db)
     except IncompleteAnalysisError as exc:
+        _refund("analysis incomplete")
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
+        _refund("report not generated")
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception:
         logger.exception("Report generation failed for deal %d", deal_id)
+        _refund("report failed")
         raise HTTPException(status_code=500, detail="Report generation failed")
 
     return result
@@ -512,13 +550,25 @@ def ask_deal_question(
         raise HTTPException(status_code=404, detail="Deal not found")
 
     from packages.agents.deal_qa_agent import answer_deal_question
+    from app.services import credits
+
+    user_id = current_user.id
+    charged = credits.charge(db, current_user, settings.ASK_CREDIT_COST, "ask", deal_id=deal_id)
+    db.commit()
+
+    def _refund(note: str) -> None:
+        db.rollback()
+        credits.refund(db, user_id, charged, deal_id=deal_id, note=note)
+        db.commit()
 
     try:
         result = answer_deal_question(deal_id, payload.question, db)
     except ValueError as exc:
+        _refund("question not answered")
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception:
         logger.exception("Q&A failed for deal %d", deal_id)
+        _refund("question failed")
         raise HTTPException(status_code=500, detail="Question answering failed")
 
     return result

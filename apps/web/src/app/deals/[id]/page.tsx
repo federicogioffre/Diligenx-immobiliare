@@ -9,6 +9,7 @@ import {
   AnalysisStageEvent,
   AnalysisStreamEvent,
   AnalysisBatchProgress,
+  AnalysisCost,
   DealRead,
   DocumentRead,
   MissingDocumentRead,
@@ -661,6 +662,7 @@ export default function DealPage() {
   const [startingAnalysis, setStartingAnalysis] = useState(false)
   const [analysisStartFailed, setAnalysisStartFailed] = useState(false)
   const [canResume, setCanResume] = useState(false)
+  const [analysisCost, setAnalysisCost] = useState<AnalysisCost | null>(null)
   const [batchProgress, setBatchProgress] = useState<AnalysisBatchProgress | null>(null)
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [retryingId, setRetryingId] = useState<number | null>(null)
@@ -778,6 +780,15 @@ export default function DealPage() {
       } catch { /* keep polling */ }
     }, 8000)
   }
+
+  // The cost follows the inventory, and the balance changes after each run.
+  useEffect(() => {
+    let cancelled = false
+    api.deals.analysisCost(dealId)
+      .then((cost) => { if (!cancelled) setAnalysisCost(cost) })
+      .catch(() => { if (!cancelled) setAnalysisCost(null) })
+    return () => { cancelled = true }
+  }, [dealId, docs, analyzing])
 
   /**
    * Refresh the documents list after the UploadZone component reports
@@ -1041,6 +1052,14 @@ export default function DealPage() {
             )}
           </button>
         </div>
+
+        {analysisCost?.charged && !analyzing && docs.length > 0 && (
+          <p className={`-mt-2 mb-4 text-right text-xs ${canResume || analysisCost.sufficient ? 'text-slate-500' : 'text-red-600'}`}>
+            {canResume
+              ? `Ripresa gratuita · saldo ${analysisCost.balance} crediti`
+              : `Costo: ${analysisCost.cost} crediti (1 per pagina) · saldo ${analysisCost.balance}`}
+          </p>
+        )}
 
         <ErrorAlert error={error} className="mb-4" />
 

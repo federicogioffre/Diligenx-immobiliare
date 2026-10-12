@@ -44,6 +44,25 @@ def _iso(dt) -> str | None:
     return dt.isoformat() if dt else None
 
 
+@router.get("/me/credits")
+def get_my_credits(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Credit balance and the latest movements of the ledger."""
+    from app.models.credit_transaction import CreditTransaction
+    from app.services.credits import is_charged
+    rows = (db.query(CreditTransaction).filter(CreditTransaction.user_id == current_user.id)
+            .order_by(CreditTransaction.id.desc()).limit(50).all())
+    return {
+        "balance": current_user.credit_balance,
+        "charged": is_charged(current_user),
+        "transactions": [_credit_transaction(t) for t in rows],
+    }
+
+
+def _credit_transaction(t) -> dict:
+    return {"delta": t.delta, "balance_after": t.balance_after, "reason": t.reason,
+            "deal_id": t.deal_id, "note": t.note, "created_at": _iso(t.created_at)}
+
+
 @router.get("/me/export")
 @limiter.limit("5/minute")
 def export_my_data(
@@ -163,7 +182,12 @@ def export_my_data(
             "email": current_user.email,
             "full_name": current_user.full_name,
             "created_at": _iso(current_user.created_at),
+            "credit_balance": current_user.credit_balance,
         },
+        "credit_transactions": [
+            _credit_transaction(t)
+            for t in sorted(current_user.credit_transactions, key=lambda t: t.id)
+        ],
         "workspaces": [
             {
                 "id": w.id,

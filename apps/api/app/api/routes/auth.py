@@ -73,6 +73,8 @@ def register(request: Request, payload: UserCreate, db: Session = Depends(get_db
         full_name=payload.full_name,
     )
     db.add(user)
+    from app.services.credits import grant_signup
+    grant_signup(db, user)
     db.commit()
     db.refresh(user)
     return user

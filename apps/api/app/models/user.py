@@ -1,4 +1,4 @@
-from sqlalchemy import String, Boolean
+from sqlalchemy import String, Boolean, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -16,10 +16,16 @@ class User(TimestampMixin, Base):
     hashed_password: Mapped[str] = mapped_column(String(128))
     full_name: Mapped[str | None] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Prepaid credits (see app.services.credits); 1 credit = 1 analysed page.
+    credit_balance: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     workspaces = relationship("Workspace", back_populates="owner")
     oauth_identities = relationship(
         "OAuthIdentity", back_populates="user", cascade="all, delete-orphan",
+    )
+    credit_transactions = relationship(
+        "CreditTransaction", back_populates="user", cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
     @property

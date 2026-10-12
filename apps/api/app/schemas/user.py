@@ -24,6 +24,7 @@ class UserRead(BaseModel):
     # False for an account that signs in only with Microsoft or Google.
     has_password: bool = True
     auth_providers: list[str] = []
+    credit_balance: int = 0
 
     model_config = {"from_attributes": True}
 
