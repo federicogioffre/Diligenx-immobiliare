@@ -537,19 +537,24 @@ def _render_corporate_intro(
             message = (
                 f"Different values appear in the sources for: {fields}. "
                 "The table states the value of the most authoritative and most "
-                "recent source; the alternatives are listed below with their "
-                "documents and require verification."
+                "recent source; the alternatives found in the corporate records "
+                "(registry extract, by-laws, shareholders' book, minutes) are "
+                "listed below with their documents and require verification."
                 if lang == "en" else
                 f"Le fonti riportano valori diversi per: {fields}. "
                 "La tabella riporta il valore della fonte più autorevole e più "
-                "recente; le alternative sono elencate di seguito con i relativi "
-                "documenti e richiedono verifica."
+                "recente; le alternative risultanti dagli atti societari (visura, "
+                "statuto, libro soci, verbali) sono elencate di seguito con i "
+                "relativi documenti e richiedono verifica."
             )
             parts.append(f"_{message}_\n")
             for attr, label in _INTRO_FIELDS[lang]:
                 if attr not in conflicts:
                     continue
-                for evidence in getattr(p, "field_sources", {}).get(attr, []):
+                alternatives = getattr(p, "conflict_sources", None)
+                if alternatives is None:
+                    alternatives = getattr(p, "field_sources", {})
+                for evidence in alternatives.get(attr, []):
                     evidence_sources = evidence.get("source_filenames", [])
                     if not evidence_sources:
                         document_label = "Document" if lang == "en" else "Documento"

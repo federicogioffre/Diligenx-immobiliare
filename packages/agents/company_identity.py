@@ -62,9 +62,16 @@ _SOURCE_RANKS = (
     (re.compile(r"statut|atto\s*costitutiv|costituzion", re.I), 1),
     (re.compile(r"libro\s*soci|decision[ei]\s*soci|patto|quot", re.I), 2),
     (re.compile(r"verbal|consiglio|assemble|cda", re.I), 3),
-    (re.compile(r"bilanc|nota\s*integrativ", re.I), 4),
+    (re.compile(r"bilanc|(?<![a-z])bil[\s_-]*\d{2,4}|nota\s*integrativ", re.I), 4),
 )
 _UNRANKED_SOURCE = len(_SOURCE_RANKS) + 1
+#: The last rank that is a corporate record (visura, statuto/atto costitutivo,
+#: libro soci/patti, verbali). Only a corporate record can contradict the
+#: identity table: a loan contract's "purpose of the financing", one fiscal
+#: year per set of accounts or a tax return's heading are not a discrepancy in
+#: the company's oggetto sociale or fiscal year, and listing them buried the
+#: real alternatives under a page of repetitions.
+_CORPORATE_RECORD_RANK = 3
 _DATE_PATTERNS = (
     re.compile(r"(?P<y>(?:19|20)\d{2})[.\-_/ ](?P<m>\d{1,2})[.\-_/ ](?P<d>\d{1,2})"),
     re.compile(r"(?P<d>\d{1,2})[.\-_/ ](?P<m>\d{1,2})[.\-_/ ](?P<y>(?:19|20)\d{2})"),
@@ -133,9 +140,10 @@ def consolidate_company_profiles(
 
     Each field carries a single value, taken from the most authoritative and
     most recent source that states it (see ``_authority``). Every distinct
-    value survives in ``field_sources`` with its documents, and a field whose
-    sources disagree is named in ``conflicting_fields``, so the report can
-    state one figure and still show what else the data room says. Source rows
+    value survives in ``field_sources`` with its documents. A field whose
+    corporate records disagree is named in ``conflicting_fields`` and its
+    reportable alternatives are in ``conflict_sources``, so the report can
+    state one figure and still show what else the corporate records say. Source rows
     are never mutated. Missing scope returns an empty list.
     """
     if not target_company_names or isinstance(target_company_names, (str, bytes)):
@@ -165,6 +173,7 @@ def consolidate_company_profiles(
         values["company_name"] = target_name
         conflicting_fields = []
         field_sources = {}
+        conflict_sources = {}
         for field in PROFILE_FIELDS:
             alternatives = {}
             standing = {}
@@ -197,8 +206,6 @@ def consolidate_company_profiles(
                 evidence["source_document_ids"].sort()
                 evidence["profile_ids"].sort()
             field_sources[field] = list(alternatives.values())
-            if len(alternatives) > 1:
-                conflicting_fields.append(field)
             # One value per field, from the most authoritative and most recent
             # source. Merging every rendering instead gave an introduction with
             # eight spellings of one legal form and twenty-five of one
@@ -206,6 +213,18 @@ def consolidate_company_profiles(
             # report lists them under the table for the fields that disagree.
             best = min(standing, key=standing.__getitem__, default=None)
             values[field] = alternatives[best]["value"] if best is not None else None
+            if best is None:
+                conflict_sources[field] = []
+                continue
+            # A disagreement is reported only between corporate records, or,
+            # where none states the field, between sources as authoritative as
+            # the one the table relies on. Everything else stays in
+            # field_sources as evidence, without being listed in the report.
+            ceiling = max(standing[best][0][0], _CORPORATE_RECORD_RANK)
+            conflict_sources[field] = [evidence for value_key, evidence in alternatives.items()
+                                       if standing[value_key][0][0] <= ceiling]
+            if len(conflict_sources[field]) > 1:
+                conflicting_fields.append(field)
 
         sources = {}
         for profile in members:
@@ -224,6 +243,7 @@ def consolidate_company_profiles(
                        and math.isfinite(value) and 0 <= value <= 1]
         values.update(confidence=min(confidences) if confidences else None,
                       source_document_ids=source_ids, source_filenames=filenames,
-                      conflicting_fields=conflicting_fields, field_sources=field_sources)
+                      conflicting_fields=conflicting_fields, field_sources=field_sources,
+                      conflict_sources=conflict_sources)
         result.append(SimpleNamespace(**values))
     return result
