@@ -276,11 +276,29 @@ async def run_ingestion_for_document(ctx: dict[str, Any], document_id: int, user
         raise JobProcessError(f"Ingestion process failed for document {document_id} (exit {code})")
 
 
+# A deploy starts API and worker together, and only the API runs the
+# migrations: a worker that checks first would find the previous revision.
+MIGRATION_WAIT_SECONDS = 300
+MIGRATION_POLL_SECONDS = 5
+
+
 async def _startup(ctx: dict[str, Any]) -> None:
-    from app.core.runtime_validation import validate_beta_configuration, validate_beta_database
+    from app.core.runtime_validation import (
+        PendingMigrationsError, validate_beta_configuration, validate_beta_database,
+    )
 
     validate_beta_configuration()
-    await asyncio.to_thread(validate_beta_database)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + MIGRATION_WAIT_SECONDS
+    while True:
+        try:
+            await asyncio.to_thread(validate_beta_database)
+            return
+        except PendingMigrationsError:
+            if loop.time() >= deadline:
+                raise
+            logger.warning("Database not at the migration head yet; waiting for the API to migrate")
+            await asyncio.sleep(MIGRATION_POLL_SECONDS)
 
 
 class WorkerSettings:
