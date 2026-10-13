@@ -24,6 +24,10 @@ def validate_beta_configuration() -> None:
         raise RuntimeError("Worker and LLM concurrency/timeout/retry limits must be positive")
 
 
+class PendingMigrationsError(RuntimeError):
+    """The database is not at this code's migration head (yet)."""
+
+
 def validate_beta_database() -> None:
     if not settings.BETA_MODE:
         return
@@ -50,4 +54,4 @@ def validate_beta_database() -> None:
         scripts = ScriptDirectory(str(Path(__file__).resolve().parents[2] / "alembic"))
         revisions = set(conn.execute(text("SELECT version_num FROM alembic_version")).scalars())
         if revisions != set(scripts.get_heads()):
-            raise RuntimeError("BETA_MODE requires all current database migrations")
+            raise PendingMigrationsError("BETA_MODE requires all current database migrations")

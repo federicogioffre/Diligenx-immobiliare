@@ -14,7 +14,7 @@
 - **Frontend:** Next.js 15 (App Router, TypeScript) — login + dashboard + insights + deals UI, server-side auth via cookie
 - **Frontend design system:** tokens in `apps/web/tailwind.config.ts` — `blue-*` resolves to the brand ultramarine scale, `ink` is the dark surface, Geist / Geist Mono / Instrument Serif (`font-display`) self-hosted via `next/font` (no request to Google from the browser); shared utilities (`bg-grid`, `glass`, `reveal`, `text-gradient`) in `globals.css`; `MainContainer` renders `/` and `/login` full-bleed. **Dark mode** (signed-in area only): every palette (`slate`, `blue`, `red`, `amber`, `emerald`, `orange`, `violet`, `indigo`) and `surface` (cards/inputs — use `bg-surface`, not `bg-white`) read `--c-*` RGB variables redefined under `.dark` in `globals.css`, so most classes need no `dark:` twin; only dark-filled buttons (`bg-slate-800/900`, `bg-ink`) and `prose` (`dark:prose-invert`) do. `components/theme/ThemeProvider` sets `.dark` from the `dm_theme` localStorage preference (light | dark | absent = system), never on `/` and `/login`; an inline boot script in `<head>` applies it before first paint
 - **Frontend tests:** Playwright smoke suite (3 tests) in `apps/web/tests/e2e/`
-- **Tests:** pytest + FastAPI TestClient (SQLite), **1616 passing**
+- **Tests:** pytest + FastAPI TestClient (SQLite), **1619 passing**
 
 ## Project Root
 ```
@@ -121,7 +121,7 @@ Diligenx/
 │       └── vector_store.py               # cosine similarity over DocumentChunk.embedding
 │
 ├── infra/, scripts/, docker-compose.yml, railway.toml
-├── tests/                                # 1616 passing
+├── tests/                                # 1619 passing
 └── CLAUDE.md                             # ← this file
 ```
 
@@ -216,7 +216,7 @@ pnpm install && pnpm dev      # http://localhost:3000
 
 ```bash
 cd apps/api
-python -m pytest ../../tests -q   # 1616 passed
+python -m pytest ../../tests -q   # 1619 passed
 ```
 
 ## Key Design Decisions
@@ -229,6 +229,7 @@ python -m pytest ../../tests -q   # 1616 passed
 - `/analyze` and `/upload` return immediately; actual work runs in FastAPI `BackgroundTasks` using a fresh `SessionLocal` (not the request's DB session)
 - Rate limiting via `slowapi` (5/min on `/analyze`, 30/min on `/documents/upload`, etc.) — disabled in tests via autouse fixture in `tests/conftest.py`
 - MIME types allowed: `application/pdf`, `text/plain`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`
+- **Worker waits for the API's migrations**: a deploy starts API and worker together and only the API runs `alembic upgrade head`, so under `BETA_MODE` the worker's startup retries `validate_beta_database` every 5 s for up to 5 min while it raises `PendingMigrationsError` (any other beta check still stops it at once). Before this, the deploy of migration 023 crashed the worker: it checked the revision before the API had migrated, and Railway had already removed the previous worker.
 - **Durable jobs**: when `REDIS_URL` is set, `/analyze` and `/upload` enqueue jobs to an Arq pool (managed via FastAPI lifespan); a separate worker process consumes them (`arq app.worker.WorkerSettings`). When unset, jobs run in-process via FastAPI `BackgroundTasks` — same behaviour as before. Enqueue failures fall back transparently.
 - **Tax rules are versioned, never prompted**: `packages/agents/tax_rules_registry.py` holds Italian tax rules keyed by `rule_id` with `valid_from`/`valid_to` in **fiscal years**, a citation and a short bilingual gloss, plus `assessment_period(fiscal_year)` (four years up to FY2015, five from FY2016, longer where no return was filed) and `open_fiscal_years()`. It deliberately carries **no penalty rate, interest rate or reduction fraction** — those depend on the year *and* the procedure and have been amended repeatedly (D.Lgs. 158/2015, D.Lgs. 87/2024), so quantification is left to the client's tax advisers and the report prints a provision rather than arithmetic. `TAX_ANALYSIS_PROMPT` forbids the model from computing taxes, penalties or interest; a test asserts the registry's glosses contain no percentages or fractions.
 - **GPT-5.6 Luna migration**: the default is `gpt-5.6-luna` for all analysis and document Q&A. OpenAI Responses requests set `reasoning.effort=none`, `store=false` and `truncation=disabled`. Structured extraction uses one forced function call; grounding reviews use strict schemas. Refusals, incomplete responses and malformed data are failures, not analysis evidence. `ANALYSIS_MODEL` overrides take precedence on both API and worker; an explicit `claude-*` override selects Anthropic. A missing selected API key never silently switches providers.
