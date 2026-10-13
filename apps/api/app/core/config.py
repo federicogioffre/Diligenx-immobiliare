@@ -97,6 +97,18 @@ class Settings(BaseSettings):
     WORKER_JOB_TIMEOUT_SECONDS: int = 10800
     WORKER_MAX_TRIES: int = 3
 
+    # Prepaid credits. With CREDITS_ENABLED an analysis costs one credit per
+    # page of the data room (charged when it is admitted; resuming an
+    # interrupted run is free), a document question ASK_CREDIT_COST and a
+    # regenerated report REPORT_CREDIT_COST. New accounts receive
+    # SIGNUP_CREDITS; top-ups go through `python -m app.credits_cli`.
+    # Addresses in CREDITS_UNLIMITED_EMAILS are never charged.
+    CREDITS_ENABLED: bool = False
+    SIGNUP_CREDITS: int = 300
+    ASK_CREDIT_COST: int = 1
+    REPORT_CREDIT_COST: int = 5
+    CREDITS_UNLIMITED_EMAILS: list[str] = []
+
     # Error monitoring (Sentry). Leave empty to run without Sentry — the
     # SDK is only initialised when a DSN is provided, so the dependency
     # is inert in local dev and tests. traces_sample_rate is kept low by

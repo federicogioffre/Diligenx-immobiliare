@@ -175,6 +175,9 @@ def _resolve_user(db: Session, profile: OAuthProfile) -> tuple[User, bool]:
         raise OAuthError("account_disabled")
     db.add(OAuthIdentity(user=user, provider=profile.provider, subject=profile.subject, email=profile.email))
     try:
+        if created:
+            from app.services.credits import grant_signup
+            grant_signup(db, user)
         db.commit()
     except IntegrityError:
         # Two first sign-ins of the same person raced; the other one won.

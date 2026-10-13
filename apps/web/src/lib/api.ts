@@ -19,6 +19,15 @@ export interface UserRead {
   /** False for an account that signs in only with Microsoft or Google. */
   has_password: boolean
   auth_providers: OAuthProvider[]
+  /** Prepaid credits left; one credit is one analysed page. */
+  credit_balance: number
+}
+
+export interface AnalysisCost {
+  cost: number
+  balance: number
+  charged: boolean
+  sufficient: boolean
 }
 
 export type OAuthProvider = 'microsoft' | 'google'
@@ -499,6 +508,10 @@ export const api = {
     },
     resumeAnalysis(id: number): Promise<DealAnalysisResponse> {
       return request(`/deals/${id}/resume-analysis`, { method: 'POST' })
+    },
+    /** Credits an analysis would cost now; `charged` is false when credits are off or the account is unlimited. */
+    analysisCost(id: number): Promise<AnalysisCost> {
+      return request(`/deals/${id}/analysis-cost`)
     },
     analysisCheckpoint(id: number): Promise<{ available: boolean; completed_stages?: number; next_stage?: string; reason?: string }> {
       return request(`/deals/${id}/analysis-checkpoint`)
