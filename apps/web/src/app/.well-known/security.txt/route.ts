@@ -15,6 +15,7 @@ export function GET(): Response {
     `Expires: ${expires}`,
     `Preferred-Languages: it, en`,
     `Canonical: ${SITE}/.well-known/security.txt`,
+    `Policy: ${SITE}/security`,
     "",
   ].join("\n");
 

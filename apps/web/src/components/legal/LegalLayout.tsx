@@ -6,7 +6,7 @@ const NAV = [
   { href: '/cookies',  label: 'Cookie Policy' },
   { href: '/terms',    label: 'Termini di Servizio' },
   { href: '/dpa',      label: 'DPA' },
-  { href: '/security', label: 'Security Overview' },
+  { href: '/security', label: 'Sicurezza' },
 ]
 
 interface Props {
