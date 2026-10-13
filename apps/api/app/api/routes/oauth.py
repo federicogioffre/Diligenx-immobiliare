@@ -173,6 +173,15 @@ def _resolve_user(db: Session, profile: OAuthProfile) -> tuple[User, bool]:
         db.add(user)
     elif not user.is_active:
         raise OAuthError("account_disabled")
+    elif user.has_password:
+        # Registration does not verify the address, so whoever set this
+        # password may not own the mailbox the provider just vouched for:
+        # someone could register a colleague's address first and keep
+        # reading everything its owner uploads after the link. Replacing the
+        # hash closes that door and, through the session fingerprint, every
+        # session opened with it. The owner gets a password back through
+        # "Password dimenticata?", which proves the mailbox.
+        user.hashed_password = make_unusable_password()
     db.add(OAuthIdentity(user=user, provider=profile.provider, subject=profile.subject, email=profile.email))
     try:
         if created:

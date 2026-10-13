@@ -195,8 +195,53 @@ def test_verified_email_links_existing_password_account(client, db, test_user, i
     assert resp.headers["location"].startswith("/login/complete")
     db.refresh(test_user)
     assert test_user.auth_providers == ["google"]
-    assert test_user.has_password
+    # The password was set by someone the provider never vouched for.
+    assert not test_user.has_password
     assert db.query(User).count() == 1
+
+
+def test_pre_registered_password_stops_working_once_the_owner_signs_in(client, db, idp):
+    # Someone registers the address before its owner ever uses Diligenx...
+    assert client.post("/auth/register", json={
+        "email": "avvocato@studio.it", "password": "attacker-pass"}).status_code == 201
+    login = client.post("/auth/login", data={"username": "avvocato@studio.it", "password": "attacker-pass"})
+    squatter_session = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert client.get("/users/me", headers=squatter_session).status_code == 200
+
+    # ...then the owner signs in with Google, which vouches for the mailbox.
+    resp = _sign_in(client, idp, "google")
+    assert resp.headers["location"].startswith("/login/complete")
+    assert db.query(User).count() == 1
+
+    # Neither the password nor the session opened with it opens the account.
+    client.cookies.clear()
+    assert client.post("/auth/login", data={
+        "username": "avvocato@studio.it", "password": "attacker-pass"}).status_code == 401
+    assert client.get("/users/me", headers=squatter_session).status_code == 401
+
+
+def test_pre_registered_admin_address_does_not_become_admin(client, db, idp, monkeypatch):
+    monkeypatch.setattr(settings, "ADMIN_EMAILS", ["avvocato@studio.it"])
+    client.post("/auth/register", json={"email": "Avvocato@Studio.it", "password": "attacker-pass"})
+    _sign_in(client, idp, "microsoft")  # the owner, vouched by xms_edov
+    client.cookies.clear()
+    stored = db.query(User).one().email  # however registration spelled it
+    login = client.post("/auth/login", data={"username": stored, "password": "attacker-pass"})
+    if login.status_code == 200:
+        squatter_session = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        assert client.get("/users/me", headers=squatter_session).json()["is_admin"] is False
+    assert login.status_code == 401
+    assert db.query(User).count() == 1
+
+
+def test_an_address_registers_once_whatever_its_case(client, db):
+    assert client.post("/auth/register", json={
+        "email": "Avvocato@Studio.it", "password": "first-pass1"}).status_code == 201
+    assert db.query(User).one().email == "avvocato@studio.it"
+    second = client.post("/auth/register", json={"email": "AVVOCATO@studio.it", "password": "second-pass"})
+    assert second.status_code == 400
+    login = client.post("/auth/login", data={"username": "AVVOCATO@Studio.IT", "password": "first-pass1"})
+    assert login.status_code == 200
 
 
 def test_next_is_kept_only_when_it_is_a_local_path(client, idp):

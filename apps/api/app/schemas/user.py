@@ -7,6 +7,13 @@ class UserCreate(BaseModel):
     password: str
     full_name: str | None = None
 
+    @field_validator("email")
+    @classmethod
+    def lower_email(cls, value):
+        # EmailStr keeps the local part's case; stored addresses are lower
+        # case so one mailbox can hold only one account (see migration 024).
+        return value.lower()
+
     @field_validator("password")
     @classmethod
     def valid_password(cls, value):

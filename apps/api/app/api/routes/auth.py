@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -65,7 +66,7 @@ def _clear_session_cookies(response: Response) -> None:
 @router.post("/register", response_model=UserRead, status_code=201)
 @limiter.limit("5/minute")
 def register(request: Request, payload: UserCreate, db: Session = Depends(get_db)):
-    if db.query(User).filter(User.email == payload.email).first():
+    if db.query(User).filter(func.lower(User.email) == payload.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
     user = User(
         email=payload.email,
@@ -94,7 +95,7 @@ def login(
     never touches the token from JS) and is also returned in the body for
     non-browser API clients using ``Authorization: Bearer``.
     """
-    user = db.query(User).filter(User.email == form.username).first()
+    user = db.query(User).filter(func.lower(User.email) == form.username.strip().lower()).first()
     if not user or not verify_password(form.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     token = create_access_token(user.email, user_id=user.id, hashed_password=user.hashed_password)
@@ -146,7 +147,7 @@ def forgot_password(
     from app.services.mailer import send_email
 
     user = db.query(User).filter(
-        User.email == payload.email, User.is_active == True
+        func.lower(User.email) == payload.email.lower(), User.is_active == True
     ).first()
     if user:
         token = create_password_reset_token(user.email, user.hashed_password)
