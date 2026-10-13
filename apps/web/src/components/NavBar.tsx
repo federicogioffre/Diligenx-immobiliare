@@ -38,7 +38,14 @@ export default function NavBar() {
   const pathname = usePathname()
   const router = useRouter()
   const [user, setUser] = useState<UserRead | null>(null)
+  // null until mounted: the session flag is a browser cookie, unknown during
+  // server rendering.
+  const [authed, setAuthed] = useState<boolean | null>(null)
   const hidden = pathname === '/' || pathname === '/login'
+
+  useEffect(() => {
+    setAuthed(isLoggedIn())
+  }, [pathname])
 
   // Re-read on navigation: an analysis or a top-up changes the balance.
   // A plain fetch, not api.users.me(): the bar also shows on the public
@@ -56,6 +63,12 @@ export default function NavBar() {
   // The landing (/) and login pages render their own marketing-style
   // header — the in-app NavBar is hidden there.
   if (hidden) return null
+  // Signed-out visitors reach the public pages (legal, password reset) too.
+  // The in-app bar must not render for them: its workspace switcher calls an
+  // authenticated endpoint, and the 401 sent them to /login instead of the
+  // page they had opened.
+  if (authed === null) return <nav className="glass sticky top-0 z-30 h-16 border-b border-slate-200/70" aria-hidden />
+  if (!authed) return <PublicNavBar />
   const links = user?.is_admin ? [...LINKS, ADMIN_LINK] : LINKS
 
   async function handleLogout() {
@@ -124,6 +137,33 @@ export default function NavBar() {
             <span className="hidden sm:inline">Esci</span>
           </button>
           </div>
+        </div>
+      </div>
+    </nav>
+  )
+}
+
+/** Header for signed-out visitors on the public pages outside the landing. */
+function PublicNavBar() {
+  return (
+    <nav className="glass sticky top-0 z-30 border-b border-slate-200/70">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
+        <Link href="/" className="shrink-0 rounded-lg">
+          <Logo />
+        </Link>
+        <div className="flex items-center gap-1">
+          <Link
+            href="/login"
+            className="text-sm font-medium text-slate-500 hover:text-slate-900 px-3 py-1.5 rounded-lg transition-colors"
+          >
+            Accedi
+          </Link>
+          <Link
+            href="/login"
+            className="text-sm font-semibold bg-ink text-white hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3.5 py-1.5 rounded-lg transition-colors"
+          >
+            Inizia gratis
+          </Link>
         </div>
       </div>
     </nav>

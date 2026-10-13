@@ -1,221 +1,284 @@
 import LegalLayout from '@/components/legal/LegalLayout'
 
 export const metadata = {
-  title: 'Security Overview — Diligenx',
-  description: 'Architettura, misure di sicurezza, retention, subprocessor.',
+  title: 'Sicurezza',
+  description: 'Come Diligenx protegge i documenti e i dati dei clienti: infrastruttura, cifratura, isolamento, modelli AI, gestione degli incidenti.',
 }
 
 export default function SecurityPage() {
   return (
     <LegalLayout
-      title="Security Overview"
-      subtitle="Architettura, misure di sicurezza e gestione dei dati di Diligenx."
-      draft={false}
-      lastUpdated={new Date().toLocaleDateString('it-IT')}
+      title="Sicurezza"
+      subtitle="Come Diligenx protegge i documenti delle data room e i dati dei clienti."
+      lastUpdated="13/10/2026"
     >
       <p>
-        Questo documento descrive l&apos;architettura tecnica di Diligenx, le
-        misure di sicurezza adottate e il ciclo di vita dei dati. È
-        destinato a CISO, responsabili compliance e team IT dei clienti che
-        valutano l&apos;adozione del servizio.
+        Una data room contiene informazioni riservate e dati personali di terzi.
+        Questa pagina descrive le misure tecniche e organizzative con cui
+        Diligenx le protegge, a beneficio dei responsabili IT, privacy e
+        compliance dei clienti. Le stesse misure costituiscono l’allegato
+        sulla sicurezza del <a href="/dpa">Data Processing Agreement</a>.
       </p>
 
-      <h2>1. Architettura del servizio</h2>
+      <h2>1. Infrastruttura e localizzazione dei dati</h2>
+      <div className="overflow-x-auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Componente</th>
+              <th>Fornitore</th>
+              <th>Regione</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>API, elaborazione delle analisi, coda dei lavori</td>
+              <td>Railway</td>
+              <td>UE (Paesi Bassi)</td>
+            </tr>
+            <tr>
+              <td>Database (metadati, testo estratto, indici semantici, risultati)</td>
+              <td>Neon (su AWS)</td>
+              <td>UE (Francoforte)</td>
+            </tr>
+            <tr>
+              <td>File originali caricati</td>
+              <td>Cloudflare R2</td>
+              <td>[REGIONE R2]</td>
+            </tr>
+            <tr>
+              <td>Interfaccia web</td>
+              <td>Vercel</td>
+              <td>Stati Uniti (Washington, D.C.)</td>
+            </tr>
+            <tr>
+              <td>Modelli linguistici</td>
+              <td>OpenAI, Anthropic</td>
+              <td>Stati Uniti</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <p>
-        Diligenx è una piattaforma SaaS multi-tenant cloud-native, composta
-        da quattro componenti principali.
-      </p>
-      <ul>
-        <li>
-          <strong>Frontend Next.js 15</strong> servito da Vercel (rete edge
-          globale). Tutte le pagine richiedono autenticazione lato server
-          via middleware, eccezion fatta per la landing e le pagine
-          informative pubbliche.
-        </li>
-        <li>
-          <strong>Backend FastAPI</strong> su Railway. Espone le API REST,
-          orchestra la pipeline di analisi multi-agente, gestisce
-          autenticazione JWT.
-        </li>
-        <li>
-          <strong>Database PostgreSQL</strong> su Railway con estensione
-          pgvector per la ricerca semantica. Contiene metadati di utenti,
-          deal e documenti, embedding vettoriali e output strutturato delle
-          analisi.
-        </li>
-        <li>
-          <strong>Storage Cloudflare R2</strong> in jurisdiction europea per
-          i file originali caricati dagli utenti.
-        </li>
-      </ul>
-
-      <h2>2. Autenticazione e autorizzazione</h2>
-      <ul>
-        <li>
-          <strong>Hash password</strong>: bcrypt con cost factor 12, nessuna
-          password in chiaro è mai memorizzata o loggata.
-        </li>
-        <li>
-          <strong>Sessioni</strong>: JWT firmati HS256, durata 7 giorni,
-          memorizzati come cookie SameSite=Lax con flag Secure su HTTPS.
-        </li>
-        <li>
-          <strong>Autorizzazione</strong>: ogni endpoint API richiede un
-          token valido e applica filtri di proprietà
-          (<code>owner_id</code>, <code>workspace_id</code>, <code>deal_id</code>)
-          su ogni query. La risorsa richiesta deve appartenere al chiamante.
-        </li>
-      </ul>
-
-      <h2>3. Isolamento multi-tenant</h2>
-      <p>
-        Diligenx è un SaaS multi-tenant con isolamento <strong>logico</strong>{' '}
-        (modello &quot;pooled tenancy&quot;): tutti i clienti condividono la
-        stessa istanza di database e bucket, separati a livello applicativo
-        tramite chiavi di proprietà su ogni query e prefissi di nomi
-        oggetto su R2 (<code>deals/{'{'}deal_id{'}'}/...</code>).
-      </p>
-      <p>
-        È inoltre in roadmap l&apos;attivazione di{' '}
-        <strong>PostgreSQL Row-Level Security</strong> come secondo strato
-        di difesa: il codice è già pronto, l&apos;attivazione richiede la
-        rotazione del ruolo di connessione del backend a un ruolo
-        non-superuser.
+        Documenti, testo estratto e risultati delle analisi sono conservati in
+        UE. L’interfaccia web su Vercel inoltra le richieste al backend e non
+        conserva i documenti; il testo da analizzare è inviato ai fornitori di
+        modelli linguistici alle condizioni descritte al punto 5. La sicurezza
+        fisica dei data center è affidata ai fornitori, che dispongono di
+        certificazioni ISO 27001 e/o SOC 2 sulle proprie infrastrutture.
       </p>
 
-      <h2>4. Cifratura</h2>
+      <h2>2. Cifratura</h2>
       <ul>
         <li>
-          <strong>In transito</strong>: TLS 1.3 su tutti i path
-          (browser→Vercel, Vercel→Railway, Railway→R2, Railway→Anthropic,
-          Railway→OpenAI). Certificati gestiti dai rispettivi provider.
+          <strong>In transito.</strong> Tutto il traffico, tra browser e
+          piattaforma e tra la piattaforma e i fornitori, viaggia su HTTPS/TLS.
+          Il sito impone HSTS, così che il browser non apra mai una connessione
+          in chiaro.
         </li>
         <li>
-          <strong>At rest</strong>: cifratura applicata di default dai
-          provider di storage (Cloudflare R2: AES-256;
-          Railway PostgreSQL: cifratura a livello disco). Le chiavi sono
-          gestite dai provider.
+          <strong>A riposo.</strong> Database e file sono cifrati con AES-256 dai
+          rispettivi fornitori, che ne gestiscono le chiavi.
+        </li>
+        <li>
+          <strong>Password.</strong> Mai conservate in chiaro: se ne salva solo
+          l’hash bcrypt.
         </li>
       </ul>
 
-      <h2>5. Ciclo di vita dei dati</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Categoria</th>
-            <th>Dove vive</th>
-            <th>Retention</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>File originali (PDF/DOCX)</td>
-            <td>Cloudflare R2 (EU)</td>
-            <td>Finché l&apos;utente non li cancella. Auto-pulizia configurabile in roadmap.</td>
-          </tr>
-          <tr>
-            <td>Testo estratto e chunk vettoriali</td>
-            <td>PostgreSQL (Railway)</td>
-            <td>Cancellati in cascade alla cancellazione del documento.</td>
-          </tr>
-          <tr>
-            <td>Output strutturato (clausole, red flag, report)</td>
-            <td>PostgreSQL (Railway)</td>
-            <td>Cancellati in cascade alla cancellazione del deal.</td>
-          </tr>
-          <tr>
-            <td>Backup database</td>
-            <td>Railway (snapshot quotidiani)</td>
-            <td>7 giorni rolling.</td>
-          </tr>
-          <tr>
-            <td>Log applicativi</td>
-            <td>Railway / Vercel</td>
-            <td>30 giorni.</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <h2>6. Uso dei modelli AI</h2>
+      <h2>3. Accesso e autenticazione</h2>
       <ul>
         <li>
-          Diligenx invia il contenuto dei documenti ad <strong>Anthropic
-          Claude</strong> per l&apos;analisi e ad <strong>OpenAI</strong> per il
-          calcolo degli embedding semantici.
+          Accesso con email e password o con un account Microsoft o Google
+          tramite OpenID Connect con PKCE. Chi accede con Microsoft o Google
+          applica le regole del proprio account, compresa l’autenticazione a più
+          fattori imposta dal proprio studio.
         </li>
         <li>
-          Entrambi i fornitori operano sulle loro API in modalità{' '}
-          <strong>no-training</strong>: i contenuti inviati non vengono
-          utilizzati per addestrare i loro modelli.
+          La sessione è un cookie <code>HttpOnly</code>, <code>Secure</code> e{' '}
+          <code>SameSite=Lax</code>, non leggibile da script, che scade dopo 24
+          ore. Il cambio o il reset della password invalida le sessioni aperte.
         </li>
         <li>
-          Anthropic e OpenAI conservano gli input per periodi limitati
-          (30 giorni per Anthropic, 30 giorni per OpenAI) ai soli fini di
-          monitoraggio abusi, oltre i quali i dati sono cancellati.
+          Gli endpoint di accesso, registrazione e reset della password hanno
+          limiti di frequenza contro i tentativi automatizzati.
+        </li>
+        <li>
+          La cancellazione dell’account richiede la password o, per gli account
+          Microsoft e Google, un accesso effettuato negli ultimi dieci minuti.
+        </li>
+        <li>
+          L’accesso del personale di Diligenx ai sistemi di produzione è
+          limitato alle persone che ne hanno bisogno, con autenticazione a più
+          fattori [DA CONFERMARE] sulle console dei fornitori. Il personale non consulta i
+          documenti dei clienti, salvo su richiesta del cliente per assistenza
+          o quando sia indispensabile per gestire un incidente.
         </li>
       </ul>
 
-      <h2>7. Subprocessor</h2>
+      <h2>4. Isolamento tra clienti</h2>
       <p>
-        L&apos;elenco aggiornato dei subprocessor è disponibile nel{' '}
-        <a href="/dpa#subprocessor">Data Processing Agreement</a>. Le
-        modifiche sono comunicate ai clienti con preavviso di 30 giorni.
+        Ogni documento, pratica e risultato appartiene a un workspace, e ogni
+        richiesta verifica che il workspace appartenga a chi la fa. A questo
+        controllo applicativo se ne aggiunge uno nel database:{' '}
+        <strong>Row-Level Security di PostgreSQL</strong>, attiva e forzata su
+        tutte le tabelle che contengono dati dei clienti. Il backend si collega
+        con un ruolo privo di privilegi di amministratore e all’avvio rifiuta di
+        partire se il ruolo potrebbe aggirare queste regole o se una tabella ne
+        è priva. Anche un errore nel codice applicativo, quindi, non basterebbe
+        a esporre i dati di un cliente a un altro.
+      </p>
+      <p>
+        Le notifiche di avanzamento delle analisi usano credenziali temporanee
+        valide per una sola pratica e per sessanta secondi, distinte dalla sessione.
       </p>
 
-      <h2>8. Gestione delle vulnerabilità</h2>
+      <h2>5. Intelligenza artificiale</h2>
       <ul>
         <li>
-          <strong>Dipendenze</strong>: Renovate / Dependabot monitorano le
-          dipendenze frontend e backend; aggiornamenti di sicurezza
-          applicati entro 7 giorni dalla pubblicazione della CVE.
+          <strong>Nessun addestramento.</strong> I documenti sono elaborati
+          tramite le API commerciali di OpenAI e Anthropic, che per contratto non
+          usano i dati dei clienti per addestrare i modelli. Diligenx non
+          addestra modelli propri sui dati dei clienti.
         </li>
         <li>
-          <strong>Penetration test</strong>: pianificato annualmente da
-          società terza specializzata (in attesa di esecuzione).
+          <strong>Conservazione presso i fornitori.</strong> I fornitori
+          conservano richieste e risposte per un periodo limitato, non
+          superiore a trenta giorni, a fini di sicurezza e prevenzione degli
+          abusi. Le richieste a OpenAI sono inviate con l’opzione che esclude il
+          salvataggio della conversazione.
         </li>
         <li>
-          <strong>Vulnerability disclosure</strong>: segnalazioni a{' '}
-          <a href="mailto:security@diligenx.example">security@diligenx.example</a>;
-          risposta entro 5 giorni lavorativi.
+          <strong>Verifica delle citazioni.</strong> Ogni rilievo prodotto
+          dall’analisi passa una revisione indipendente che deve ritrovare nel
+          documento, testualmente, i passaggi che lo sostengono; i rilievi che
+          non superano la verifica non entrano nel report e sono segnalati come
+          domande aperte. I riferimenti di pagina sono confrontati con le pagine
+          reali del documento.
+        </li>
+        <li>
+          <strong>Separazione dei contesti.</strong> Ogni analisi lavora solo
+          sui documenti della propria pratica; le ricerche semantiche sono
+          limitate alla pratica e al cliente.
         </li>
       </ul>
 
-      <h2>9. Incident response</h2>
+      <h2>6. Applicazione web</h2>
       <ul>
-        <li>Detection tramite alert su metriche di sistema e log.</li>
-        <li>Triage entro 4 ore dall&apos;allertamento per incidenti di sicurezza.</li>
         <li>
-          Notifica ai clienti impattati senza ingiustificato ritardo e
-          comunque entro 72 ore dalla scoperta, conforme all&apos;art. 33 GDPR.
+          Intestazioni di sicurezza su tutte le pagine: Content Security Policy,
+          HSTS, protezione dal framing, <code>X-Content-Type-Options</code>,
+          Referrer-Policy e Permissions-Policy.
         </li>
-        <li>Post-mortem pubblico per incidenti che impattano il servizio.</li>
+        <li>
+          Caricamenti limitati a PDF, DOCX e TXT, con dimensione massima per
+          file.
+        </li>
+        <li>
+          Nessun tracker, strumento di analisi di terze parti o pixel
+          pubblicitario; i font sono serviti dal sito, senza richieste a
+          servizi esterni dal browser dell’utente.
+        </li>
+        <li>
+          Le versioni di anteprima del sito sono protette da autenticazione e
+          non accessibili al pubblico.
+        </li>
       </ul>
 
-      <h2>10. Disponibilità e backup</h2>
-      <ul>
-        <li>Backup PostgreSQL automatici quotidiani, conservati 7 giorni.</li>
-        <li>R2 fornisce 11×9 di durability sui file.</li>
-        <li>
-          RTO target: 4 ore in caso di disaster recovery completo. RPO
-          target: 24 ore.
-        </li>
-      </ul>
-
-      <h2>11. Conformità in evoluzione</h2>
+      <h2>7. Sviluppo e rilascio</h2>
       <p>
-        Diligenx è una società in fase early-stage. Le seguenti
-        certificazioni sono in roadmap ma non ancora ottenute:
+        Ogni modifica passa da una pull request e da una pipeline di
+        integrazione continua che esegue la suite di test automatici (oltre
+        1.600 test), compresi i test di isolamento tra clienti su un database
+        PostgreSQL reale con Row-Level Security attiva, e la build
+        dell’applicazione. Le credenziali di produzione sono conservate come
+        variabili d’ambiente presso i fornitori di hosting e non compaiono nel
+        codice.
       </p>
-      <ul>
-        <li>SOC 2 Type 1 — pianificato Q4.</li>
-        <li>Penetration test annuale — pianificato Q3.</li>
-        <li>ISO 27001 — orizzonte 18-24 mesi.</li>
-      </ul>
 
-      <h2>12. Contatti</h2>
+      <h2>8. Ciclo di vita dei dati</h2>
+      <div className="overflow-x-auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Dato</th>
+              <th>Conservazione</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Documenti, testo estratto, indici semantici</td>
+              <td>Fino alla cancellazione del documento, della pratica o dell’account</td>
+            </tr>
+            <tr>
+              <td>Rilievi, domande, report</td>
+              <td>Fino alla cancellazione della pratica o dell’account</td>
+            </tr>
+            <tr>
+              <td>Copie di backup del database</td>
+              <td>[N] giorni, poi sovrascritte</td>
+            </tr>
+            <tr>
+              <td>Log tecnici</td>
+              <td>[N] giorni</td>
+            </tr>
+            <tr>
+              <td>Dati presso i fornitori di modelli linguistici</td>
+              <td>Non oltre 30 giorni</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <p>
-        Domande tecniche o di security: <a href="mailto:security@diligenx.example">security@diligenx.example</a>.
-        Per richieste di compliance / audit: <a href="mailto:privacy@diligenx.example">privacy@diligenx.example</a>.
+        La cancellazione di un account elimina in un’unica operazione i file
+        archiviati e tutti i dati collegati. Prima di cancellare, l’utente può
+        scaricare dalla pagina Account una copia dei propri dati.
+      </p>
+
+      <h2>9. Continuità del servizio</h2>
+      <p>
+        Il database è replicato e dotato di ripristino a un punto nel tempo
+        all’interno della finestra di backup. I file su Cloudflare R2 sono
+        archiviati con ridondanza. Le analisi sono gestite da una coda
+        persistente: se un processo si interrompe, l’analisi può essere ripresa
+        senza ripartire da capo e senza nuovi addebiti.
+      </p>
+
+      <h2>10. Gestione degli incidenti</h2>
+      <p>
+        Diligenx registra e valuta ogni evento che possa compromettere la
+        riservatezza, l’integrità o la disponibilità dei dati. In caso di
+        violazione dei dati personali che riguardi documenti dei clienti,
+        Diligenx informa il cliente titolare senza ingiustificato ritardo e
+        comunque entro [48] ore da quando ne viene a conoscenza, con le
+        informazioni disponibili sulla natura della violazione, sui dati
+        coinvolti e sulle misure adottate, per consentirgli di notificare il
+        Garante entro le 72 ore previste dall’art. 33 GDPR. Per le violazioni
+        dei dati di cui è titolare, Diligenx procede direttamente alla notifica.
+      </p>
+
+      <h2>11. Segnalazione di vulnerabilità</h2>
+      <p>
+        Chi individua una vulnerabilità può scrivere a{' '}
+        <a href="mailto:security@diligenx.it">security@diligenx.it</a>, con una
+        descrizione sufficiente a riprodurla. Diligenx conferma la ricezione
+        entro cinque giorni lavorativi e aggiorna il segnalante sulla
+        risoluzione. Non agisce contro chi segnala in buona fede, senza
+        accedere a dati di altri oltre il minimo necessario a dimostrare il
+        problema, senza degradare il servizio e senza divulgare la
+        vulnerabilità prima della correzione. Le stesse indicazioni sono
+        pubblicate in <a href="/.well-known/security.txt">security.txt</a>.
+      </p>
+
+      <h2>12. Certificazioni e verifiche</h2>
+      <p>
+        Diligenx non dispone al momento di certificazioni proprie (ISO 27001,
+        SOC 2) né ha ancora commissionato un penetration test indipendente;
+        si affida alle certificazioni dei fornitori per l’infrastruttura. I
+        clienti possono chiedere a{' '}
+        <a href="mailto:security@diligenx.it">security@diligenx.it</a> la
+        compilazione di questionari di sicurezza e le informazioni necessarie
+        per le proprie verifiche, nei limiti previsti dal DPA.
       </p>
     </LegalLayout>
   )

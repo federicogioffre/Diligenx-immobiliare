@@ -6,7 +6,7 @@ const NAV = [
   { href: '/cookies',  label: 'Cookie Policy' },
   { href: '/terms',    label: 'Termini di Servizio' },
   { href: '/dpa',      label: 'DPA' },
-  { href: '/security', label: 'Security Overview' },
+  { href: '/security', label: 'Sicurezza' },
 ]
 
 interface Props {
@@ -74,8 +74,8 @@ export default function LegalLayout({
                   Il testo definitivo sarà pubblicato a valle della validazione da
                   parte del nostro consulente privacy. Per la versione contrattuale
                   attuale o per richieste specifiche, scrivere a{' '}
-                  <a href="mailto:privacy@diligenx.example" className="underline hover:no-underline">
-                    privacy@diligenx.example
+                  <a href="mailto:privacy@diligenx.it" className="underline hover:no-underline">
+                    privacy@diligenx.it
                   </a>
                   .
                 </p>
