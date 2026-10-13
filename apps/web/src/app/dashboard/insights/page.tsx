@@ -259,7 +259,7 @@ function Card({
   children: React.ReactNode
 }) {
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+    <div className="bg-surface rounded-2xl border border-slate-200 shadow-sm p-6">
       <div className="mb-5">
         <h2 className="text-base font-semibold text-slate-900">{title}</h2>
         {subtitle && (

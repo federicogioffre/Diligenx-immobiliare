@@ -159,7 +159,7 @@ export default function WorkspaceSwitcher() {
 
   const active = workspaces.find((w) => w.id === activeId)
   const inputClass =
-    'w-full border border-slate-200 rounded-md px-2.5 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-4 focus:ring-blue-500/15 focus:border-blue-500 bg-white'
+    'w-full border border-slate-200 rounded-md px-2.5 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-4 focus:ring-blue-500/15 focus:border-blue-500 bg-surface'
 
   // While still loading, render a placeholder so the NavBar layout doesn't jump
   if (workspaces.length === 0 && !error) {
@@ -171,7 +171,7 @@ export default function WorkspaceSwitcher() {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 text-sm text-slate-700 hover:text-slate-900 font-medium px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-colors border border-slate-200 bg-white shadow-sm w-full max-w-[16rem]"
+        className="flex items-center gap-2 text-sm text-slate-700 hover:text-slate-900 font-medium px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-colors border border-slate-200 bg-surface shadow-sm w-full max-w-[16rem]"
       >
         <svg className="w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
@@ -183,7 +183,7 @@ export default function WorkspaceSwitcher() {
       </button>
 
       {open && (
-        <div className="absolute right-0 md:left-0 md:right-auto top-full mt-2 w-72 max-w-[calc(100vw-2rem)] bg-white rounded-xl border border-slate-200 shadow-lg z-40 overflow-hidden">
+        <div className="absolute right-0 md:left-0 md:right-auto top-full mt-2 w-72 max-w-[calc(100vw-2rem)] bg-surface rounded-xl border border-slate-200 shadow-lg z-40 overflow-hidden">
           {/* List */}
           <ul className="py-1 max-h-72 overflow-y-auto">
             {workspaces.map((ws) => {

@@ -1,11 +1,12 @@
 import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono, Instrument_Serif } from 'next/font/google'
-import { Toaster } from 'sonner'
 import './globals.css'
 import NavBar from '@/components/NavBar'
 import AppFooter from '@/components/AppFooter'
 import CookieBanner from '@/components/CookieBanner'
 import MainContainer from '@/components/MainContainer'
+import ThemeProvider, { THEME_BOOT_SCRIPT } from '@/components/theme/ThemeProvider'
+import ThemedToaster from '@/components/theme/ThemedToaster'
 
 // Self-hosted at build time by next/font: no request to Google from the
 // visitor's browser (the CDN @import used to send every IP to Google Fonts).
@@ -54,20 +55,20 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="it" className={`${sans.variable} ${mono.variable} ${display.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
+      </head>
       <body className="app-backdrop min-h-screen flex flex-col" suppressHydrationWarning>
-        <NavBar />
-        <MainContainer>{children}</MainContainer>
-        <AppFooter />
-        <CookieBanner />
-        {/* Global toast outlet. Errors are rendered as inline banners (see
-            components/ui/ErrorAlert); toasts are reserved for success
-            feedback on short-lived actions (create, rename, delete, etc.). */}
-        <Toaster
-          position="top-right"
-          richColors
-          closeButton
-          toastOptions={{ duration: 3500, className: 'font-sans' }}
-        />
+        <ThemeProvider>
+          <NavBar />
+          <MainContainer>{children}</MainContainer>
+          <AppFooter />
+          <CookieBanner />
+          {/* Global toast outlet. Errors are rendered as inline banners (see
+              components/ui/ErrorAlert); toasts are reserved for success
+              feedback on short-lived actions (create, rename, delete, etc.). */}
+          <ThemedToaster />
+        </ThemeProvider>
       </body>
     </html>
   )

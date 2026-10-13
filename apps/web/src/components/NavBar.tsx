@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import { clearAuth } from '@/lib/auth'
 import Logo from './brand/Logo'
 import WorkspaceSwitcher from './WorkspaceSwitcher'
+import ThemeToggle from './theme/ThemeToggle'
 
 const LINKS = [
   {
@@ -65,7 +66,7 @@ export default function NavBar() {
                   aria-current={active ? 'page' : undefined}
                   className={`inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg transition-all ${
                     active
-                      ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/80'
+                      ? 'bg-surface text-slate-900 shadow-sm ring-1 ring-slate-200/80'
                       : 'text-slate-500 hover:text-slate-900'
                   }`}
                 >
@@ -84,15 +85,19 @@ export default function NavBar() {
               )
             })}
           </div>
+          <div className="flex items-center gap-0.5 ml-1">
+          <ThemeToggle />
           <button
             onClick={handleLogout}
-            className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900 font-medium px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-colors ml-1"
+            aria-label="Esci"
+            className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900 font-medium px-2.5 sm:px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-colors"
           >
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
               <path strokeLinecap="round" strokeLinejoin="round" d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4M10 17l5-5-5-5M15 12H3" />
             </svg>
-            Esci
+            <span className="hidden sm:inline">Esci</span>
           </button>
+          </div>
         </div>
       </div>
     </nav>

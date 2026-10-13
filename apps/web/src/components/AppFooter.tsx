@@ -24,7 +24,7 @@ export default function AppFooter() {
   if (pathname === '/' || pathname === '/login') return null
 
   return (
-    <footer className="mt-auto border-t border-slate-200/70 bg-white/60 backdrop-blur">
+    <footer className="mt-auto border-t border-slate-200/70 bg-surface/60 backdrop-blur">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-slate-500">
         <div className="flex items-center gap-2.5">
           <LogoMark className="w-5 h-5" />

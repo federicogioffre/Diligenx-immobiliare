@@ -37,9 +37,9 @@ const DEFAULT_ICON = (
 export default function EmptyState({ icon, title, subtitle, action, size = 'md' }: Props) {
   const pad = size === 'sm' ? 'py-10' : 'py-16'
   return (
-    <div className={`relative overflow-hidden text-center ${pad} bg-white rounded-2xl border border-slate-200 border-dashed`}>
+    <div className={`relative overflow-hidden text-center ${pad} bg-surface rounded-2xl border border-slate-200 border-dashed`}>
       <div className="absolute inset-0 bg-grid-light mask-radial opacity-70 pointer-events-none" aria-hidden />
-      <div className="relative inline-flex items-center justify-center w-12 h-12 bg-white rounded-xl mb-4 shadow-md ring-1 ring-slate-200">
+      <div className="relative inline-flex items-center justify-center w-12 h-12 bg-surface rounded-xl mb-4 shadow-md ring-1 ring-slate-200">
         {icon ?? DEFAULT_ICON}
       </div>
       <p className="relative text-slate-800 font-semibold mb-1">{title}</p>

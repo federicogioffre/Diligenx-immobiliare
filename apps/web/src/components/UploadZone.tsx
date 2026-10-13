@@ -240,7 +240,7 @@ export default function UploadZone({ dealId, onUploaded }: Props) {
         className={`relative rounded-2xl border-2 border-dashed px-6 py-8 text-center transition-colors ${
           isDragOver
             ? 'border-blue-500 bg-blue-50'
-            : 'border-slate-300 bg-white hover:border-slate-400'
+            : 'border-slate-300 bg-surface hover:border-slate-400'
         }`}
       >
         <svg
@@ -279,7 +279,7 @@ export default function UploadZone({ dealId, onUploaded }: Props) {
           <button
             type="button"
             onClick={() => folderInputRef.current?.click()}
-            className="inline-flex items-center gap-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors"
+            className="inline-flex items-center gap-1.5 bg-surface hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors"
           >
             <svg className="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
@@ -309,7 +309,7 @@ export default function UploadZone({ dealId, onUploaded }: Props) {
 
       {/* Queue list */}
       {items.length > 0 && (
-        <div className="mt-4 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="mt-4 bg-surface rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-100">
             <div className="text-xs text-slate-500">
               {stats.uploading > 0 && <span>{stats.uploading} in caricamento · </span>}

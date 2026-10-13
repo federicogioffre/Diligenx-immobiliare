@@ -72,6 +72,16 @@ export default function CookiePolicyPage() {
               <td>Permanente</td>
               <td>Tecnico, prima parte</td>
             </tr>
+            <tr>
+              <td><code>dm_theme</code></td>
+              <td>
+                Ricordare il tema scelto (chiaro o scuro) nell&apos;area
+                riservata (in <code>localStorage</code>; assente se si segue
+                l&apos;impostazione del sistema)
+              </td>
+              <td>Fino a modifica</td>
+              <td>Tecnico, prima parte</td>
+            </tr>
           </tbody>
         </table>
       </div>

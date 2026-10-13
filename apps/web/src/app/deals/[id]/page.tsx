@@ -118,7 +118,7 @@ function AnalysisProgress({ stages, analyzing, previous, completedAt, progress }
   const incomplete = !analyzing && completedCount < TOTAL_STAGES
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 mb-4">
+    <div className="bg-surface rounded-2xl border border-slate-200 shadow-sm p-5 mb-4">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           {analyzing && <div className="w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />}
@@ -234,7 +234,7 @@ function RedFlagSeverityWidget({ flags }: { flags: RedFlagRead[] }) {
   const total = flags.length
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+    <div className="bg-surface rounded-2xl border border-slate-200 shadow-sm p-5">
       <div className="flex items-baseline justify-between mb-4">
         <h3 className="text-sm font-semibold text-slate-800">Red flag per gravità</h3>
         <span className="text-xs text-slate-400 tabular-nums">{total} totali</span>
@@ -362,7 +362,7 @@ function CompanyScopeEditor({ deal, disabled, onChanged }: {
   }
 
   return (
-    <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+    <section className="mb-6 rounded-2xl border border-slate-200 bg-surface p-4 sm:p-5">
       <label htmlFor="target-company-names" className="block text-sm font-semibold text-slate-800 mb-1">
         Società nel perimetro
       </label>
@@ -385,7 +385,7 @@ function CompanyScopeEditor({ deal, disabled, onChanged }: {
           type="button"
           onClick={save}
           disabled={disabled || saving || value === savedValue}
-          className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {saving ? 'Salvataggio…' : 'Salva perimetro'}
         </button>
@@ -411,7 +411,7 @@ function CorporateIntroCard({ profiles }: { profiles: CompanyProfileRead[] }) {
   ]
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-5">
+    <div className="bg-surface rounded-2xl border border-slate-200 shadow-sm p-5 space-y-5">
       <div className="flex items-baseline justify-between">
         <h3 className="text-sm font-semibold text-slate-800">Informazioni societarie</h3>
         <span className="text-xs text-slate-400 tabular-nums">
@@ -470,7 +470,7 @@ function FollowUpCard({
   const visibleM = missing.slice(0, FOLLOWUP_PREVIEW_LIMIT)
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-5">
+    <div className="bg-surface rounded-2xl border border-slate-200 shadow-sm p-5 space-y-5">
       <div className="flex items-baseline justify-between">
         <h3 className="text-sm font-semibold text-slate-800">Da seguire</h3>
         <span className="text-xs text-slate-400 tabular-nums">
@@ -591,7 +591,7 @@ function RiskScoreWidget({ rs }: { rs: RiskScoreResponse }) {
               <span className="text-xs text-slate-500">−{totalDeductions} pt</span>
             )}
           </div>
-          <div className="w-full bg-white/60 rounded-full h-2 mb-3">
+          <div className="w-full bg-surface/60 rounded-full h-2 mb-3">
             <div className={`${lvl.bar} h-2 rounded-full transition-all duration-700`} style={{ width: `${rs.score}%` }} />
           </div>
 
@@ -623,7 +623,7 @@ function RiskScoreWidget({ rs }: { rs: RiskScoreResponse }) {
 
       {/* Category breakdown */}
       {rs.categories.length > 0 && (
-        <div className="mt-4 pt-4 border-t border-white/50 space-y-2">
+        <div className="mt-4 pt-4 border-t border-surface/50 space-y-2">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Rischio per categoria</p>
           {rs.categories.map((cat) => (
             <div key={cat.category} className="flex items-center gap-2.5 text-xs">
@@ -939,14 +939,14 @@ export default function DealPage() {
         />
 
         {docs.length === 0 ? (
-          <div className="text-center py-10 bg-white rounded-2xl border border-slate-200 border-dashed">
+          <div className="text-center py-10 bg-surface rounded-2xl border border-slate-200 border-dashed">
             <svg className="w-8 h-8 text-slate-300 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
             </svg>
             <p className="text-sm text-slate-400">Nessun documento. Carica un PDF, DOCX o TXT.</p>
           </div>
         ) : (
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="bg-surface rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
             <table className="block w-full text-sm md:table md:table-fixed">
               <thead className="hidden md:table-header-group">
                 <tr className="border-b border-slate-100">
@@ -1059,7 +1059,7 @@ export default function DealPage() {
         )}
 
         {!showProgress && !analyzing && processedCount === 0 && (
-          <div className="text-center py-10 bg-white rounded-2xl border border-slate-200 border-dashed">
+          <div className="text-center py-10 bg-surface rounded-2xl border border-slate-200 border-dashed">
             <svg className="w-8 h-8 text-slate-300 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
@@ -1078,7 +1078,7 @@ export default function DealPage() {
               { label: 'Clausole',   value: summary.clauseCount,   icon: '📋', color: 'text-blue-700' },
               { label: 'Red Flags',  value: summary.redFlagCount,  icon: '⚑',  color: 'text-red-600' },
             ].map(({ label, value, icon, color }) => (
-              <div key={label} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 text-center">
+              <div key={label} className="bg-surface rounded-2xl border border-slate-200 shadow-sm p-4 text-center">
                 <div className={`text-2xl font-bold tabular-nums ${color}`}>{value}</div>
                 <div className="text-xs text-slate-400 mt-1 font-medium">{label}</div>
               </div>
@@ -1106,7 +1106,7 @@ export default function DealPage() {
           <div className="flex gap-3 mt-4">
             <Link
               href={`/deals/${dealId}/findings`}
-              className="flex-1 flex items-center justify-center gap-2 bg-white hover:bg-slate-50 border border-slate-200 hover:border-slate-300 text-slate-700 py-2.5 rounded-xl text-sm font-medium transition-colors"
+              className="flex-1 flex items-center justify-center gap-2 bg-surface hover:bg-slate-50 border border-slate-200 hover:border-slate-300 text-slate-700 py-2.5 rounded-xl text-sm font-medium transition-colors"
             >
               <svg className="w-4 h-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
@@ -1115,7 +1115,7 @@ export default function DealPage() {
             </Link>
             <Link
               href={`/deals/${dealId}/report`}
-              className="flex-1 flex items-center justify-center gap-2 bg-white hover:bg-slate-50 border border-slate-200 hover:border-slate-300 text-slate-700 py-2.5 rounded-xl text-sm font-medium transition-colors"
+              className="flex-1 flex items-center justify-center gap-2 bg-surface hover:bg-slate-50 border border-slate-200 hover:border-slate-300 text-slate-700 py-2.5 rounded-xl text-sm font-medium transition-colors"
             >
               <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />

@@ -61,7 +61,7 @@ export default function DealTabs({ dealId }: { dealId: number }) {
             href={tab.href}
             className={`flex shrink-0 items-center gap-1.5 px-3 sm:px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all ${
               active
-                ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/80'
+                ? 'bg-surface text-slate-900 shadow-sm ring-1 ring-slate-200/80'
                 : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/60'
             }`}
           >

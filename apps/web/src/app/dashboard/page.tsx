@@ -11,7 +11,7 @@ import Spinner from '@/components/ui/Spinner'
 import StatusBadge from '@/components/ui/StatusBadge'
 
 const inputClass =
-  'w-full border border-slate-200 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 shadow-sm focus:outline-none focus:ring-4 focus:ring-blue-500/15 focus:border-blue-500 transition-all bg-white'
+  'w-full border border-slate-200 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 shadow-sm focus:outline-none focus:ring-4 focus:ring-blue-500/15 focus:border-blue-500 transition-all bg-surface'
 
 function loiFileError(file: File | null): string {
   if (!file) return ''
@@ -190,7 +190,7 @@ export default function DashboardPage() {
         <button
           onClick={() => { if (showForm && createdDeal) resetCreateForm(); setShowForm((v) => !v) }}
           disabled={creating}
-          className="flex items-center gap-2 bg-ink hover:bg-ink-800 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-all shadow-md active:scale-[0.98] disabled:opacity-50"
+          className="flex items-center gap-2 bg-ink hover:bg-ink-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-all shadow-md active:scale-[0.98] disabled:opacity-50"
         >
           {showForm ? (
             <>
@@ -212,7 +212,7 @@ export default function DashboardPage() {
 
       {/* Create form */}
       {showForm && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-lg p-6 sm:p-7 mb-8 animate-fade-up">
+        <div className="bg-surface rounded-2xl border border-slate-200 shadow-lg p-6 sm:p-7 mb-8 animate-fade-up">
           <h2 className="text-base font-semibold text-slate-900 mb-4">Nuovo Deal</h2>
           <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="sm:col-span-2">
@@ -333,7 +333,7 @@ export default function DashboardPage() {
           return (
             <div
               key={deal.id}
-              className="group relative flex flex-col bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-lg hover:-translate-y-0.5 hover:border-slate-300 transition-all duration-300"
+              className="group relative flex flex-col bg-surface rounded-2xl border border-slate-200 shadow-sm hover:shadow-lg hover:-translate-y-0.5 hover:border-slate-300 transition-all duration-300"
             >
               <Link href={`/deals/${deal.id}`} className="block flex-1 p-5 rounded-t-2xl">
                 {/* Status + date row */}
@@ -391,7 +391,7 @@ export default function DashboardPage() {
       {/* Edit modal */}
       {editDeal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 border border-slate-200">
+          <div className="bg-surface rounded-2xl shadow-xl w-full max-w-md p-6 border border-slate-200">
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-base font-semibold text-slate-900">Modifica Deal</h2>
               <button

@@ -7,6 +7,7 @@ import { providerName } from '@/components/auth/OAuthButtons'
 import { clearAuth } from '@/lib/auth'
 import ErrorAlert from '@/components/ui/ErrorAlert'
 import Spinner from '@/components/ui/Spinner'
+import { ThemeChooser } from '@/components/theme/ThemeToggle'
 
 // Account self-service: profile info, GDPR data export (art. 20) and
 // account deletion (art. 17). The deletion flow requires re-typing the
@@ -99,7 +100,7 @@ export default function AccountPage() {
 
       {/* Profile */}
       {user && (
-        <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-6">
+        <section className="bg-surface rounded-2xl border border-slate-200 shadow-sm p-6 mb-6">
           <h2 className="text-sm font-semibold text-slate-900 mb-4">Profilo</h2>
           <dl className="space-y-3 text-sm">
             <div className="flex justify-between">
@@ -130,8 +131,17 @@ export default function AccountPage() {
         </section>
       )}
 
+      {/* Appearance */}
+      <section className="bg-surface rounded-2xl border border-slate-200 shadow-sm p-6 mb-6">
+        <h2 className="text-sm font-semibold text-slate-900 mb-1">Aspetto</h2>
+        <p className="text-sm text-slate-500 mb-4">
+          Tema dell&apos;area riservata. &quot;Sistema&quot; segue l&apos;impostazione del dispositivo.
+        </p>
+        <ThemeChooser />
+      </section>
+
       {/* Data export */}
-      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-6">
+      <section className="bg-surface rounded-2xl border border-slate-200 shadow-sm p-6 mb-6">
         <h2 className="text-sm font-semibold text-slate-900 mb-2">
           Esporta i tuoi dati
         </h2>
@@ -143,7 +153,7 @@ export default function AccountPage() {
         <button
           onClick={handleExport}
           disabled={exporting}
-          className="inline-flex items-center gap-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
+          className="inline-flex items-center gap-2 bg-surface hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
         >
           {exporting ? <Spinner size="sm" tone="slate" /> : (
             <svg className="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -155,7 +165,7 @@ export default function AccountPage() {
       </section>
 
       {/* Danger zone */}
-      <section className="bg-white rounded-2xl border border-red-200 shadow-sm p-6">
+      <section className="bg-surface rounded-2xl border border-red-200 shadow-sm p-6">
         <h2 className="text-sm font-semibold text-red-700 mb-2">
           Elimina account
         </h2>
@@ -168,7 +178,7 @@ export default function AccountPage() {
         {!confirmOpen ? (
           <button
             onClick={() => setConfirmOpen(true)}
-            className="bg-white hover:bg-red-50 text-red-600 border border-red-200 hover:border-red-300 px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+            className="bg-surface hover:bg-red-50 text-red-600 border border-red-200 hover:border-red-300 px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
           >
             Elimina il mio account…
           </button>
@@ -189,7 +199,7 @@ export default function AccountPage() {
                     <a
                       key={p}
                       href={oauthStartUrl(p, '/account?confirm=delete')}
-                      className="inline-flex items-center bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-4 py-2 rounded-lg text-sm font-semibold mr-2"
+                      className="inline-flex items-center bg-surface hover:bg-slate-50 text-slate-700 border border-slate-200 px-4 py-2 rounded-lg text-sm font-semibold mr-2"
                     >
                       Accedi di nuovo con {providerName(p)}
                     </a>
