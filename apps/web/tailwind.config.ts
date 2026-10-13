@@ -1,29 +1,33 @@
 import type { Config } from 'tailwindcss'
 import typography from '@tailwindcss/typography'
 
-// Brand accent. Every `blue-*` class in the app resolves to this ultramarine
-// scale, so the palette changes here, once, instead of in every component.
-const brand = {
-  50: '#eef2ff',
-  100: '#e0e7ff',
-  200: '#c7d2fe',
-  300: '#a5b4fc',
-  400: '#818cf8',
-  500: '#6170f6',
-  600: '#4a55e8',
-  700: '#3c44cc',
-  800: '#3238a4',
-  900: '#2e3382',
-  950: '#1c1e4c',
-}
+// Every palette the app uses reads from a CSS variable (`--c-<family>-<shade>`,
+// space-separated RGB channels defined in globals.css), so the dark theme is a
+// second set of values under `.dark` instead of a `dark:` twin on every class.
+// `blue-*` is the brand ultramarine scale.
+const SHADES = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950] as const
+const palette = (family: string) =>
+  Object.fromEntries(SHADES.map((s) => [s, `rgb(var(--c-${family}-${s}) / <alpha-value>)`]))
+
+const brand = palette('blue')
 
 const config: Config = {
+  darkMode: 'class',
   content: ['./src/**/*.{ts,tsx}'],
   theme: {
     extend: {
       colors: {
+        slate: palette('slate'),
+        red: palette('red'),
+        orange: palette('orange'),
+        amber: palette('amber'),
+        emerald: palette('emerald'),
+        indigo: palette('indigo'),
+        violet: palette('violet'),
         blue: brand,
         brand,
+        // Card and input background: white in light mode, raised dark in dark.
+        surface: 'rgb(var(--c-surface) / <alpha-value>)',
         ink: {
           DEFAULT: '#0a0b14',
           900: '#0d0f1c',

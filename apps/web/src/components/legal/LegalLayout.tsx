@@ -34,7 +34,7 @@ export default function LegalLayout({
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[16rem_1fr] gap-8">
       <aside className="lg:sticky lg:top-20 self-start">
-        <nav className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
+        <nav className="rounded-xl border border-slate-200 bg-surface p-3 text-sm">
           <p className="px-2 pb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
             Compliance
           </p>
@@ -84,7 +84,7 @@ export default function LegalLayout({
           </div>
         )}
 
-        <article className="prose prose-slate prose-sm sm:prose-base max-w-none">
+        <article className="prose prose-slate dark:prose-invert prose-sm sm:prose-base max-w-none">
           {children}
         </article>
       </main>

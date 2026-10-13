@@ -157,7 +157,7 @@ export default function ReportPage() {
               <button
                 onClick={() => handleDownload('pdf')}
                 disabled={downloading !== null || generating || reportStale}
-                className="inline-flex items-center gap-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 px-3.5 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
+                className="inline-flex items-center gap-1.5 bg-surface hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 px-3.5 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
                 title="Scarica in formato PDF"
               >
                 {downloading === 'pdf' ? (
@@ -172,7 +172,7 @@ export default function ReportPage() {
               <button
                 onClick={() => handleDownload('docx')}
                 disabled={downloading !== null || generating || reportStale}
-                className="inline-flex items-center gap-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 px-3.5 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
+                className="inline-flex items-center gap-1.5 bg-surface hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 px-3.5 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
                 title="Scarica in formato Word"
               >
                 {downloading === 'docx' ? (
@@ -235,8 +235,8 @@ export default function ReportPage() {
       )}
 
       {markdown && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm">
-          <div className="px-8 py-6 prose prose-slate prose-sm max-w-none
+        <div className="bg-surface rounded-2xl border border-slate-200 shadow-sm">
+          <div className="px-8 py-6 prose prose-slate dark:prose-invert prose-sm max-w-none
             prose-headings:font-semibold prose-headings:text-slate-900
             prose-h1:text-xl prose-h2:text-base prose-h3:text-sm
             prose-p:text-slate-600 prose-p:leading-relaxed prose-p:text-justify prose-p:hyphens-auto

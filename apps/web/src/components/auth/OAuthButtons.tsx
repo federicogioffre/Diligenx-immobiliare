@@ -64,7 +64,7 @@ export default function OAuthButtons({
         <a
           key={p}
           href={oauthStartUrl(p, next)}
-          className="w-full inline-flex items-center justify-center gap-2.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 py-2.5 rounded-lg text-sm font-semibold shadow-sm transition-all"
+          className="w-full inline-flex items-center justify-center gap-2.5 bg-surface hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 py-2.5 rounded-lg text-sm font-semibold shadow-sm transition-all"
         >
           {p === 'microsoft' ? <MicrosoftLogo /> : <GoogleLogo />}
           {label ? label(p) : LABELS[p]}

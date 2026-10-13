@@ -20,12 +20,11 @@ const isDev = process.env.NODE_ENV !== "production";
 const csp = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
-  // globals.css imports the Inter webfont from Google Fonts (stylesheet from
-  // fonts.googleapis.com, font files from fonts.gstatic.com).
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  // Fonts are self-hosted by next/font, so no third-party style or font origin.
+  "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   `connect-src 'self' ${API_ORIGIN}${isDev ? " ws: http://localhost:8000" : ""}`,
-  "font-src 'self' data: https://fonts.gstatic.com",
+  "font-src 'self' data:",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

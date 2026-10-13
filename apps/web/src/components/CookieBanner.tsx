@@ -44,7 +44,7 @@ export default function CookieBanner() {
 
   return (
     <div className="fixed bottom-4 inset-x-4 sm:inset-x-auto sm:right-6 sm:left-auto sm:max-w-md z-50">
-      <div className="rounded-2xl border border-slate-200 bg-white shadow-xl p-4 text-sm text-slate-700">
+      <div className="rounded-2xl border border-slate-200 bg-surface shadow-xl p-4 text-sm text-slate-700">
         <div className="flex items-start gap-3">
           <div className="shrink-0 w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center text-blue-600">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -64,7 +64,7 @@ export default function CookieBanner() {
             <div className="mt-3">
               <button
                 onClick={dismiss}
-                className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 transition-colors"
+                className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-500 transition-colors"
               >
                 Ho capito
               </button>

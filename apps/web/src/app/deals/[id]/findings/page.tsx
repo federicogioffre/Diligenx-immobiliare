@@ -138,8 +138,8 @@ function FilterPill({ active, onClick, children }: { active: boolean; onClick: (
       onClick={onClick}
       className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
         active
-          ? 'bg-slate-900 text-white'
-          : 'bg-white text-slate-500 border border-slate-200 hover:border-slate-300 hover:text-slate-700'
+          ? 'bg-slate-900 text-white dark:bg-blue-600'
+          : 'bg-surface text-slate-500 border border-slate-200 hover:border-slate-300 hover:text-slate-700'
       }`}
     >
       {children}
@@ -154,7 +154,7 @@ function ClauseCard({ c, docMap, index }: { c: ClauseFindingRead; docMap: Map<nu
   const rel = c.relevance_score ? (RELEVANCE[c.relevance_score] ?? RELEVANCE.low) : null
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 border-l-4 border-l-blue-500 shadow-sm p-5">
+    <div className="bg-surface rounded-2xl border border-slate-200 border-l-4 border-l-blue-500 shadow-sm p-5">
       {/* Header */}
       <div className="flex flex-wrap items-start gap-2 mb-3">
         <span className="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded-full bg-blue-50 text-blue-600 text-xs font-bold">
@@ -199,7 +199,7 @@ function RedFlagCard({ f, docMap, index }: { f: RedFlagRead; docMap: Map<number,
   const figures = formatFigures(f)
 
   return (
-    <div className={`bg-white rounded-2xl border border-slate-200 border-l-4 ${severityLeftBorder(severity)} shadow-sm p-5`}>
+    <div className={`bg-surface rounded-2xl border border-slate-200 border-l-4 ${severityLeftBorder(severity)} shadow-sm p-5`}>
       {/* Header */}
       <div className="flex flex-wrap items-start gap-2 mb-3">
         <span className="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded-full bg-slate-100 text-slate-500 text-xs font-bold">
@@ -345,7 +345,7 @@ export default function FindingsPage() {
         </div>
 
         {visibleClauses.length === 0 ? (
-          <div className="text-center py-10 bg-white rounded-2xl border border-slate-200 border-dashed">
+          <div className="text-center py-10 bg-surface rounded-2xl border border-slate-200 border-dashed">
             <svg className="w-8 h-8 text-slate-200 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2" />
             </svg>
@@ -425,7 +425,7 @@ export default function FindingsPage() {
         )}
 
         {visibleFlags.length === 0 ? (
-          <div className="text-center py-10 bg-white rounded-2xl border border-slate-200 border-dashed">
+          <div className="text-center py-10 bg-surface rounded-2xl border border-slate-200 border-dashed">
             <svg className="w-8 h-8 text-slate-200 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9" />
             </svg>

@@ -12,19 +12,19 @@ const MAP: Record<
   low: {
     label: 'BASSO',
     solid: 'bg-slate-50 text-slate-600 ring-1 ring-inset ring-slate-200',
-    outlined: 'bg-white text-slate-600 border-slate-200',
+    outlined: 'bg-surface text-slate-600 border-slate-200',
     border: 'border-l-slate-300',
   },
   medium: {
     label: 'MEDIO',
     solid: 'bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200',
-    outlined: 'bg-white text-amber-700 border-amber-200',
+    outlined: 'bg-surface text-amber-700 border-amber-200',
     border: 'border-l-amber-400',
   },
   high: {
     label: 'ALTO',
     solid: 'bg-orange-50 text-orange-700 ring-1 ring-inset ring-orange-200',
-    outlined: 'bg-white text-orange-700 border-orange-200',
+    outlined: 'bg-surface text-orange-700 border-orange-200',
     border: 'border-l-orange-500',
   },
 }
