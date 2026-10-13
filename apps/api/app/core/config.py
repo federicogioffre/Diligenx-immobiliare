@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
 
+    # Shared with the frontend, whose middleware sends it with the browser's
+    # address on every /api request (see app.core.limiter.client_ip). Empty →
+    # rate limits key on the TCP peer, which behind the frontend proxy is the
+    # same address for every user. Set the same value on both services.
+    PROXY_SHARED_SECRET: str = ""
+    # Failed password logins one account may take, from any address, and
+    # reset emails one mailbox may receive, before they pause.
+    LOGIN_FAILURES_PER_ACCOUNT: str = "10/15minutes"
+    PASSWORD_RESETS_PER_ACCOUNT: str = "3/hour"
+
     # CORS
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
 

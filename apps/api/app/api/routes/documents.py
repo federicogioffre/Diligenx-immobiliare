@@ -5,11 +5,10 @@ import threading
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile, File
-from app.core.limiter import limiter
+from app.core.limiter import client_ip, limiter
 from typing import List
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
-from slowapi.util import get_remote_address
 
 from app.core.config import settings
 from app.db.session import SessionLocal, get_db
@@ -82,7 +81,7 @@ def _upload_user(request: Request, user: User = Depends(get_current_user)) -> Us
 
 def _upload_rate_key(request: Request) -> str:
     user_id = getattr(request.state, "upload_user_id", None)
-    return f"upload-user:{user_id}" if user_id is not None else get_remote_address(request)
+    return f"upload-user:{user_id}" if user_id is not None else client_ip(request)
 
 
 def _prepare_upload(

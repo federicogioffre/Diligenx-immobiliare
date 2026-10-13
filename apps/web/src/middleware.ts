@@ -35,8 +35,33 @@ function isPublic(path: string): boolean {
   )
 }
 
+// Rate limits on the API key on the client's address, but every /api call
+// reaches the API from this server through the platform proxy, so the API
+// would see one address for everybody. Tell it the browser's address, with a
+// secret only this server and the API share (app/core/limiter.py); whatever a
+// client sent under these names is dropped first.
+const CLIENT_IP_HEADER = 'x-diligenx-client-ip'
+const PROXY_SECRET_HEADER = 'x-diligenx-proxy-secret'
+
+function forwardClientIp(req: NextRequest) {
+  const headers = new Headers(req.headers)
+  headers.delete(CLIENT_IP_HEADER)
+  headers.delete(PROXY_SECRET_HEADER)
+  const secret = process.env.PROXY_SHARED_SECRET
+  // The edge in front of this server puts the peer it accepted the
+  // connection from last, whether it appends or replaces, so the LAST entry
+  // is the browser's address: earlier ones are whatever the client sent.
+  const ip = (req.headers.get('x-forwarded-for') ?? '').split(',').pop()?.trim()
+  if (secret && ip) {
+    headers.set(CLIENT_IP_HEADER, ip)
+    headers.set(PROXY_SECRET_HEADER, secret)
+  }
+  return NextResponse.next({ request: { headers } })
+}
+
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
+  if (pathname.startsWith('/api/')) return forwardClientIp(req)
   const token = req.cookies.get('dm_token')?.value ?? null
   const invalid = isTokenExpired(token) // covers missing, malformed, expired
   const loggedIn = !!token && !invalid

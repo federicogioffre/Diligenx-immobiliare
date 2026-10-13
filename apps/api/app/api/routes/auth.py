@@ -4,7 +4,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.limiter import limiter
+from app.core.limiter import account_budget_exceeded, limiter, spend_account_budget
 from app.db.session import get_db
 from app.models.user import User
 from app.core.security import (
@@ -95,8 +95,16 @@ def login(
     never touches the token from JS) and is also returned in the body for
     non-browser API clients using ``Authorization: Bearer``.
     """
+    # The IP budget above cannot stop guesses spread across many addresses;
+    # failed attempts are also counted per account. Only failures spend it,
+    # so the owner signing in normally never meets the limit.
+    if account_budget_exceeded("login-failures", form.username, settings.LOGIN_FAILURES_PER_ACCOUNT):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail="Troppi tentativi per questo account. Riprova tra qualche minuto.",
+                            headers={"Retry-After": "900"})
     user = db.query(User).filter(func.lower(User.email) == form.username.strip().lower()).first()
     if not user or not verify_password(form.password, user.hashed_password):
+        spend_account_budget("login-failures", form.username, settings.LOGIN_FAILURES_PER_ACCOUNT)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     token = create_access_token(user.email, user_id=user.id, hashed_password=user.hashed_password)
     _set_session_cookies(response, token)
@@ -146,6 +154,12 @@ def forgot_password(
     """
     from app.services.mailer import send_email
 
+    # Per mailbox, so a stranger cannot flood someone's inbox from many
+    # addresses. Past the budget the request is still answered 202 and simply
+    # sends nothing: a different answer would reveal the account exists.
+    if account_budget_exceeded("password-reset", payload.email, settings.PASSWORD_RESETS_PER_ACCOUNT):
+        return {"detail": "Se l'indirizzo è registrato, riceverai un'email con le istruzioni."}
+    spend_account_budget("password-reset", payload.email, settings.PASSWORD_RESETS_PER_ACCOUNT)
     user = db.query(User).filter(
         func.lower(User.email) == payload.email.lower(), User.is_active == True
     ).first()

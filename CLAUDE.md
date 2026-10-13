@@ -8,13 +8,13 @@
 - **Embeddings:** OpenAI `text-embedding-3-small` (1536 dims); `FakeEmbeddingProvider` for tests
 - **LLM:** OpenAI GPT-5.6 Luna (`gpt-5.6-luna` by default) for every analysis stage and document Q&A; `FakeLLMProvider` for tests
 - **Storage:** S3-compatible (Cloudflare R2 in prod); local disk fallback when `S3_BUCKET` empty
-- **Rate limiting:** `slowapi` (in-memory); disabled in tests via autouse fixture
+- **Rate limiting:** `slowapi` (in-memory); disabled in tests via autouse fixture. Keyed on the browser's address, which the frontend middleware forwards on every `/api` call in `x-diligenx-client-ip` with `PROXY_SHARED_SECRET` (`app/core/limiter.client_ip`; without the secret the key is the TCP peer, i.e. the proxy — one bucket for every user). Failed password logins are also counted per account and reset emails per mailbox (`LOGIN_FAILURES_PER_ACCOUNT`, `PASSWORD_RESETS_PER_ACCOUNT`)
 - **Background jobs:** `BackgroundTasks` by default; **Arq + Redis** opt-in via `REDIS_URL` for durable jobs
 - **Env:** `.env` via `pydantic-settings`
 - **Frontend:** Next.js 15 (App Router, TypeScript) — login + dashboard + insights + deals UI, server-side auth via cookie
 - **Frontend design system:** tokens in `apps/web/tailwind.config.ts` — `blue-*` resolves to the brand ultramarine scale, `ink` is the dark surface, Geist / Geist Mono / Instrument Serif (`font-display`) self-hosted via `next/font` (no request to Google from the browser); shared utilities (`bg-grid`, `glass`, `reveal`, `text-gradient`) in `globals.css`; `MainContainer` renders `/` and `/login` full-bleed. **Dark mode** (signed-in area only): every palette (`slate`, `blue`, `red`, `amber`, `emerald`, `orange`, `violet`, `indigo`) and `surface` (cards/inputs — use `bg-surface`, not `bg-white`) read `--c-*` RGB variables redefined under `.dark` in `globals.css`, so most classes need no `dark:` twin; only dark-filled buttons (`bg-slate-800/900`, `bg-ink`) and `prose` (`dark:prose-invert`) do. `components/theme/ThemeProvider` sets `.dark` from the `dm_theme` localStorage preference (light | dark | absent = system), never on `/` and `/login`; an inline boot script in `<head>` applies it before first paint
 - **Frontend tests:** Playwright smoke suite (3 tests) in `apps/web/tests/e2e/`
-- **Tests:** pytest + FastAPI TestClient (SQLite), **1626 passing**
+- **Tests:** pytest + FastAPI TestClient (SQLite), **1637 passing**
 
 ## Project Root
 ```
@@ -122,7 +122,7 @@ Diligenx/
 │       └── vector_store.py               # cosine similarity over DocumentChunk.embedding
 │
 ├── infra/, scripts/, docker-compose.yml, railway.toml
-├── tests/                                # 1626 passing
+├── tests/                                # 1637 passing
 └── CLAUDE.md                             # ← this file
 ```
 
@@ -219,7 +219,7 @@ pnpm install && pnpm dev      # http://localhost:3000
 
 ```bash
 cd apps/api
-python -m pytest ../../tests -q   # 1626 passed
+python -m pytest ../../tests -q   # 1637 passed
 ```
 
 ## Key Design Decisions
@@ -285,6 +285,8 @@ Enforcement tests live in `tests/test_rls_isolation.py` (opt-in: set `RLS_TEST_D
 | `MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET` | _(empty)_ | Entra ID app registration; both set → "Accedi con Microsoft" on the login page. ID tokens need the optional claims `email` and `xms_edov` |
 | `MICROSOFT_TENANT` | `organizations` | `organizations` (work accounts), `common` (also personal) or one tenant id |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | _(empty)_ | Google OAuth web client; both set → "Accedi con Google" |
+| `PROXY_SHARED_SECRET` | _(empty)_ | Same random value on **API and frontend**: the frontend middleware sends it with the browser's address so rate limits key on the real client. Empty → limits key on the proxy's address (shared by all users) |
+| `LOGIN_FAILURES_PER_ACCOUNT` / `PASSWORD_RESETS_PER_ACCOUNT` | `10/15minutes` / `3/hour` | Failed password logins per account, reset emails per mailbox, from any address |
 | `ALLOWED_ORIGINS` | `["http://localhost:3000"]` | CORS origins |
 | `UPLOAD_DIR` | `uploads` | Local file upload directory (when `S3_BUCKET` empty) |
 | `MAX_UPLOAD_SIZE_MB` | `50` | Max upload size |
