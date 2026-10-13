@@ -159,7 +159,7 @@ export default function WorkspaceSwitcher() {
 
   const active = workspaces.find((w) => w.id === activeId)
   const inputClass =
-    'w-full border border-slate-200 rounded-md px-2.5 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white'
+    'w-full border border-slate-200 rounded-md px-2.5 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-4 focus:ring-blue-500/15 focus:border-blue-500 bg-white'
 
   // While still loading, render a placeholder so the NavBar layout doesn't jump
   if (workspaces.length === 0 && !error) {

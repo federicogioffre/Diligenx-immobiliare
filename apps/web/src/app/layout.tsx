@@ -1,9 +1,23 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
+import { Geist, Geist_Mono, Instrument_Serif } from 'next/font/google'
 import { Toaster } from 'sonner'
 import './globals.css'
 import NavBar from '@/components/NavBar'
 import AppFooter from '@/components/AppFooter'
 import CookieBanner from '@/components/CookieBanner'
+import MainContainer from '@/components/MainContainer'
+
+// Self-hosted at build time by next/font: no request to Google from the
+// visitor's browser (the CDN @import used to send every IP to Google Fonts).
+const sans = Geist({ subsets: ['latin'], variable: '--font-sans', display: 'swap' })
+const mono = Geist_Mono({ subsets: ['latin'], variable: '--font-mono', display: 'swap' })
+const display = Instrument_Serif({
+  subsets: ['latin'],
+  weight: '400',
+  style: ['normal', 'italic'],
+  variable: '--font-display',
+  display: 'swap',
+})
 
 const SITE_URL = 'https://diligenx.it'
 const SITE_DESCRIPTION =
@@ -33,12 +47,16 @@ export const metadata: Metadata = {
   },
 }
 
+export const viewport: Viewport = {
+  themeColor: '#0a0b14',
+}
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="it" suppressHydrationWarning>
-      <body className="bg-slate-50 min-h-screen flex flex-col" suppressHydrationWarning>
+    <html lang="it" className={`${sans.variable} ${mono.variable} ${display.variable}`} suppressHydrationWarning>
+      <body className="app-backdrop min-h-screen flex flex-col" suppressHydrationWarning>
         <NavBar />
-        <main className="max-w-6xl mx-auto px-6 py-8 w-full flex-1">{children}</main>
+        <MainContainer>{children}</MainContainer>
         <AppFooter />
         <CookieBanner />
         {/* Global toast outlet. Errors are rendered as inline banners (see
@@ -48,7 +66,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           position="top-right"
           richColors
           closeButton
-          toastOptions={{ duration: 3500 }}
+          toastOptions={{ duration: 3500, className: 'font-sans' }}
         />
       </body>
     </html>

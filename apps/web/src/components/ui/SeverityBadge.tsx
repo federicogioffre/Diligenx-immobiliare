@@ -11,19 +11,19 @@ const MAP: Record<
 > = {
   low: {
     label: 'BASSO',
-    solid: 'bg-slate-100 text-slate-600',
+    solid: 'bg-slate-50 text-slate-600 ring-1 ring-inset ring-slate-200',
     outlined: 'bg-white text-slate-600 border-slate-200',
     border: 'border-l-slate-300',
   },
   medium: {
     label: 'MEDIO',
-    solid: 'bg-amber-50 text-amber-700',
+    solid: 'bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200',
     outlined: 'bg-white text-amber-700 border-amber-200',
     border: 'border-l-amber-400',
   },
   high: {
     label: 'ALTO',
-    solid: 'bg-orange-50 text-orange-700',
+    solid: 'bg-orange-50 text-orange-700 ring-1 ring-inset ring-orange-200',
     outlined: 'bg-white text-orange-700 border-orange-200',
     border: 'border-l-orange-500',
   },
@@ -46,7 +46,7 @@ export default function SeverityBadge({ severity, variant = 'solid' }: Props) {
   const variantCls = variant === 'outlined' ? `${cfg.outlined} border` : cfg.solid
   return (
     <span
-      className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-bold ${variantCls}`}
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-[11px] font-bold tracking-wide ${variantCls}`}
     >
       {cfg.label}
     </span>

@@ -896,7 +896,7 @@ export default function DealPage() {
 
       {/* Deal header */}
       <div className="flex flex-col sm:flex-row items-start justify-between gap-3 mb-2">
-        <h1 className="text-xl font-bold text-slate-900 leading-tight">{deal.title}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-slate-900 leading-tight">{deal.title}</h1>
         <div className="shrink-0 sm:ml-3 flex items-center gap-2">
           <ReportLanguageSelect deal={deal} onChanged={(d) => setDeal(d)} />
           <StatusBadge status={deal.status} />

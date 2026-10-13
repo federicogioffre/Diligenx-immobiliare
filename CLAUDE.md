@@ -12,6 +12,7 @@
 - **Background jobs:** `BackgroundTasks` by default; **Arq + Redis** opt-in via `REDIS_URL` for durable jobs
 - **Env:** `.env` via `pydantic-settings`
 - **Frontend:** Next.js 15 (App Router, TypeScript) — login + dashboard + insights + deals UI, server-side auth via cookie
+- **Frontend design system:** tokens in `apps/web/tailwind.config.ts` — `blue-*` resolves to the brand ultramarine scale, `ink` is the dark surface, Geist / Geist Mono / Instrument Serif (`font-display`) self-hosted via `next/font` (no request to Google from the browser); shared utilities (`bg-grid`, `glass`, `reveal`, `text-gradient`) in `globals.css`; `MainContainer` renders `/` and `/login` full-bleed
 - **Frontend tests:** Playwright smoke suite (3 tests) in `apps/web/tests/e2e/`
 - **Tests:** pytest + FastAPI TestClient (SQLite), **1607 passing**
 

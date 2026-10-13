@@ -205,7 +205,7 @@ export default function AccountPage() {
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-200"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-4 focus:ring-red-500/15 focus:border-red-400 transition-all"
                   autoComplete="current-password"
                 />
               </div>
@@ -219,7 +219,7 @@ export default function AccountPage() {
                 type="text"
                 value={confirmText}
                 onChange={(e) => setConfirmText(e.target.value)}
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-200"
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-4 focus:ring-red-500/15 focus:border-red-400 transition-all"
               />
             </div>
             <div className="flex items-center gap-2 pt-1">
