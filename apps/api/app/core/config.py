@@ -108,6 +108,11 @@ class Settings(BaseSettings):
     ASK_CREDIT_COST: int = 1
     REPORT_CREDIT_COST: int = 5
     CREDITS_UNLIMITED_EMAILS: list[str] = []
+    # Accounts that may grant credits from /admin/credits. An address counts
+    # only on an account that signs in with Microsoft or Google under it:
+    # registration does not verify email, so a password-only account could
+    # otherwise claim an administrator's address before its owner signs up.
+    ADMIN_EMAILS: list[str] = []
 
     # Error monitoring (Sentry). Leave empty to run without Sentry — the
     # SDK is only initialised when a DSN is provided, so the dependency

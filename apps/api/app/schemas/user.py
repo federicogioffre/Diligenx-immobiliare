@@ -25,6 +25,10 @@ class UserRead(BaseModel):
     has_password: bool = True
     auth_providers: list[str] = []
     credit_balance: int = 0
+    credits_enabled: bool = False
+    credits_unlimited: bool = False
+    # May grant credits to any account (/admin/credits).
+    is_admin: bool = False
 
     model_config = {"from_attributes": True}
 

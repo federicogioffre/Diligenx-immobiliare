@@ -8,6 +8,7 @@ import { clearAuth } from '@/lib/auth'
 import ErrorAlert from '@/components/ui/ErrorAlert'
 import Spinner from '@/components/ui/Spinner'
 import { ThemeChooser } from '@/components/theme/ThemeToggle'
+import CreditsSection from '@/components/CreditsSection'
 
 // Account self-service: profile info, GDPR data export (art. 20) and
 // account deletion (art. 17). The deletion flow requires re-typing the
@@ -130,6 +131,8 @@ export default function AccountPage() {
           </dl>
         </section>
       )}
+
+      {user && <CreditsSection user={user} />}
 
       {/* Appearance */}
       <section className="bg-surface rounded-2xl border border-slate-200 shadow-sm p-6 mb-6">

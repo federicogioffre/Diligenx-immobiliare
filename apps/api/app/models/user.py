@@ -34,5 +34,20 @@ class User(TimestampMixin, Base):
         return has_usable_password(self.hashed_password)
 
     @property
+    def credits_enabled(self) -> bool:
+        from app.core.config import settings
+        return settings.CREDITS_ENABLED
+
+    @property
+    def credits_unlimited(self) -> bool:
+        from app.services.credits import is_unlimited
+        return is_unlimited(self)
+
+    @property
+    def is_admin(self) -> bool:
+        from app.services.credits import is_admin
+        return is_admin(self)
+
+    @property
     def auth_providers(self) -> list[str]:
         return sorted({identity.provider for identity in self.oauth_identities})

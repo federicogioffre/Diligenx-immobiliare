@@ -1,11 +1,20 @@
 'use client'
 
 import Link from 'next/link'
+import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
-import { clearAuth } from '@/lib/auth'
+import type { UserRead } from '@/lib/api'
+import { clearAuth, isLoggedIn } from '@/lib/auth'
+import CreditBadge from './CreditBadge'
 import Logo from './brand/Logo'
 import WorkspaceSwitcher from './WorkspaceSwitcher'
 import ThemeToggle from './theme/ThemeToggle'
+
+const ADMIN_LINK = {
+  href: '/admin/credits',
+  label: 'Admin',
+  icon: 'M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z',
+}
 
 const LINKS = [
   {
@@ -28,10 +37,26 @@ const LINKS = [
 export default function NavBar() {
   const pathname = usePathname()
   const router = useRouter()
+  const [user, setUser] = useState<UserRead | null>(null)
+  const hidden = pathname === '/' || pathname === '/login'
+
+  // Re-read on navigation: an analysis or a top-up changes the balance.
+  // A plain fetch, not api.users.me(): the bar also shows on the public
+  // legal pages, where a 401 must not send the visitor to /login.
+  useEffect(() => {
+    if (hidden || !isLoggedIn()) return
+    let cancelled = false
+    fetch('/api/users/me')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((me: UserRead | null) => { if (!cancelled) setUser(me) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [pathname, hidden])
 
   // The landing (/) and login pages render their own marketing-style
   // header — the in-app NavBar is hidden there.
-  if (pathname === '/' || pathname === '/login') return null
+  if (hidden) return null
+  const links = user?.is_admin ? [...LINKS, ADMIN_LINK] : LINKS
 
   async function handleLogout() {
     // Await: only the backend can delete the HttpOnly session cookie, and
@@ -57,7 +82,7 @@ export default function NavBar() {
         {/* Right side */}
         <div className="flex items-center justify-between gap-1 w-full lg:w-auto shrink-0">
           <div className="flex items-center gap-0.5 rounded-xl bg-slate-100/80 p-1 ring-1 ring-inset ring-slate-200/60">
-            {LINKS.map((l) => {
+            {links.map((l) => {
               const active = pathname === l.href
               return (
                 <Link
@@ -86,6 +111,7 @@ export default function NavBar() {
             })}
           </div>
           <div className="flex items-center gap-0.5 ml-1">
+          <CreditBadge user={user} />
           <ThemeToggle />
           <button
             onClick={handleLogout}

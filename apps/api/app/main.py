@@ -23,7 +23,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.limiter import limiter
-from app.api.routes import health, auth, deals, documents, oauth, users, workspaces
+from app.api.routes import health, auth, deals, documents, oauth, users, workspaces, admin
 
 # ── Error monitoring ──────────────────────────────────────────────────────
 # Initialised only when SENTRY_DSN is configured, so the SDK is inert in
@@ -161,6 +161,7 @@ _fastapi.include_router(deals.router, prefix="/deals", tags=["deals"])
 _fastapi.include_router(documents.router, prefix="/documents", tags=["documents"])
 _fastapi.include_router(users.router, prefix="/users", tags=["users"])
 _fastapi.include_router(workspaces.router, prefix="/workspaces", tags=["workspaces"])
+_fastapi.include_router(admin.router, prefix="/admin", tags=["admin"])
 
 # Uvicorn entry point: wrap FastAPI with the slash-normalisation ASGI middleware
 app = NormaliseSlashMiddleware(_fastapi)
