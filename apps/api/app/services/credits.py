@@ -29,6 +29,15 @@ def is_unlimited(user: User) -> bool:
     return (user.email or "").lower() in unlimited
 
 
+def is_admin(user: User) -> bool:
+    """An address in ADMIN_EMAILS that a provider vouched for on this account."""
+    admins = {email.strip().lower() for email in settings.ADMIN_EMAILS}
+    email = (user.email or "").lower()
+    return email in admins and any(
+        (identity.email or "").lower() == email for identity in user.oauth_identities
+    )
+
+
 def is_charged(user: User) -> bool:
     return settings.CREDITS_ENABLED and not is_unlimited(user)
 

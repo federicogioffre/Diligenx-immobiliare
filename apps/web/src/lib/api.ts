@@ -21,6 +21,35 @@ export interface UserRead {
   auth_providers: OAuthProvider[]
   /** Prepaid credits left; one credit is one analysed page. */
   credit_balance: number
+  credits_enabled: boolean
+  /** Never charged (CREDITS_UNLIMITED_EMAILS). */
+  credits_unlimited: boolean
+  /** May grant credits to any account (/admin/credits). */
+  is_admin: boolean
+}
+
+export interface CreditTransaction {
+  delta: number
+  balance_after: number
+  reason: 'signup' | 'grant' | 'analysis' | 'ask' | 'report' | 'refund'
+  deal_id: number | null
+  note: string | null
+  created_at: string | null
+}
+
+export interface CreditLedger {
+  balance: number
+  charged: boolean
+  transactions: CreditTransaction[]
+}
+
+export interface AdminAccount {
+  id: number
+  email: string
+  full_name: string | null
+  credit_balance: number
+  credits_unlimited: boolean
+  created_at: string | null
 }
 
 export interface AnalysisCost {
@@ -424,9 +453,26 @@ export const api = {
     },
   },
 
+  admin: {
+    accounts(q = ''): Promise<AdminAccount[]> {
+      return request(`/admin/users${q ? `?q=${encodeURIComponent(q)}` : ''}`)
+    },
+    /** A negative amount removes credits. */
+    grantCredits(email: string, amount: number, note?: string): Promise<AdminAccount> {
+      return request('/admin/credits', {
+        method: 'POST',
+        body: JSON.stringify({ email, amount, note: note || null }),
+      })
+    },
+  },
+
   users: {
     me(): Promise<UserRead> {
       return request('/users/me')
+    },
+    /** Balance and the latest 50 credit movements. */
+    credits(): Promise<CreditLedger> {
+      return request('/users/me/credits')
     },
     /** GDPR art. 20 — full structured export, returned as a Blob to download. */
     async exportData(): Promise<Blob> {
