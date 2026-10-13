@@ -1,4 +1,4 @@
-from sqlalchemy import String, Boolean, Integer
+from sqlalchemy import String, Boolean, Index, Integer, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -51,3 +51,7 @@ class User(TimestampMixin, Base):
     @property
     def auth_providers(self) -> list[str]:
         return sorted({identity.provider for identity in self.oauth_identities})
+
+
+# One account per mailbox, whatever the case it was typed in (migration 024).
+Index("ix_users_email_lower", func.lower(User.email), unique=True)
