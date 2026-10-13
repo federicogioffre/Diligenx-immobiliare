@@ -182,7 +182,7 @@ export default function PrivacyPolicyPage() {
               <td>Stati Uniti</td>
             </tr>
             <tr>
-              <td>Anthropic, PBC</td>
+              <td>Anthropic, PBC / Anthropic Ireland, Limited</td>
               <td>Modelli linguistici per la sintesi dei rilievi, la verifica delle citazioni e il riepilogo del report</td>
               <td>Stati Uniti</td>
             </tr>
