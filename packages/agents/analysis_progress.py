@@ -9,7 +9,8 @@ _last_publish: dict[tuple[int, int], float] = {}
 _redis = None
 
 
-def publish_progress(deal_id: int, run_id: int, done: int, total: int, document_id: int) -> None:
+def publish_progress(deal_id: int, run_id: int, done: int, total: int, document_id: int,
+                     agent_name: str = "financial_analysis") -> None:
     global _redis
     from app.core.config import settings
     if not settings.REDIS_URL:
@@ -23,7 +24,7 @@ def publish_progress(deal_id: int, run_id: int, done: int, total: int, document_
         if _redis is None:
             from redis import Redis
             _redis = Redis.from_url(settings.REDIS_URL, socket_timeout=1, socket_connect_timeout=1)
-        value = {"agent_name": "financial_analysis", "run_id": run_id,
+        value = {"agent_name": agent_name, "run_id": run_id,
                  "completed_batches": done, "total_batches": total,
                  "document_id": document_id, "updated_at": datetime.now(timezone.utc).isoformat()}
         _redis.set(f"analysis-progress:{deal_id}", json.dumps(value), ex=settings.WORKER_JOB_TIMEOUT_SECONDS + 60)
@@ -31,7 +32,8 @@ def publish_progress(deal_id: int, run_id: int, done: int, total: int, document_
         logger.warning("Analysis progress temporarily unavailable for deal=%d", deal_id)
 
 
-async def read_progress(pool, deal_id: int, run_id: int | None) -> dict | None:
+async def read_progress(pool, deal_id: int, run_id: int | None,
+                        agent_name: str = "financial_analysis") -> dict | None:
     if pool is None or run_id is None:
         return None
     import asyncio
@@ -39,7 +41,7 @@ async def read_progress(pool, deal_id: int, run_id: int | None) -> dict | None:
         raw = await asyncio.wait_for(pool.get(f"analysis-progress:{deal_id}"), timeout=1)
         data = json.loads(raw) if raw else None
         if (isinstance(data, dict) and data.get("run_id") == run_id
-                and data.get("agent_name") == "financial_analysis"):
+                and data.get("agent_name") == agent_name):
             return data
     except Exception:
         pass

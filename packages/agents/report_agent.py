@@ -1,20 +1,22 @@
-"""Due-diligence report generation for deals.
+"""Due-diligence report for the purchase of a residential property.
 
-Renders a red-flag due diligence report with the section structure used by
-professional Italian M&A legal advisors:
+Renders the report with the section structure of a professional Italian
+property due diligence:
 
-    1. Introduction (purpose / object / limitations — deterministic boilerplate)
-    2. Corporate Introductory Information (placeholder until extraction ships)
+    1. Introduction (purpose / object / limitations — deterministic boilerplate,
+       including the twenty-year chain coverage computed from the titles on file)
+    2. Property Identification — one table per unit, consolidated from the
+       ``PropertyProfile`` rows (deed → cadastral extract → floor plan → …)
     3. Executive Summary (grounded prose, or a bounded factual overview for large reports)
-    4. Key Findings — one table per DD area, each row carrying the
+    4. Key Findings — one table per property area, each row carrying the
        Issue | Risk | Recommendation | Severity quadruple
-    5. Observations / Information Requests (from the aggregator's AgentFindings)
+    5. Observations / Information Requests (from the aggregator's AgentFindings
+       and the property checklist)
     6. Appendix I: Documents Reviewed
 
 Everything except the Executive Summary is rendered deterministically from
 database rows — structure and data sections cannot hallucinate. Only the
-summary prose goes through the LLM. Large reports use a clearly abbreviated,
-deterministic summary while retaining every finding in the detail sections.
+summary prose goes through the LLM.
 
 The report is stored in the ``Report`` table with
 ``report_type = due_diligence``.  Calling the function again for the same deal
@@ -25,68 +27,34 @@ from datetime import date
 
 from sqlalchemy.orm import Session, joinedload
 
-from packages.agents.company_identity import consolidate_company_profiles, normalize_company_name
 from packages.agents.deal_analysis_agent import LLMProvider, get_judgment_provider
 
 logger = logging.getLogger(__name__)
 
 
 # ── Localized template strings ──────────────────────────────────────────────
-# Faithful to the bilingual practice observed in professional reports: the
-# title, "Executive Summary" and "Key Findings" headings stay in English even
-# in Italian reports; introduction, appendix and table headers are localized.
+# "Executive Summary" and "Key Findings" stay in English in Italian reports,
+# as in professional practice; everything else is localized.
 
-_AREA_ORDER_KEYS = [
-    "corporate", "indebtedness", "financial", "real_estate", "employees",
-    "suppliers_customers", "insurance", "litigation", "ip_it",
-    "data_protection", "tax", "other",
-]
+from packages.real_estate.areas import AREA_ORDER as _AREA_ORDER, AREA_TITLES as _AREA_TITLES
 
-_AREA_TITLES: dict[str, dict[str, str]] = {
-    "en": {
-        "corporate": "Corporate Matters",
-        "indebtedness": "Indebtedness",
-        "real_estate": "Real Estate",
-        "employees": "Employees",
-        "suppliers_customers": "Suppliers / Customers",
-        "insurance": "Insurance",
-        "litigation": "Litigation",
-        "ip_it": "IP / IT",
-        "data_protection": "Data Protection",
-        "financial": "Financial Matters",
-        "tax": "Tax",
-        "other": "Other Matters",
-    },
-    "it": {
-        "corporate": "Aspetti Societari",
-        "indebtedness": "Indebitamento",
-        "real_estate": "Immobili",
-        "employees": "Dipendenti",
-        "suppliers_customers": "Fornitori / Clienti",
-        "insurance": "Assicurazioni",
-        "litigation": "Contenzioso",
-        "ip_it": "IP / IT",
-        "data_protection": "Protezione dei Dati",
-        "financial": "Materia Finanziaria",
-        "tax": "Fiscale",
-        "other": "Altri Aspetti",
-    },
+_AREA_ORDER_KEYS = list(_AREA_ORDER)
+
+_REPORT_TITLE = {
+    "en": "Real Estate Due Diligence Report",
+    "it": "Relazione di Due Diligence Immobiliare",
 }
 
 _L10N: dict[str, dict[str, str]] = {
     "en": {
         "confidential": "STRICTLY PRIVATE AND CONFIDENTIAL",
         "intro_heading": "## Introduction",
-        "corp_info_heading": "## Corporate Introductory Information",
+        "corp_info_heading": "## Property Identification",
         "observations_heading": "## Observations",
         "info_requests_heading": "## Information Requests",
         "appendix_heading": "## Appendix I: Documents Reviewed",
         "none_identified": "_None identified based on available documents._",
         "no_documents": "_No processed documents._",
-        "corp_info_placeholder": (
-            "_To be completed by the deal team (registered office, corporate "
-            "capital, shareholders, managing body, auditors)._"
-        ),
         "issue_label": "Issue",
         "risk_label": "Risk",
         "recommendation_label": "Recommendation",
@@ -100,16 +68,12 @@ _L10N: dict[str, dict[str, str]] = {
     "it": {
         "confidential": "STRETTAMENTE CONFIDENZIALE",
         "intro_heading": "## Introduzione",
-        "corp_info_heading": "## Informazioni Societarie",
+        "corp_info_heading": "## Identificazione dell'Immobile",
         "observations_heading": "## Osservazioni",
         "info_requests_heading": "## Richieste di Informazioni",
         "appendix_heading": "## Allegato I: Lista dei Documenti Esaminati",
         "none_identified": "_Nessun rilievo sulla base dei documenti disponibili._",
         "no_documents": "_Nessun documento processato._",
-        "corp_info_placeholder": (
-            "_Da completare a cura del deal team (sede legale, capitale "
-            "sociale, soci, organo amministrativo, sindaci)._"
-        ),
         "issue_label": "Rilievo",
         "risk_label": "Rischio",
         "recommendation_label": "Raccomandazione",
@@ -126,20 +90,20 @@ _INTRO_TEMPLATES: dict[str, str] = {
     "en": """{intro_heading}
 
 ### Purpose of this Report
-This Report summarises the results of the red-flag legal due diligence review conducted on **{deal_title}**. It focuses on material legal issues ("red flags") arising from the documents made available for review, to the extent they may significantly impact the contemplated transaction. It is not a substitute for a full set of contractual warranties.
+This Report summarises the results of the legal due diligence conducted on the property described in **{deal_title}**, on behalf of the prospective buyer. It focuses on the issues arising from the documents made available that may prevent, condition or affect the purchase, and indicates for each the action to take before the preliminary contract or the deed.
 
 ### Object of this Report
 The review covered the following areas, based on the documents available:
 
 {areas_text}
 
-Financial and tax matters are covered on a documentary, red-flag basis only, limited to the documents made available; this Report does not substitute a full financial or tax due diligence by the client's accounting and tax advisors. {tax_scope_sentence} Where an exposure is quantified, the figure is the one stated in the source document: the quantification of higher taxes, penalties and interest is left to the client's tax advisors, the applicable measures depending on the fiscal year and on the procedure followed. Accounting, technical, environmental and regulatory matters are outside the scope of this review.
+{chain_scope_sentence} The review is documentary: it does not include an inspection of the property, a survey of its actual state, nor an access to the building records of the municipality, which are left to the technician appointed by the buyer. Where an exposure is quantified, the figure is the one stated in the source document; costs of regularisation, taxes and fees are left to the notary and the technician.
 
 ### Limitations
 This Report is based on the following assumptions:
 
 - all copies reviewed are true and complete copies of the originals;
-- all documents reviewed were validly executed by parties with the necessary capacity;
+- the registry and cadastral searches reflect the position at their date, and later entries may exist;
 - no relevant documents or information have been withheld;
 - no independent verification of the information supplied has been carried out;
 - the review is limited to matters of Italian law;
@@ -147,25 +111,25 @@ This Report is based on the following assumptions:
 """,
     "it": """{intro_heading}
 
-### Scopo del Report
-Il presente Report riassume gli esiti della legal due diligence di tipo red flag condotta su **{deal_title}**. Il Report si concentra sulle criticità legali rilevanti ("red flags") emerse dai documenti messi a disposizione, nella misura in cui possano incidere significativamente sull'operazione prospettata. Non sostituisce un set completo di dichiarazioni e garanzie contrattuali.
+### Scopo della Relazione
+La presente Relazione riassume gli esiti della due diligence legale condotta sull'immobile oggetto di **{deal_title}**, nell'interesse della parte acquirente. Si concentra sulle criticità emerse dai documenti messi a disposizione che possano impedire, condizionare o incidere sull'acquisto, e indica per ciascuna l'azione da intraprendere prima del preliminare o del rogito.
 
-### Oggetto del Report
+### Oggetto della Relazione
 La revisione ha riguardato le seguenti aree, sulla base dei documenti disponibili:
 
 {areas_text}
 
-Gli aspetti finanziari e fiscali sono trattati su base esclusivamente documentale e di tipo red flag, nei limiti dei documenti messi a disposizione; il presente Report non sostituisce una due diligence finanziaria o fiscale completa a cura dei consulenti contabili e fiscali del cliente. {tax_scope_sentence} Ove un'esposizione sia quantificata, l'importo è quello indicato nel documento di origine: la quantificazione di maggiori imposte, sanzioni e interessi è rimessa ai consulenti fiscali del cliente, dipendendo le misure applicabili dal periodo d'imposta e dalla procedura seguita. Restano esclusi dall'ambito della revisione gli aspetti contabili, tecnici, ambientali e regolamentari.
+{chain_scope_sentence} La revisione è documentale: non comprende il sopralluogo dell'immobile, il rilievo dello stato di fatto né l'accesso agli atti edilizi presso il Comune, rimessi al tecnico incaricato dalla parte acquirente. Ove un'esposizione sia quantificata, l'importo è quello indicato nel documento di origine; i costi di regolarizzazione, imposte e oneri sono rimessi al notaio e al tecnico.
 
 ### Limitazioni
-Il presente Report si basa sulle seguenti assunzioni:
+La presente Relazione si basa sulle seguenti assunzioni:
 
 - tutte le copie esaminate sono copie conformi e complete degli originali;
-- tutti i documenti esaminati sono stati validamente sottoscritti da parti munite dei necessari poteri;
+- le ispezioni ipotecarie e catastali riflettono la situazione alla loro data, e possono esistere formalità successive;
 - nessun documento o informazione rilevante è stato omesso;
 - non è stata svolta alcuna verifica indipendente delle informazioni fornite;
 - la revisione è limitata a questioni di diritto italiano;
-- il Report riflette la situazione alla data sopra indicata, senza alcun obbligo di aggiornamento.
+- la Relazione riflette la situazione alla data sopra indicata, senza alcun obbligo di aggiornamento.
 """,
 }
 
@@ -252,28 +216,48 @@ def _md_cell(text: str | None) -> str:
     return joined.replace("|", "\\|").strip()
 
 
-def _render_introduction(deal_title: str, areas_reviewed: list[str], lang: str) -> str:
+def _chain_scope_sentence(coverage, lang: str) -> str:
+    """State how far back the titles on file reach, computed from their dates."""
+    from packages.real_estate.rules_registry import format_date
+
+    if coverage is None:
+        return (
+            "Nessun titolo di provenienza datato è presente tra i documenti esaminati: la "
+            "provenienza ventennale non è verificata."
+            if lang == "it" else
+            "No dated title deed is among the documents reviewed: the twenty-year chain of "
+            "title is not verified."
+        )
+    earliest = format_date(coverage.earliest_title, lang)
+    required = format_date(coverage.required_from, lang)
+    if coverage.covered:
+        return (
+            f"Il titolo più risalente esaminato è del {earliest}: i titoli agli atti coprono il "
+            f"ventennio anteriore (dal {required})."
+            if lang == "it" else
+            f"The earliest title reviewed is dated {earliest}: the titles on file cover the "
+            f"preceding twenty years (from {required})."
+        )
+    return (
+        f"Il titolo più risalente esaminato è del {earliest}: la provenienza ventennale (dal "
+        f"{required}) non è coperta dai documenti esaminati."
+        if lang == "it" else
+        f"The earliest title reviewed is dated {earliest}: the twenty-year chain (from "
+        f"{required}) is not covered by the documents reviewed."
+    )
+
+
+def _render_introduction(deal_title: str, areas_reviewed: list[str], lang: str, coverage=None) -> str:
     areas_text = (
         "\n".join(f"- {label}" for label in areas_reviewed)
         if areas_reviewed
         else _NO_AREAS_LINE[lang]
     )
-    # A statutory assessment window does not establish which fiscal years
-    # have actually been reviewed. State the documentary limit explicitly.
-    tax_scope = {
-        "it": "La copertura fiscale è limitata agli atti e ai periodi espressamente "
-              "documentati nei rilievi; la disponibilità di documenti per altri "
-              "periodi non è attestata dal presente Report.",
-        "en": "Tax coverage is limited to the acts and periods expressly "
-              "documented in the findings; this Report does not establish "
-              "that documents for other periods were available.",
-    }
-
     return _INTRO_TEMPLATES[lang].format(
         intro_heading=_L10N[lang]["intro_heading"],
         deal_title=deal_title,
         areas_text=areas_text,
-        tax_scope_sentence=tax_scope[lang],
+        chain_scope_sentence=_chain_scope_sentence(coverage, lang),
     )
 
 
@@ -324,23 +308,21 @@ def _format_source_citation(flag, doc_names: dict, lang: str) -> str:
 # recommendation cell the way a consolidated risk memo tags its lines.
 _REMEDY_LABELS: dict[str, dict[str, str]] = {
     "en": {
-        "indemnity": "Indemnity",
-        "warranty": "Warranty",
-        "price_adjustment": "Price adjustment",
-        "earn_out": "Earn-out",
         "condition_precedent": "Condition precedent",
-        "pre_closing_verification": "Pre-closing verification",
-        "post_closing_action": "Post-closing action",
+        "seller_undertaking": "Seller's undertaking",
+        "escrow": "Escrow with the notary",
+        "warranty": "Seller's warranty",
+        "price_adjustment": "Price reduction",
+        "pre_closing_verification": "Verification before the deed",
         "information_request": "Information request",
     },
     "it": {
-        "indemnity": "Indennizzo",
-        "warranty": "Dichiarazione e garanzia",
-        "price_adjustment": "Aggiustamento prezzo",
-        "earn_out": "Earn-out",
         "condition_precedent": "Condizione sospensiva",
-        "pre_closing_verification": "Verifica pre-closing",
-        "post_closing_action": "Adempimento post-closing",
+        "seller_undertaking": "Impegno del venditore",
+        "escrow": "Deposito presso il notaio",
+        "warranty": "Garanzia del venditore",
+        "price_adjustment": "Riduzione del prezzo",
+        "pre_closing_verification": "Verifica prima del rogito",
         "information_request": "Richiesta di informazioni",
     },
 }
@@ -444,149 +426,91 @@ def _render_key_findings(red_flags: list, lang: str, doc_names: dict | None = No
     return "\n".join(parts)
 
 
-_INTRO_FIELDS: dict[str, list[tuple[str, str]]] = {
+_PROPERTY_FIELDS: dict[str, list[tuple[str, str]]] = {
     "en": [
-        ("legal_form", "Legal Form"),
-        ("incorporation_date", "Incorporation"),
-        ("registered_office", "Registered Office"),
-        ("corporate_capital", "Corporate Capital"),
-        ("shareholders", "Shareholders"),
-        ("pledge", "Pledge"),
-        ("managing_body", "Managing Body"),
-        ("auditors", "Auditors"),
-        ("auditing_company", "Auditing Company"),
-        ("business", "Business"),
-        ("fiscal_year", "Fiscal Year"),
-        ("duration", "Duration"),
+        ("unit_label", "Unit"),
+        ("indirizzo", "Address"),
+        ("piano", "Floor"),
+        ("comune", "Municipality"),
+        ("sezione", "Section"),
+        ("foglio", "Sheet (foglio)"),
+        ("particella", "Parcel (particella)"),
+        ("subalterno", "Sub-unit (subalterno)"),
+        ("categoria", "Cadastral category"),
+        ("classe", "Class"),
+        ("consistenza", "Size"),
+        ("superficie", "Cadastral surface"),
+        ("rendita", "Cadastral income"),
+        ("intestatari", "Holders"),
+        ("titolo", "Title"),
+        ("data_titolo", "Date of title"),
     ],
     "it": [
-        ("legal_form", "Forma Giuridica"),
-        ("incorporation_date", "Costituzione"),
-        ("registered_office", "Sede Legale"),
-        ("corporate_capital", "Capitale Sociale"),
-        ("shareholders", "Soci"),
-        ("pledge", "Pegno"),
-        ("managing_body", "Organo Amministrativo"),
-        ("auditors", "Collegio Sindacale"),
-        ("auditing_company", "Società di Revisione"),
-        ("business", "Oggetto Sociale"),
-        ("fiscal_year", "Esercizio Sociale"),
-        ("duration", "Durata"),
+        ("unit_label", "Unità"),
+        ("indirizzo", "Indirizzo"),
+        ("piano", "Piano"),
+        ("comune", "Comune"),
+        ("sezione", "Sezione"),
+        ("foglio", "Foglio"),
+        ("particella", "Particella"),
+        ("subalterno", "Subalterno"),
+        ("categoria", "Categoria"),
+        ("classe", "Classe"),
+        ("consistenza", "Consistenza"),
+        ("superficie", "Superficie catastale"),
+        ("rendita", "Rendita"),
+        ("intestatari", "Intestatari"),
+        ("titolo", "Titolo"),
+        ("data_titolo", "Data del titolo"),
     ],
 }
 
 
-def _render_corporate_intro(
-    profiles: list, lang: str, target_company_names: list[str] | None = None,
-) -> str:
-    if not target_company_names:
-        message = (
-            "Specify the legal names in 'Companies in scope' on the deal page "
-            "to include their corporate information."
-            if lang == "en" else
-            "Indicare le ragioni sociali in 'Società nel perimetro' nella pagina "
-            "del deal per includere le relative informazioni societarie."
-        )
-        return f"{_L10N[lang]['corp_info_heading']}\n\n_{message}_\n"
+def _render_property_identification(profiles: list, lang: str) -> str:
+    """One table per unit, one value per field from the most authoritative source."""
+    from packages.real_estate.property_identity import consolidate_property_profiles, format_holders
 
-    profiles = consolidate_company_profiles(profiles, target_company_names)
-    matched_names = {normalize_company_name(profile.company_name) for profile in profiles}
-    missing_names = list(dict.fromkeys(name for name in target_company_names
-                                      if normalize_company_name(name) not in matched_names))
-    missing_notice = ""
-    if missing_names:
-        label = "Companies without matching information" if lang == "en" else "Società senza informazioni corrispondenti"
-        missing_notice = f"**{label}:** {'; '.join(_md_cell(name) for name in missing_names)}.\n"
-    if not profiles:
+    heading = _L10N[lang]["corp_info_heading"]
+    units = consolidate_property_profiles(profiles)
+    if not units:
         message = (
-            "No corporate information matching the companies in scope was "
-            "found in the available extractions. Verify the legal names and "
-            "the corporate documents."
+            "No document among those reviewed identifies the property (cadastral "
+            "extract, deed, floor plan). Obtain them before the preliminary contract."
             if lang == "en" else
-            "Nessuna informazione societaria corrispondente alle società nel "
-            "perimetro è presente nelle estrazioni disponibili. Verificare le "
-            "ragioni sociali e i documenti societari."
+            "Nessun documento tra quelli esaminati identifica l'immobile (visura "
+            "catastale, atto di provenienza, planimetria). Acquisirli prima del preliminare."
         )
-        return (
-            f"{_L10N[lang]['corp_info_heading']}\n\n"
-            f"_{message}_\n\n{missing_notice}"
-        )
+        return f"{heading}\n\n_{message}_\n"
 
-    parts: list[str] = [f"{_L10N[lang]['corp_info_heading']}\n"]
-    if missing_notice:
-        parts.append(missing_notice)
-    for p in profiles:
-        parts.append(f"### {_md_cell(p.company_name)}\n")
+    parts: list[str] = [f"{heading}\n"]
+    for unit in units:
+        parts.append(f"### {_md_cell(unit.label)}\n")
         parts.append(f"| {_L10N[lang]['field']} | {_L10N[lang]['value']} |")
         parts.append("|-------|-------|")
-        for attr, label in _INTRO_FIELDS[lang]:
-            value = getattr(p, attr, None)
+        for attr, label in _PROPERTY_FIELDS[lang]:
+            value = format_holders(unit.intestatari) if attr == "intestatari" else unit.values.get(attr)
             if value:
                 parts.append(f"| {label} | {_md_cell(value)} |")
         parts.append("")
-        sources = getattr(p, "source_filenames", [])
-        if not sources:
-            document_label = "Document" if lang == "en" else "Documento"
-            sources = [f"{document_label} #{doc_id}" for doc_id in getattr(p, "source_document_ids", [])]
+        sources = unit.source_filenames or [
+            f"{'Document' if lang == 'en' else 'Documento'} #{doc_id}" for doc_id in unit.source_document_ids
+        ]
         if sources:
             label = "Sources" if lang == "en" else "Fonti"
             parts.append(f"**{label}:** {'; '.join(_md_cell(source) for source in sources)}.\n")
-        conflicts = set(getattr(p, "conflicting_fields", []))
-        if conflicts:
-            # One line naming the fields, not the alternatives themselves: the
-            # list of every other rendering with its document repeated the
-            # introduction field by field. The alternatives stay in the deal's
-            # company profile (field_sources) for whoever verifies them.
-            fields = ", ".join(label for attr, label in _INTRO_FIELDS[lang] if attr in conflicts)
+        if unit.conflicting_fields:
+            fields = ", ".join(label for attr, label in _PROPERTY_FIELDS[lang] if attr in unit.conflicting_fields)
             message = (
-                f"The corporate records state different values for: {fields}. "
-                "The table states the value of the most authoritative and most "
-                "recent source; the point requires verification."
+                f"The deed, cadastral records and floor plans state different values for: {fields}. "
+                "The table states the value of the most authoritative source; the point requires "
+                "verification before the deed."
                 if lang == "en" else
-                f"Gli atti societari riportano valori diversi per: {fields}. "
-                "La tabella riporta il valore della fonte più autorevole e più "
-                "recente; il punto richiede verifica."
+                f"Atto, visura e planimetria riportano valori diversi per: {fields}. La tabella "
+                "riporta il valore della fonte più autorevole; il punto richiede verifica prima "
+                "del rogito."
             )
             parts.append(f"_{message}_\n")
     return "\n".join(parts)
-
-
-def refresh_corporate_intro_section(
-    content: str, profiles: list, target_names: list[str] | None, lang: str,
-) -> str:
-    """Replace only a recognized section 2, preserving the rest verbatim.
-
-    Legacy unnumbered report templates are supported. Unknown or ambiguous
-    layouts raise ValueError so callers can roll back instead of overwriting
-    another section or silently retaining an incorrect corporate profile.
-    """
-    headings = list(_re.finditer(r"^## [^\r\n]+", content, _re.MULTILINE))
-    corporate_heading = _re.compile(
-        r"## (?:(?P<number>\d+)\.\s+)?"
-        r"(?:Corporate Introductory Information|Informazioni Societarie)[ \t]*$"
-    )
-    matches = [(index, heading, corporate_heading.fullmatch(heading.group()))
-               for index, heading in enumerate(headings)
-               if corporate_heading.fullmatch(heading.group())]
-    if len(matches) != 1:
-        raise ValueError("Corporate introductory section is missing or ambiguous")
-    index, heading, match = matches[0]
-    if index != 1 or match.group("number") not in (None, "2") or index + 1 >= len(headings):
-        raise ValueError("Corporate introductory section is not a recognized section 2")
-
-    replacement = _render_corporate_intro(profiles, lang, target_names)
-    if match.group("number"):
-        lines = replacement.splitlines()
-        lines[0] = lines[0].replace("## ", "## 2. ", 1)
-        subsection = 0
-        for line_index, line in enumerate(lines):
-            if line.startswith("### "):
-                subsection += 1
-                lines[line_index] = f"### 2.{subsection} {line[4:]}"
-        replacement = "\n".join(lines)
-    newline = "\r\n" if "\r\n" in content else "\n"
-    replacement = replacement.rstrip("\r\n").replace("\n", newline) + newline * 2
-    return content[:heading.start()] + replacement + content[headings[index + 1].start():]
 
 
 def _render_information_requests(
@@ -603,7 +527,7 @@ def _render_information_requests(
     requests raised by the LLM aggregator that don't correspond to a
     checklist key fall under a trailing "Altri rilievi" section.
     """
-    from packages.agents.dd_checklist import (
+    from packages.real_estate.checklist import (
         SECTIONS_ORDER,
         SECTION_NAMES,
         items_by_key,
@@ -751,8 +675,8 @@ def generate_due_diligence_report(
     from app.models.document import Document, DocumentStatus
     from app.models.red_flag import RedFlag
     from app.models.report import Report, ReportType, ReportStatus
-    from app.models.company_profile import CompanyProfile
-    from packages.prompts.deal_prompts import EXECUTIVE_SUMMARY_PROMPT
+    from app.models.property_profile import PropertyProfile
+    from packages.real_estate.prompts import EXECUTIVE_SUMMARY_PROMPT
 
     # ── Validate deal ─────────────────────────────────────────────────── #
     deal = db.query(Deal).filter(Deal.id == deal_id).first()
@@ -815,11 +739,11 @@ def generate_due_diligence_report(
 
         red_flags = db.query(RedFlag).filter(RedFlag.deal_id == deal_id).all()
 
-        company_profiles = (
-            db.query(CompanyProfile)
-            .options(joinedload(CompanyProfile.source_document))
-            .filter(CompanyProfile.deal_id == deal_id)
-            .order_by(CompanyProfile.id.asc())
+        property_profiles = (
+            db.query(PropertyProfile)
+            .options(joinedload(PropertyProfile.source_document))
+            .filter(PropertyProfile.deal_id == deal_id)
+            .order_by(PropertyProfile.id.asc())
             .all()
         )
 
@@ -882,7 +806,6 @@ def generate_due_diligence_report(
                 "text": json.dumps({
                     "deal_title": deal.title,
                     "deal_description": deal.description,
-                    "confirmed_target_company_names": deal.target_company_names or [],
                     "documents_reviewed": len(documents),
                     "red_flags_count": len(red_flags),
                     "observations_count": len(observations),
@@ -958,12 +881,7 @@ def generate_due_diligence_report(
         # raised by the red-flag aggregator land in an "Altri rilievi /
         # Other items" trailing section.
         from app.models.missing_document import MissingDocument
-        from packages.agents.dd_checklist import (
-            CHECKLIST,
-            SECTIONS_ORDER,
-            SECTION_NAMES,
-            items_by_key,
-        )
+        from packages.real_estate.consistency import chain_coverage_for
 
         missing_docs = (
             db.query(MissingDocument)
@@ -976,7 +894,7 @@ def generate_due_diligence_report(
         )
 
         markdown = "\n".join([
-            "# Red Flag Due Diligence Report",
+            f"# {_REPORT_TITLE[lang]}",
             "",
             f"**{deal.title}**",
             "",
@@ -984,8 +902,8 @@ def generate_due_diligence_report(
             "",
             f"_{_format_report_date(date.today(), lang)}_",
             "",
-            _render_introduction(deal.title, areas_reviewed, lang),
-            _render_corporate_intro(company_profiles, lang, deal.target_company_names),
+            _render_introduction(deal.title, areas_reviewed, lang, chain_coverage_for(property_profiles)),
+            _render_property_identification(property_profiles, lang),
             "## Executive Summary",
             "",
             executive_summary,
@@ -1011,7 +929,7 @@ def generate_due_diligence_report(
         if report is None:
             report = Report(deal_id=deal_id, report_type=ReportType.due_diligence)
             db.add(report)
-        report.title = f"Due Diligence Report — {deal.title}"
+        report.title = f"{_REPORT_TITLE[lang]} — {deal.title}"
         report.content = markdown
         report.input_hash = input_hash
         report.status = ReportStatus.completed

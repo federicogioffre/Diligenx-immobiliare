@@ -18,7 +18,7 @@ Checks performed
 Checklist gaps
 --------------
 The agent matches every uploaded document against the standard DD checklist
-(see :mod:`packages.agents.dd_checklist`). Any checklist item that no
+(see :mod:`packages.real_estate.checklist`). Any checklist item that no
 uploaded document covers gets a ``MissingDocument`` row with the item's
 ready-to-render Italian question stored in ``reason`` — the report agent
 renders those rows verbatim in the "Information Requests" section.
@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from packages.agents.dd_checklist import CHECKLIST, matched_keys
+from packages.real_estate.checklist import CHECKLIST, matched_keys
 
 logger = logging.getLogger(__name__)
 
@@ -354,7 +354,7 @@ class DataRoomIntakeAgent:
     def _detect_missing_checklist_items(self, documents: list) -> list[str]:
         """Return the list of checklist item keys not covered by any document.
 
-        Order follows :data:`packages.agents.dd_checklist.CHECKLIST` so the
+        Order follows :data:`packages.real_estate.checklist.CHECKLIST` so the
         rendered Information Requests section groups items by DD area in
         the same sequence used elsewhere in the report.
         """

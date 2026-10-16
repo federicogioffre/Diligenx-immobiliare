@@ -22,14 +22,9 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 R = TypeVar("R")
 
-_STAGE_LABELS = {
-    "document_router": ("classificazione documenti", "document classification"),
-    "contract_analysis": ("analisi contratti", "contract analysis"),
-    "corporate_governance": ("governance societaria", "corporate governance"),
-    "corporate_intro_extraction": ("informazioni societarie", "corporate information"),
-    "tax_analysis": ("analisi fiscale", "tax review"),
-    "financial_analysis": ("analisi finanziaria", "financial review"),
-}
+def _labels() -> dict[str, tuple[str, str]]:
+    from packages.real_estate.pipeline import STAGE_LABELS
+    return {name: (it.lower(), en.lower()) for name, (it, en) in STAGE_LABELS.items()}
 
 
 def split_outcomes(items: Sequence[T], outcomes: Sequence[R | TaskFailure]):
@@ -42,7 +37,7 @@ def split_outcomes(items: Sequence[T], outcomes: Sequence[R | TaskFailure]):
 
 
 def unanalysed_question(filename: str, agent_name: str, error: str, language: str) -> str:
-    label_it, label_en = _STAGE_LABELS.get(agent_name, (agent_name, agent_name))
+    label_it, label_en = _labels().get(agent_name, (agent_name, agent_name))
     name = " ".join(str(filename).split())[:300] or "\u2014"
     reason = " ".join(str(error).split())[:400]
     if language == "it":

@@ -1,35 +1,27 @@
-"""Multi-agent orchestrator for deal analysis.
+"""Multi-agent orchestrator for the real-estate purchase analysis.
 
-Runs a structured pipeline of specialist agents, each tracked by an
-``AgentRun`` record.  Stages execute sequentially and each stage is
-**idempotent** — re-running the pipeline deletes previous outputs for
-that stage before writing new ones.
+Runs the stages of :mod:`packages.real_estate.pipeline` in order, each
+tracked by an ``AgentRun`` record. Every stage is **idempotent** — re-running
+the pipeline replaces that stage's previous outputs.
 
 Pipeline stages:
 
-1. **Intake** — validates the deal, transitions status to ``analyzing``,
-   inventories documents, and records ``MissingDocument`` entries when
-   expected standard document categories are absent.
-2. **Document routing** — classifies each processed document and records
-   the classification as an ``AgentFinding``.
-3. **Contract analysis** — extracts clauses from contracts/agreements
-   and stores them as ``ClauseFinding`` rows via
-   :class:`~packages.agents.contract_agent.ContractAgent`.
-4. **Corporate governance analysis** — analyses governance documents
-   (articles of association, bylaws, shareholder agreements, etc.) via
-   :class:`~packages.agents.corporate_agent.CorporateAgent`.
-4c. **Tax documentary review** — analyses tax documents (accertamenti,
-   cartelle, rateizzazioni, crediti d'imposta, …) via
-   :class:`~packages.agents.tax_agent.TaxAgent`.
-4d. **Financial documentary review** — analyses financial statements and
-   their annexes (auditor qualifications, going concern, statutory capital
-   losses, covenants, related parties, …) via
-   :class:`~packages.agents.financial_agent.FinancialAgent`.
-5. **Red-flag aggregation** — reviews all findings across the deal and
-   produces ``RedFlag`` rows plus ``OpenQuestion`` entries for items
-   requiring human follow-up.
-6. **Report generation** — delegates to ``generate_due_diligence_report``
-   to produce the final Markdown report stored in the ``Report`` table.
+1. **Intake** — validates the deal, sets status ``analyzing``, inventories
+   the documents and records a ``MissingDocument`` for every item of the
+   property checklist (:mod:`packages.real_estate.checklist`) no document
+   covers.
+2. **Document routing** — classifies each document into the property
+   vocabulary (:mod:`packages.real_estate.document_types`).
+3. **Property identification** — one ``PropertyProfile`` per unit per
+   document (:mod:`packages.real_estate.property_identity_agent`).
+4. **Specialist reviews** — title chain, encumbrances, building and
+   cadastre, condominium and occupancy
+   (:mod:`packages.real_estate.specialists`) → ``AgentFinding`` rows.
+5. **Consistency check** — deterministic comparison of the property
+   profiles across documents (:mod:`packages.real_estate.consistency`).
+6. **Red-flag aggregation** — ``RedFlag`` rows plus ``OpenQuestion`` entries,
+   through the source-fidelity review.
+7. **Report generation** — the Markdown report stored in ``Report``.
 
 Design principles:
 
@@ -45,24 +37,16 @@ from datetime import datetime, timezone
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from packages.agents.deal_analysis_agent import (
-    LLMProvider,
-    get_llm_provider,
-    _complete_classification,
-    _VALID_SEVERITIES,
-    _CONTRACT_TYPES,
-)
+from packages.agents.deal_analysis_agent import LLMProvider, get_llm_provider
+from packages.real_estate.pipeline import STAGES
 
 logger = logging.getLogger(__name__)
 
-# Agent names used for AgentRun records — one per stage.
+# Agent names used for AgentRun records.
 AGENT_INTAKE = "intake"
 AGENT_ROUTER = "document_router"
-AGENT_SPECIALIST = "contract_analysis"   # == ContractAgent.AGENT_NAME
-AGENT_CORPORATE = "corporate_governance"  # == CorporateAgent.AGENT_NAME
-AGENT_CORPORATE_INTRO = "corporate_intro_extraction"  # == CorporateIntroAgent.AGENT_NAME
-AGENT_TAX = "tax_analysis"  # == TaxAgent.AGENT_NAME
-AGENT_FINANCIAL = "financial_analysis"  # == FinancialAgent.AGENT_NAME
+AGENT_PROPERTY_IDENTITY = "property_identity"
+AGENT_CONSISTENCY = "consistency_check"
 AGENT_RED_FLAG = "red_flag_aggregation"
 AGENT_REPORT = "report_generation"
 
@@ -70,17 +54,7 @@ AGENT_REPORT = "report_generation"
 # ``AgentRun.agent_name`` recorded for that stage. Used when a stage has to
 # be rolled back and its failure re-recorded in a fresh transaction (the
 # stage's own AgentRun disappears with the rollback).
-_STAGE_AGENT_NAMES = {
-    "intake": AGENT_INTAKE,
-    "document_routing": AGENT_ROUTER,
-    "specialist_analysis": AGENT_SPECIALIST,
-    "corporate_analysis": AGENT_CORPORATE,
-    "corporate_intro_extraction": AGENT_CORPORATE_INTRO,
-    "tax_analysis": AGENT_TAX,
-    "financial_analysis": AGENT_FINANCIAL,
-    "red_flag_aggregation": AGENT_RED_FLAG,
-    "report_generation": AGENT_REPORT,
-}
+_STAGE_AGENT_NAMES = dict(STAGES)
 
 
 # ── Helper: AgentRun lifecycle ────────────────────────────────────────────
@@ -274,11 +248,10 @@ def _stage_intake(deal_id: int, db: Session) -> dict:
             agent, deal_id, len(docs), len(processed),
         )
 
-        # Detect which NM Standard Legal Checklist items the data room
-        # covers, and record a MissingDocument for every item that no
-        # document matches. Matching uses the same keyword logic the
-        # report renderer relies on (filename + first 1000 chars).
-        from packages.agents.dd_checklist import CHECKLIST, matched_keys
+        # Detect which items of the property checklist the documents cover,
+        # and record a MissingDocument for every item that no document
+        # matches (filename + first 1000 chars).
+        from packages.real_estate.checklist import CHECKLIST, matched_keys
 
         present_keys: set[str] = set()
         for doc in processed:
@@ -326,7 +299,7 @@ def _stage_document_routing(
     from app.models.document import Document, DocumentStatus
     from app.models.agent_finding import AgentFinding
     from app.models.red_flag import Severity
-    from packages.prompts.deal_prompts import DOCUMENT_CLASSIFICATION_PROMPT
+    from packages.real_estate.document_types import classify
 
     agent = AGENT_ROUTER
     logger.info("[%s] deal=%d — starting document routing", agent, deal_id)
@@ -367,11 +340,7 @@ def _stage_document_routing(
 
         def _classify(item) -> dict:
             _, doc_id, filename, text = item
-            prompt = DOCUMENT_CLASSIFICATION_PROMPT.format(
-                filename=filename,
-                text=text,
-            )
-            return _complete_classification(llm, prompt, context=f"Document classification, document {doc_id}")
+            return classify(llm, filename, text, context=f"Document classification, document {doc_id}")
 
         from packages.agents.concurrency import run_llm_tasks
         from packages.agents.stage_tx import release_connection_before_llm
@@ -440,189 +409,48 @@ def _stage_document_routing(
         return {"error": str(exc)}
 
 
-# ── Stage 3: Specialist analysis (clause extraction via ContractAgent) ────────
+# ── Stage 3: Property identification ─────────────────────────────────────
 
-def _stage_specialist_analysis(
-    deal_id: int,
-    db: Session,
-    llm: LLMProvider,
-    classifications: list[dict],
+def _stage_property_identity(
+    deal_id: int, db: Session, llm: LLMProvider, classifications: list[dict],
 ) -> dict:
-    """Delegate clause extraction to :class:`ContractAgent`.
-
-    Identifies contract-type documents from Stage-2 classifications and
-    passes their IDs to :class:`~packages.agents.contract_agent.ContractAgent`,
-    which manages its own ``AgentRun`` record (``agent_name = "contract_analysis"``),
-    idempotency, ``ClauseFinding`` persistence, and ``AgentFinding`` summaries.
-    """
-    from packages.agents.contract_agent import ContractAgent
-
-    logger.info("[%s] deal=%d — starting specialist analysis", AGENT_SPECIALIST, deal_id)
-
-    # Collect document IDs classified as contract-type by the routing stage.
-    contract_doc_ids: set[int] = {
-        c["document_id"]
-        for c in classifications
-        if c.get("document_type") in _CONTRACT_TYPES
-    }
-    # The upload role is authoritative even if classification says "other".
-    # These IDs still pass through ContractAgent's deal/status filter and full
-    # ordinary document windows; shared context excerpts never replace them.
-    from app.models.document import Document, DocumentStatus
-    contract_doc_ids.update(
-        doc_id for (doc_id,) in db.query(Document.id).filter(
-            Document.deal_id == deal_id,
-            Document.document_role == "loi",
-            Document.status == DocumentStatus.processed,
-        )
-    )
-
-    logger.info(
-        "[%s] deal=%d — %d contract document(s) identified from routing",
-        AGENT_SPECIALIST, deal_id, len(contract_doc_ids),
-    )
+    """One ``PropertyProfile`` per unit per document (self-contained AgentRun)."""
+    from packages.real_estate.property_identity_agent import PropertyIdentityAgent
 
     try:
-        # ContractAgent handles AgentRun tracking, idempotency, and DB writes.
-        return ContractAgent(provider=llm).run(
-            deal_id, db, contract_document_ids=contract_doc_ids,
-        )
+        return PropertyIdentityAgent(provider=llm).run(deal_id, db, classifications=classifications)
     except Exception as exc:
-        logger.exception(
-            "[%s] deal=%d — ContractAgent failed", AGENT_SPECIALIST, deal_id
-        )
+        logger.exception("[%s] deal=%d — PropertyIdentityAgent failed", AGENT_PROPERTY_IDENTITY, deal_id)
         return {"error": str(exc)}
 
 
-# ── Stage 4: Corporate governance analysis ────────────────────────────────
+# ── Stage 4: Specialist reviews ───────────────────────────────────────────
 
-def _stage_corporate_analysis(
-    deal_id: int, db: Session, llm: LLMProvider
+def _stage_specialist(
+    agent_cls, deal_id: int, db: Session, llm: LLMProvider, classifications: list[dict],
 ) -> dict:
-    """Delegate corporate governance analysis to :class:`CorporateAgent`.
-
-    The agent manages its own ``AgentRun`` record
-    (``agent_name = "corporate_governance"``), idempotency (clearing previous
-    ``AgentFinding`` rows), and ``AgentFinding`` persistence.
-    """
-    from packages.agents.corporate_agent import CorporateAgent
-
-    logger.info("[%s] deal=%d — starting corporate governance analysis", AGENT_CORPORATE, deal_id)
-
+    """Run one documentary reviewer (self-contained AgentRun + idempotency)."""
     try:
-        return CorporateAgent(provider=llm).run(deal_id, db)
+        return agent_cls(provider=llm).run(deal_id, db, classifications=classifications)
     except Exception as exc:
-        logger.exception(
-            "[%s] deal=%d — CorporateAgent failed", AGENT_CORPORATE, deal_id
-        )
+        logger.exception("[%s] deal=%d — review failed", agent_cls.AGENT_NAME, deal_id)
         return {"error": str(exc)}
 
 
-# ── Stage 4b: Corporate introductory information extraction ──────────────
+# ── Stage 5: Consistency check ────────────────────────────────────────────
 
-def _stage_corporate_intro_extraction(
-    deal_id: int, db: Session, llm: LLMProvider
-) -> dict:
-    """Delegate Corporate Introductory Information extraction to
-    :class:`CorporateIntroAgent`.
-
-    Populates ``CompanyProfile`` rows for the target companies described in
-    the deal's corporate documents (visure, atti, statuti). Self-contained
-    AgentRun + idempotency.
-    """
-    from packages.agents.corporate_intro_agent import CorporateIntroAgent
-
-    logger.info(
-        "[%s] deal=%d — starting corporate intro extraction",
-        AGENT_CORPORATE_INTRO, deal_id,
-    )
+def _stage_consistency_check(deal_id: int, db: Session) -> dict:
+    """Deterministic cross-document comparison of the property profiles."""
+    from packages.real_estate.consistency import ConsistencyCheckAgent
 
     try:
-        return CorporateIntroAgent(provider=llm).run(deal_id, db)
+        return ConsistencyCheckAgent().run(deal_id, db)
     except Exception as exc:
-        logger.exception(
-            "[%s] deal=%d — CorporateIntroAgent failed",
-            AGENT_CORPORATE_INTRO, deal_id,
-        )
+        logger.exception("[%s] deal=%d — consistency check failed", AGENT_CONSISTENCY, deal_id)
         return {"error": str(exc)}
 
 
-# ── Stage 4c: Tax documentary review ──────────────────────────────────────
-
-def _stage_tax_analysis(
-    deal_id: int,
-    db: Session,
-    llm: LLMProvider,
-    classifications: list[dict],
-) -> dict:
-    """Delegate the tax documentary review to :class:`TaxAgent`.
-
-    Documents the routing stage classified as ``tax`` are passed as
-    ``routed_document_ids``; the agent unions them with its own keyword
-    auto-detection. Self-contained AgentRun + idempotency
-    (``agent_name = "tax_analysis"``).
-    """
-    from packages.agents.tax_agent import TaxAgent
-
-    logger.info("[%s] deal=%d — starting tax documentary review", AGENT_TAX, deal_id)
-
-    routed_tax_ids: set[int] = {
-        c["document_id"]
-        for c in classifications
-        if c.get("document_type") == "tax"
-    }
-
-    try:
-        return TaxAgent(provider=llm).run(
-            deal_id, db, routed_document_ids=routed_tax_ids,
-        )
-    except Exception as exc:
-        logger.exception(
-            "[%s] deal=%d — TaxAgent failed", AGENT_TAX, deal_id
-        )
-        return {"error": str(exc)}
-
-
-# ── Stage 4d: Financial documentary review ────────────────────────────────
-
-def _stage_financial_analysis(
-    deal_id: int,
-    db: Session,
-    llm: LLMProvider,
-    classifications: list[dict],
-) -> dict:
-    """Delegate the financial documentary review to :class:`FinancialAgent`.
-
-    Documents the routing stage classified as ``financial_statement`` are
-    passed as ``routed_document_ids``; the agent unions them with its own
-    keyword auto-detection. Self-contained AgentRun + idempotency
-    (``agent_name = "financial_analysis"``).
-    """
-    from packages.agents.financial_agent import FinancialAgent
-
-    logger.info(
-        "[%s] deal=%d — starting financial documentary review",
-        AGENT_FINANCIAL, deal_id,
-    )
-
-    routed_financial_ids: set[int] = {
-        c["document_id"]
-        for c in classifications
-        if c.get("document_type") == "financial_statement"
-    }
-
-    try:
-        return FinancialAgent(provider=llm).run(
-            deal_id, db, routed_document_ids=routed_financial_ids,
-        )
-    except Exception as exc:
-        logger.exception(
-            "[%s] deal=%d — FinancialAgent failed", AGENT_FINANCIAL, deal_id
-        )
-        return {"error": str(exc)}
-
-
-# ── Stage 5: Red-flag aggregation ─────────────────────────────────────────
+# ── Stage 6: Red-flag aggregation ─────────────────────────────────────────
 
 def _stage_red_flag_aggregation(
     deal_id: int, db: Session, llm: LLMProvider
@@ -647,7 +475,7 @@ def _stage_red_flag_aggregation(
         return {"error": str(exc)}
 
 
-# ── Stage 6: Report generation ────────────────────────────────────────────
+# ── Stage 7: Report generation ────────────────────────────────────────────
 
 def _stage_report_generation(
     deal_id: int, db: Session, llm: LLMProvider
@@ -695,17 +523,7 @@ def run_deal_analysis_pipeline(
 
         {
             "deal_id": int,
-            "stages": {
-                "intake": {...},
-                "document_routing": {...},
-                "specialist_analysis": {...},
-                "corporate_analysis": {...},
-                "corporate_intro_extraction": {...},
-                "tax_analysis": {...},
-                "financial_analysis": {...},
-                "red_flag_aggregation": {...},
-                "report_generation": {...},
-            },
+            "stages": {"<stage key>": {...}, ...},  # see real_estate.pipeline
             "completed": bool,   # True if all stages succeeded
         }
 
@@ -753,18 +571,15 @@ def run_deal_analysis_pipeline(
     execute("document_routing", lambda: _stage_document_routing(deal_id, db, llm), ("intake",))
     classifications = stages["document_routing"].get("classifications", [])
 
-    execute("specialist_analysis",
-            lambda: _stage_specialist_analysis(deal_id, db, llm, classifications),
+    execute("property_identity",
+            lambda: _stage_property_identity(deal_id, db, llm, classifications),
             ("document_routing",))
-    # These specialists discover their inputs independently of routing.
-    execute("corporate_analysis", lambda: _stage_corporate_analysis(deal_id, db, llm), ("intake",))
-    execute("corporate_intro_extraction",
-            lambda: _stage_corporate_intro_extraction(deal_id, db, llm), ("intake",))
-    execute("tax_analysis", lambda: _stage_tax_analysis(deal_id, db, llm, classifications),
-            ("document_routing",))
-    execute("financial_analysis",
-            lambda: _stage_financial_analysis(deal_id, db, llm, classifications),
-            ("document_routing",))
+    from packages.real_estate.specialists import SPECIALISTS
+    for agent_cls in SPECIALISTS:
+        execute(agent_cls.AGENT_NAME,
+                lambda agent_cls=agent_cls: _stage_specialist(agent_cls, deal_id, db, llm, classifications),
+                ("document_routing",))
+    execute("consistency_check", lambda: _stage_consistency_check(deal_id, db), ("property_identity",))
 
     # Aggregation and publication require a complete analysis. Leave the
     # previous findings/report intact when any prerequisite fails.

@@ -41,3 +41,4 @@ class Deal(TimestampMixin, Base):
     open_questions = relationship("OpenQuestion", back_populates="deal", cascade="all, delete-orphan")
     missing_documents = relationship("MissingDocument", back_populates="deal", cascade="all, delete-orphan")
     company_profiles = relationship("CompanyProfile", back_populates="deal", cascade="all, delete-orphan")
+    property_profiles = relationship("PropertyProfile", back_populates="deal", cascade="all, delete-orphan")

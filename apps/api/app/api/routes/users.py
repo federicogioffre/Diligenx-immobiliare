@@ -162,6 +162,27 @@ def export_my_data(
                 }
                 for p in deal.company_profiles
             ],
+            "property_profiles": [
+                {
+                    "unit_label": p.unit_label,
+                    "comune": p.comune,
+                    "sezione": p.sezione,
+                    "foglio": p.foglio,
+                    "particella": p.particella,
+                    "subalterno": p.subalterno,
+                    "categoria": p.categoria,
+                    "classe": p.classe,
+                    "consistenza": p.consistenza,
+                    "superficie": p.superficie,
+                    "rendita": p.rendita,
+                    "indirizzo": p.indirizzo,
+                    "piano": p.piano,
+                    "intestatari": p.intestatari,
+                    "titolo": p.titolo,
+                    "data_titolo": p.data_titolo,
+                }
+                for p in deal.property_profiles
+            ],
             "reports": [
                 {
                     "title": r.title,

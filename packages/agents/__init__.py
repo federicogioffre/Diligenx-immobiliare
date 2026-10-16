@@ -15,8 +15,8 @@ from .orchestrator import (
     run_deal_analysis_pipeline,
     AGENT_INTAKE,
     AGENT_ROUTER,
-    AGENT_SPECIALIST,
-    AGENT_CORPORATE,
+    AGENT_PROPERTY_IDENTITY,
+    AGENT_CONSISTENCY,
     AGENT_RED_FLAG,
     AGENT_REPORT,
 )
@@ -25,16 +25,6 @@ from .intake_agent import (
     run_intake,
     AGENT_NAME as AGENT_DATA_ROOM_INTAKE,
     SMALL_DOC_THRESHOLD,
-)
-from .contract_agent import (
-    ContractAgent,
-    run_contract_analysis,
-    AGENT_NAME as AGENT_CONTRACT,
-)
-from .corporate_agent import (
-    CorporateAgent,
-    run_corporate_analysis,
-    AGENT_NAME as AGENT_CORPORATE_GOVERNANCE,
 )
 from .red_flag_aggregator import (
     RedFlagAggregationAgent,
@@ -57,20 +47,14 @@ __all__ = [
     "run_deal_analysis_pipeline",
     "AGENT_INTAKE",
     "AGENT_ROUTER",
-    "AGENT_SPECIALIST",
-    "AGENT_CORPORATE",
+    "AGENT_PROPERTY_IDENTITY",
+    "AGENT_CONSISTENCY",
     "AGENT_RED_FLAG",
     "AGENT_REPORT",
     "DataRoomIntakeAgent",
     "run_intake",
     "AGENT_DATA_ROOM_INTAKE",
     "SMALL_DOC_THRESHOLD",
-    "ContractAgent",
-    "run_contract_analysis",
-    "AGENT_CONTRACT",
-    "CorporateAgent",
-    "run_corporate_analysis",
-    "AGENT_CORPORATE_GOVERNANCE",
     "RedFlagAggregationAgent",
     "run_red_flag_aggregation",
     "AGENT_RED_FLAG_AGGREGATOR",

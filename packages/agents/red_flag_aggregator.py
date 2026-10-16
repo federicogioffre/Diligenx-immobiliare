@@ -1,9 +1,10 @@
 """Red-flag aggregation agent.
 
-Aggregates findings from ALL specialist agents — ``ClauseFinding`` rows (from
-:class:`~packages.agents.contract_agent.ContractAgent`) plus ``AgentFinding``
-rows (from :class:`~packages.agents.corporate_agent.CorporateAgent` and any
-other future specialist) — into consolidated ``RedFlag`` records.
+Aggregates the findings of every stage that reviews documents — the four
+property reviewers (:mod:`packages.real_estate.specialists`) and the
+deterministic consistency check — into consolidated ``RedFlag`` records,
+tagged with the property areas, remedies and impacts of a residential
+purchase.
 
 Key features
 ------------
@@ -46,9 +47,9 @@ from packages.agents.deal_analysis_agent import (
     LLMProvider,
     _complete_llm_items,
     _normalize_severity,
-    _parse_dd_area,
     get_judgment_provider,
 )
+from packages.real_estate.areas import parse_area as _parse_dd_area
 
 logger = logging.getLogger(__name__)
 
@@ -71,26 +72,24 @@ _SEVERITY_ORDER: dict[str, int] = {
 # ── Agent ─────────────────────────────────────────────────────────────────────
 
 
-# The instrument that answers a finding. This is the tag a law firm's
-# consolidated risk memo assigns to each risk: every line there ends in a
-# warranty cross-reference, "indemnity", "earn-out", or an action to take
-# before closing.
+# The instrument that answers a finding in a property purchase: a condition
+# in the preliminary contract, an undertaking of the seller to cancel or
+# regularise before the deed, a sum retained or deposited with the notary, a
+# warranty in the deed, a price reduction, a check by the notary or a
+# surveyor, a document to obtain.
 _VALID_REMEDY_TYPES = (
-    "indemnity",
+    "condition_precedent",
+    "seller_undertaking",
+    "escrow",
     "warranty",
     "price_adjustment",
-    "earn_out",
-    "condition_precedent",
     "pre_closing_verification",
-    "post_closing_action",
     "information_request",
 )
 
-# What the finding hits. This is the orthogonal tag a financial adviser's
-# key-findings page carries (Value / SPA / Other) — a different question
-# from which instrument answers it, and the natural filter for a client
-# asking "show me everything that has to land in the contract".
-_VALID_IMPACTS = ("value", "spa", "other")
+# What the finding hits: the deed itself (it prevents or conditions it), the
+# value of the property, or neither.
+_VALID_IMPACTS = ("value", "deed", "other")
 
 
 def _normalize_choice(raw: object, allowed: tuple[str, ...]) -> str | None:
@@ -106,17 +105,22 @@ def _normalize_choice(raw: object, allowed: tuple[str, ...]) -> str | None:
     return value if value in allowed else None
 
 
-# Categories whose presence is not a matter of degree. A capital loss under
-# artt. 2446-2447 c.c. and a going-concern doubt are events with statutory
-# consequences: they are high or they are wrong.
-_NON_NEGOTIABLE_HIGH = frozenset({"capital_loss", "going_concern"})
+# Categories whose presence is not a matter of degree: a transcribed
+# foreclosure, seizure or claim follows the property into the buyer's hands,
+# and a seller who is not the owner of record cannot transfer what the
+# buyer is paying for. They are high or they are wrong.
+_NON_NEGOTIABLE_HIGH = frozenset({
+    "foreclosure", "seizure", "judicial_claim",
+    "cadastral_owner_mismatch", "seller_owner_mismatch",
+})
 
 
 def _build_severity_floors(agent_findings: list) -> dict[str, str]:
     """Minimum severity per finding category, from what the specialists found.
 
-    Two sources of a floor: a tax finding graded ``actual`` — an omission
-    with no available defence — and the categories in
+    Two sources of a floor: a donation the title-chain reviewer found still
+    within the twenty-year window of art. 563 c.c. (computed from the dates,
+    not judged by the model), and the categories in
     :data:`_NON_NEGOTIABLE_HIGH`.
 
     The floor is applied by matching the red flag's ``category`` against the
@@ -131,7 +135,7 @@ def _build_severity_floors(agent_findings: list) -> dict[str, str]:
         if not category:
             continue
         payload = af.structured_payload_json or {}
-        if payload.get("defensibility") == "actual" or category in _NON_NEGOTIABLE_HIGH:
+        if payload.get("donation_window_open") is True or category in _NON_NEGOTIABLE_HIGH:
             floors[category] = "high"
     return floors
 
@@ -210,26 +214,27 @@ def _rejected_draft_question(draft: dict, reason: str, language: str) -> str:
 
 
 def _summarize_payload(payload: dict | None) -> str:
-    """Render the specialist agents' structured fields for the LLM context.
+    """Render the specialists' structured fields for the LLM context.
 
     Only the fields that are present are emitted, so an ordinary finding
     stays a single short line. Without this the aggregator would see the
-    tax and financial agents' prose and none of their structure — the
-    defensibility grade, the amount the document stated, the fiscal years,
-    the mitigating factors — and would have to guess what was already known.
+    reviewers' prose and none of what they established deterministically —
+    whether a donation is still within the twenty-year window, whether a
+    mortgage registration has passed twenty years, which two documents a
+    cross-document finding compares.
     """
     if not payload:
         return ""
 
     bits: list[str] = []
 
-    grade = payload.get("defensibility")
-    if grade:
-        bits.append(f"defensibility={grade}")
-
-    tax_kind = payload.get("tax_kind")
-    if tax_kind and tax_kind != "altro":
-        bits.append(f"tax={tax_kind}")
+    if payload.get("event_date"):
+        bits.append(f"date={payload['event_date']}")
+    parties = payload.get("parties")
+    if parties:
+        bits.append("parties: " + ", ".join(str(p) for p in parties))
+    if payload.get("registry_reference"):
+        bits.append(f"registry={payload['registry_reference']}")
 
     amount = payload.get("amount_eur")
     if amount is not None and payload.get("amount_source") == "document":
@@ -237,34 +242,23 @@ def _summarize_payload(payload: dict | None) -> str:
         if payload.get("amount_evidence"):
             bits.append("amount_evidence=" + str(payload["amount_evidence"]))
 
-    years = payload.get("fiscal_years")
-    if years:
-        bits.append("FY " + ", ".join(str(y) for y in years))
+    if payload.get("donation_window_open") is True:
+        bits.append(f"donation within the twenty-year window until {payload.get('donation_window_ends')}")
+    elif payload.get("donation_window_open") is False:
+        bits.append("donation older than twenty years")
+    if payload.get("registration_over_twenty_years") is True:
+        bits.append("mortgage registration over twenty years old: lapsed unless renewed")
 
-    periods = payload.get("assessment_periods") or []
-    barred = [str(pd["fiscal_year"]) for pd in periods if pd.get("time_barred")]
-    if barred:
-        bits.append("time-barred: FY " + ", ".join(barred))
-
-    mitigations = payload.get("mitigating_factors")
-    if mitigations:
-        bits.append("mitigants: " + ", ".join(mitigations))
-
-    counterparty = payload.get("counterparty")
-    if counterparty:
-        bits.append(f"counterparty={counterparty}")
-
-    if payload.get("change_of_control_clause") is True:
-        bits.append("change-of-control clause: yes")
-    if payload.get("financial_covenant") is True:
-        bits.append("financial covenant: yes")
-
-    legal_basis = payload.get("legal_basis")
-    if legal_basis:
-        bits.append(f"cited: {legal_basis}")
+    compared = payload.get("compared_documents")
+    if compared:
+        bits.append("compares: " + "; ".join(
+            f"document {d.get('document_id')} ({d.get('filename')})" for d in compared if isinstance(d, dict)
+        ))
 
     if payload.get("source") == "heuristic":
         bits.append("raised by keyword floor, not extracted")
+    elif payload.get("source") == "deterministic":
+        bits.append("cross-document check, not model output")
 
     return " | ".join(bits)
 
@@ -633,17 +627,17 @@ class RedFlagAggregationAgent:
     def _call_llm_for_flags(
         self, context_text: str, deal_id: int, lang_instruction: str = "", output_lang: str = "en"
     ) -> list[dict]:
-        from packages.prompts.deal_prompts import RED_FLAG_AGGREGATION_PROMPT
-        from packages.agents.legal_rules import build_legal_rules_context
-
         from packages.agents.document_coverage import aggregation_batches
-        from packages.agents.output_language import recommendation_examples
+        from packages.real_estate.areas import AREA_GUIDE
+        from packages.real_estate.prompts import RED_FLAG_AGGREGATION_PROMPT, recommendation_examples
+        from packages.real_estate.rules_registry import rules_context
 
         results: list[dict] = []
         for index, batch in enumerate(aggregation_batches(context_text), start=1):
             prompt = RED_FLAG_AGGREGATION_PROMPT.format(
                 findings_by_document=batch,
-                legal_rules_context=build_legal_rules_context(),
+                rules_context=rules_context(),
+                area_guide=AREA_GUIDE,
                 language_instruction=lang_instruction,
                 recommendation_examples=recommendation_examples(output_lang),
             )
@@ -835,13 +829,17 @@ class RedFlagAggregationAgent:
         open_questions: list[OpenQuestion] = []
         for flag in red_flags:
             if flag.severity == Severity.high:
+                question = (
+                    f"Rilievo '{flag.title}' (gravità alta): {flag.issue} Quale rimedio è "
+                    "previsto prima del preliminare o del rogito?"
+                    if language == "it" else
+                    f"Red flag '{flag.title}' (severity={flag.severity.value}): "
+                    f"{flag.issue} What remedy is planned before the preliminary contract or the deed?"
+                )
                 q = OpenQuestion(
                     deal_id=deal_id,
                     agent_name=self.AGENT_NAME,
-                    question=(
-                        f"Red flag '{flag.title}' (severity={flag.severity.value}): "
-                        f"{flag.issue} — What is the mitigation plan?"
-                    ),
+                    question=question,
                     priority=Priority.high,
                 )
                 db.add(q)

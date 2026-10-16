@@ -19,7 +19,7 @@ from app.models.workspace import Workspace
 from app.schemas.agent_run import AgentRunRead
 from app.schemas.clause_finding import ClauseFindingRead
 from app.schemas.missing_document import MissingDocumentRead
-from app.schemas.company_profile import CompanyProfileRead
+from app.schemas.property_profile import PipelineStageRead, PropertyUnitRead
 from app.schemas.open_question import OpenQuestionRead
 from app.schemas.red_flag import RedFlagRead
 from app.schemas.deal import (
@@ -33,6 +33,8 @@ from app.schemas.deal import (
 )
 from app.schemas.report import ReportGenerateResponse
 from app.services.auth import get_current_user
+# Pipeline stage order for predictable SSE output; stages that publish batch progress.
+from packages.real_estate.pipeline import AGENT_NAMES as _PIPELINE_STAGES, PROGRESS_AGENTS as _PROGRESS_AGENTS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -72,6 +74,13 @@ def create_deal(
     db.commit()
     db.refresh(deal)
     return deal
+
+
+@router.get("/pipeline-stages", response_model=list[PipelineStageRead])
+def pipeline_stages(current_user: User = Depends(get_current_user)):
+    """The analysis stages in order, with their labels — the frontend's only copy."""
+    from packages.real_estate.pipeline import STAGE_LIST
+    return [stage._asdict() for stage in STAGE_LIST]
 
 
 @router.get("/{deal_id}", response_model=DealRead)
@@ -414,10 +423,15 @@ async def analysis_progress(
     deal = db.query(Deal).filter(Deal.id == deal_id, Deal.workspace.has(owner_id=current_user.id)).first()
     if deal is None:
         raise HTTPException(404, "Deal not found")
-    run = db.query(AgentRun).filter_by(deal_id=deal_id, agent_name="financial_analysis", status="running").first()
+    run = db.query(AgentRun).filter(
+        AgentRun.deal_id == deal_id, AgentRun.agent_name.in_(_PROGRESS_AGENTS), AgentRun.status == "running",
+    ).order_by(AgentRun.id.desc()).first()
     run_id = run.id if deal.status == "analyzing" and run else None
+    agent_name = run.agent_name if run else None
     db.rollback()  # Do not hold a transaction while waiting for Redis.
-    return await read_progress(getattr(request.app.state, "arq_pool", None), deal_id, run_id)
+    if agent_name is None:
+        return None
+    return await read_progress(getattr(request.app.state, "arq_pool", None), deal_id, run_id, agent_name)
 
 
 @router.post("/{deal_id}/recover-analysis", response_model=DealRead)
@@ -761,17 +775,19 @@ def list_missing_documents(
     )
 
 
-@router.get("/{deal_id}/company-profiles", response_model=list[CompanyProfileRead])
-def list_company_profiles(
+@router.get("/{deal_id}/property-profiles", response_model=list[PropertyUnitRead])
+def list_property_profiles(
     deal_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Corporate Introductory Information extracted from the deal's corporate
-    documents (visure, atti costitutivi, statuti). One row per distinct
-    target company.
+    """The property units the documents describe, one value per field from the
+    most authoritative source (deed → cadastral extract → floor plan → …),
+    with every alternative value and the fields on which the authoritative
+    sources disagree.
     """
-    from app.models.company_profile import CompanyProfile
+    from app.models.property_profile import PropertyProfile
+    from packages.real_estate.property_identity import consolidate_property_profiles
 
     deal = (
         db.query(Deal)
@@ -783,14 +799,27 @@ def list_company_profiles(
         raise HTTPException(status_code=404, detail="Deal not found")
 
     profiles = (
-        db.query(CompanyProfile)
-        .options(selectinload(CompanyProfile.source_document))
-        .filter(CompanyProfile.deal_id == deal_id)
-        .order_by(CompanyProfile.id.asc())
+        db.query(PropertyProfile)
+        .options(selectinload(PropertyProfile.source_document))
+        .filter(PropertyProfile.deal_id == deal_id)
+        .order_by(PropertyProfile.id.asc())
         .all()
     )
-    from packages.agents.company_identity import consolidate_company_profiles
-    return consolidate_company_profiles(profiles, deal.target_company_names)
+    return [
+        {
+            "label": unit.label,
+            "values": unit.values,
+            "intestatari": [h for h in unit.intestatari if isinstance(h, dict) and h.get("name")],
+            "conflicting_fields": unit.conflicting_fields,
+            "field_sources": {
+                attr: [vars(source) for source in sources]
+                for attr, sources in unit.field_sources.items()
+            },
+            "source_document_ids": unit.source_document_ids,
+            "source_filenames": unit.source_filenames,
+        }
+        for unit in consolidate_property_profiles(profiles)
+    ]
 
 
 @router.get("/{deal_id}/report", response_model=ReportGenerateResponse)
@@ -971,20 +1000,6 @@ def issue_stream_ticket(
     return {"ticket": create_stream_ticket(current_user.email, deal_id)}
 
 
-# Pipeline stage order for predictable SSE output
-_PIPELINE_STAGES = [
-    "intake",
-    "document_router",
-    "contract_analysis",
-    "corporate_governance",
-    "corporate_intro_extraction",
-    "tax_analysis",
-    "financial_analysis",
-    "red_flag_aggregation",
-    "report_generation",
-]
-
-
 @router.get("/{deal_id}/analysis-stream")
 async def stream_analysis_progress(
     request: Request,
@@ -995,7 +1010,7 @@ async def stream_analysis_progress(
     """Server-Sent Events stream for real-time pipeline progress.
 
     Emits one JSON event per second with the current deal status and a
-    snapshot of all 6 pipeline stages.  The stream closes automatically
+    snapshot of every pipeline stage.  The stream closes automatically
     when the deal leaves ``analyzing`` status (pipeline finished or failed).
 
     Authentication uses a ``?ticket=`` query parameter because the browser
@@ -1104,11 +1119,14 @@ async def stream_analysis_progress(
                     "deal_status": fresh_deal.status.value,
                     "stages": stages,
                 }
-                financial_run = run_by_name.get("financial_analysis")
-                progress_run_id = financial_run.id if financial_run and financial_run.status == "running" and fresh_deal.status == "analyzing" else None
+                progress_run = next((run_by_name[name] for name in _PROGRESS_AGENTS
+                                     if name in run_by_name and run_by_name[name].status == "running"), None)
+                progress_run_id = progress_run.id if progress_run and fresh_deal.status == "analyzing" else None
+                progress_agent = progress_run.agent_name if progress_run else "financial_analysis"
             # Close before yielding or sleeping, even for a slow/disconnected reader.
             from packages.agents.analysis_progress import read_progress
-            payload["progress"] = await read_progress(getattr(request.app.state, "arq_pool", None), deal_id, progress_run_id)
+            payload["progress"] = await read_progress(getattr(request.app.state, "arq_pool", None), deal_id,
+                                                      progress_run_id, progress_agent)
             yield f"data: {json.dumps(payload)}\n\n"
             if payload["deal_status"] != "analyzing":
                 break

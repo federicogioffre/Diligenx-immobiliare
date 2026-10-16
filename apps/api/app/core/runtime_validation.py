@@ -44,10 +44,10 @@ def validate_beta_database() -> None:
             WHERE n.nspname = 'public' AND c.relname IN (
                 'workspaces','deals','documents','document_chunks','clause_findings',
                 'red_flags','reports','agent_runs','agent_findings','open_questions',
-                'missing_documents','company_profiles')
+                'missing_documents','company_profiles','property_profiles')
               AND c.relrowsecurity AND c.relforcerowsecurity
         """)).scalar_one()
-        if protected != 12:
+        if protected != 13:
             raise RuntimeError("BETA_MODE requires all tenant tables to have forced row-level security")
         from pathlib import Path
         from alembic.script import ScriptDirectory

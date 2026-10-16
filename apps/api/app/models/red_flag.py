@@ -42,6 +42,15 @@ class DueDiligenceArea(str, enum.Enum):
     financial = "financial"                    # Financial statements / covenants
     tax = "tax"                                # Tax matters (documentary review)
     other = "other"
+    # Real-estate purchase areas (migration r025). The M&A values above stay
+    # for stored data; packages.real_estate.areas lists the ones in use.
+    title_chain = "title_chain"                # Provenienza e titolarità
+    encumbrances = "encumbrances"              # Ipoteche, pignoramenti, gravami
+    cadastral = "cadastral"                    # Catasto
+    building_compliance = "building_compliance"  # Urbanistica ed edilizia
+    condominium = "condominium"
+    installations_energy = "installations_energy"  # Impianti, APE
+    occupancy = "occupancy"                    # Locazioni, occupanti
 
 
 class RedFlag(TimestampMixin, Base):

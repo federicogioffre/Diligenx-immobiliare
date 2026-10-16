@@ -6,17 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-STAGES = (
-    ("intake", "intake"),
-    ("document_routing", "document_router"),
-    ("specialist_analysis", "contract_analysis"),
-    ("corporate_analysis", "corporate_governance"),
-    ("corporate_intro_extraction", "corporate_intro_extraction"),
-    ("tax_analysis", "tax_analysis"),
-    ("financial_analysis", "financial_analysis"),
-    ("red_flag_aggregation", "red_flag_aggregation"),
-    ("report_generation", "report_generation"),
-)
+from packages.real_estate.pipeline import STAGES
 
 # Source-fidelity review and broader corporate selection change what a
 # completed analysis guarantees. Retain old reports, but require new analysis
@@ -119,7 +109,7 @@ def _checkpoint_runs(db, deal_id):
 def validate_resume(db, deal_id: int) -> ResumePlan:
     """Fail closed on edited documents, incomplete routing, or stale stage rows."""
     from app.models.agent_finding import AgentFinding
-    from packages.agents.deal_analysis_agent import VALID_DOCUMENT_TYPES
+    from packages.real_estate.document_types import VALID_DOCUMENT_TYPES
 
     intake, by_name = _checkpoint_runs(db, deal_id)
     fingerprint, document_ids = corpus_fingerprint(db, deal_id)

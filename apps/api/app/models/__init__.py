@@ -11,6 +11,7 @@ from app.models.agent_finding import AgentFinding
 from app.models.open_question import OpenQuestion, Priority, QuestionStatus
 from app.models.missing_document import MissingDocument
 from app.models.company_profile import CompanyProfile
+from app.models.property_profile import PropertyProfile
 from app.models.oauth_identity import OAuthIdentity
 from app.models.credit_transaction import CreditTransaction
 
@@ -38,6 +39,7 @@ __all__ = [
     "QuestionStatus",
     "MissingDocument",
     "CompanyProfile",
+    "PropertyProfile",
     "OAuthIdentity",
     "CreditTransaction",
 ]
