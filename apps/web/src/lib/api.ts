@@ -144,18 +144,17 @@ export interface ClauseFindingRead {
   created_at: string
 }
 
+// Areas of a property purchase review (packages/real_estate/areas.py).
 export type DueDiligenceArea =
-  | 'corporate'
-  | 'indebtedness'
-  | 'real_estate'
-  | 'employees'
-  | 'suppliers_customers'
-  | 'insurance'
-  | 'litigation'
-  | 'ip_it'
-  | 'data_protection'
-  | 'financial'
+  | 'title_chain'
+  | 'encumbrances'
+  | 'cadastral'
+  | 'building_compliance'
+  | 'condominium'
+  | 'installations_energy'
+  | 'occupancy'
   | 'tax'
+  | 'litigation'
   | 'other'
 
 export interface RedFlagRead {
@@ -175,16 +174,15 @@ export interface RedFlagRead {
   // remedy_type: the instrument that answers the finding. impact: what it
   // hits. Both null where the analysis did not tag the flag.
   remedy_type:
-    | 'indemnity'
+    | 'condition_precedent'
+    | 'seller_undertaking'
+    | 'escrow'
     | 'warranty'
     | 'price_adjustment'
-    | 'earn_out'
-    | 'condition_precedent'
     | 'pre_closing_verification'
-    | 'post_closing_action'
     | 'information_request'
     | null
-  impact: 'value' | 'spa' | 'other' | null
+  impact: 'value' | 'deed' | 'other' | null
   structured_payload_json: {
     amount_eur?: number
     fiscal_years?: number[]
@@ -216,29 +214,30 @@ export interface MissingDocumentRead {
   created_at: string
 }
 
-export interface CompanyProfileRead {
-  id: number
-  deal_id: number
-  company_name: string
-  legal_form: string | null
-  incorporation_date: string | null
-  registered_office: string | null
-  corporate_capital: string | null
-  shareholders: string | null
-  pledge: string | null
-  managing_body: string | null
-  auditors: string | null
-  auditing_company: string | null
-  business: string | null
-  fiscal_year: string | null
-  duration: string | null
-  confidence: number | null
-  source_document_id: number | null
-  source_document_ids?: number[]
-  source_filenames?: string[]
-  conflicting_fields?: string[]
-  field_sources?: Record<string, { value: string; source_document_ids: number[]; source_filenames: string[]; profile_ids: number[] }[]>
-  created_at: string
+export interface PropertyHolder {
+  name: string
+  tax_code: string | null
+  share: string | null
+  right: string | null
+}
+
+/** One property unit, consolidated across the documents that describe it. */
+export interface PropertyUnitRead {
+  label: string
+  values: Record<string, string>
+  intestatari: PropertyHolder[]
+  conflicting_fields: string[]
+  field_sources: Record<string, { value: string; source_document_ids: number[]; source_filenames: string[]; source_kinds: string[] }[]>
+  source_document_ids: number[]
+  source_filenames: string[]
+}
+
+export interface PipelineStage {
+  key: string
+  agent_name: string
+  label_it: string
+  label_en: string
+  reports_progress: boolean
 }
 
 export interface DocumentRead {
@@ -580,8 +579,12 @@ export const api = {
     missingDocuments(id: number): Promise<MissingDocumentRead[]> {
       return request(`/deals/${id}/missing-documents`)
     },
-    companyProfiles(id: number): Promise<CompanyProfileRead[]> {
-      return request(`/deals/${id}/company-profiles`)
+    propertyProfiles(id: number): Promise<PropertyUnitRead[]> {
+      return request(`/deals/${id}/property-profiles`)
+    },
+    /** The analysis stages in order, with their labels. */
+    pipelineStages(): Promise<PipelineStage[]> {
+      return request(`/deals/pipeline-stages`)
     },
     getReport(id: number): Promise<ReportResponse> {
       return request(`/deals/${id}/report`)

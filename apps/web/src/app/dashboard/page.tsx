@@ -15,12 +15,12 @@ const inputClass =
 
 function loiFileError(file: File | null): string {
   if (!file) return ''
-  if (!/\.(pdf|docx|txt)$/i.test(file.name)) return 'La LOI deve essere un file PDF, DOCX o TXT.'
+  if (!/\.(pdf|docx|txt)$/i.test(file.name)) return 'La proposta deve essere un file PDF, DOCX o TXT.'
   if (file.type && !['application/octet-stream', 'application/pdf', 'text/plain', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.type)) {
-    return 'Il formato della LOI non è supportato. Salvala come PDF, DOCX o TXT e riprova.'
+    return 'Il formato della proposta non è supportato. Salvala come PDF, DOCX o TXT e riprova.'
   }
-  if (file.size > 50 * 1024 * 1024) return 'La LOI non può superare 50 MB.'
-  if (file.size === 0) return 'Il file della LOI è vuoto.'
+  if (file.size > 50 * 1024 * 1024) return 'La proposta non può superare 50 MB.'
+  if (file.size === 0) return 'Il file della proposta è vuoto.'
   return ''
 }
 
@@ -33,7 +33,6 @@ export default function DashboardPage() {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [value, setValue] = useState('')
-  const [targetCompanies, setTargetCompanies] = useState('')
   const [loiFile, setLoiFile] = useState<File | null>(null)
   const [createdDeal, setCreatedDeal] = useState<DealRead | null>(null)
   const [uploadMessage, setUploadMessage] = useState('')
@@ -61,7 +60,7 @@ export default function DashboardPage() {
   useEffect(() => () => uploadControllerRef.current?.abort(), [])
 
   function resetCreateForm() {
-    setTitle(''); setDescription(''); setValue(''); setTargetCompanies('')
+    setTitle(''); setDescription(''); setValue('')
     setLoiFile(null); setCreatedDeal(null); setFormError(''); setUploadMessage('')
     if (loiInputRef.current) loiInputRef.current.value = ''
   }
@@ -82,16 +81,7 @@ export default function DashboardPage() {
     e.preventDefault()
     if (creatingRef.current) return
     setFormError('')
-    if (!title.trim()) { setFormError('Inserisci un titolo per l’operazione.'); return }
-    const names = Array.from(new Set(targetCompanies.split(/\r?\n/).map((name) => name.trim()).filter(Boolean)))
-    if (!names.length || names.some((name) => !/[\p{L}\p{N}]/u.test(name))) {
-      setFormError('Inserisci la ragione sociale completa di almeno una società target.')
-      return
-    }
-    if (names.length > 20 || names.some((name) => name.length > 500)) {
-      setFormError('Inserisci al massimo 20 ragioni sociali, ciascuna di massimo 500 caratteri.')
-      return
-    }
+    if (!title.trim()) { setFormError('Indica l’immobile oggetto della pratica.'); return }
     const fileError = loiFileError(loiFile)
     if (fileError) { setFormError(fileError); return }
     creatingRef.current = true
@@ -103,7 +93,6 @@ export default function DashboardPage() {
           title: title.trim(),
           description: description || undefined,
           value: value ? Number(value) : undefined,
-          target_company_names: names,
         })
         setCreatedDeal(deal)
         const savedDeal = deal
@@ -112,19 +101,19 @@ export default function DashboardPage() {
       if (loiFile) {
         const controller = new AbortController()
         uploadControllerRef.current = controller
-        setUploadMessage('Caricamento LOI…')
+        setUploadMessage('Caricamento proposta…')
         await api.documents.uploadWithProgress(deal.id, loiFile, (sent, total) => {
-          setUploadMessage(`Caricamento LOI: ${total > 0 ? Math.round(sent / total * 100) : 0}%`)
+          setUploadMessage(`Caricamento proposta: ${total > 0 ? Math.round(sent / total * 100) : 0}%`)
         }, controller.signal, (seconds) => {
-          setUploadMessage(`Caricamento LOI in attesa. Nuovo tentativo tra ${seconds} secondi…`)
+          setUploadMessage(`Caricamento proposta in attesa. Nuovo tentativo tra ${seconds} secondi…`)
         }, 'loi')
       }
       setShowForm(false)
       resetCreateForm()
-      toast.success(loiFile ? `Operazione "${deal.title}" creata. LOI caricata, elaborazione in corso.` : `Operazione "${deal.title}" creata`)
+      toast.success(loiFile ? `Pratica "${deal.title}" creata. Proposta caricata, elaborazione in corso.` : `Pratica "${deal.title}" creata`)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Riprova tra poco.'
-      setFormError(deal ? `Operazione creata. Caricamento della LOI non confermato. Riprova lo stesso file o verifica i documenti dell’operazione. ${message}` : `Creazione non riuscita. ${message}`)
+      setFormError(deal ? `Pratica creata. Caricamento della proposta non confermato. Riprova lo stesso file o verifica i documenti della pratica. ${message}` : `Creazione non riuscita. ${message}`)
     } finally {
       creatingRef.current = false
       uploadControllerRef.current = null
@@ -204,7 +193,7 @@ export default function DashboardPage() {
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
               </svg>
-              Nuovo Deal
+              Nuova pratica
             </>
           )}
         </button>
@@ -213,36 +202,19 @@ export default function DashboardPage() {
       {/* Create form */}
       {showForm && (
         <div className="bg-surface rounded-2xl border border-slate-200 shadow-lg p-6 sm:p-7 mb-8 animate-fade-up">
-          <h2 className="text-base font-semibold text-slate-900 mb-4">Nuovo Deal</h2>
+          <h2 className="text-base font-semibold text-slate-900 mb-4">Nuova pratica</h2>
           <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="sm:col-span-2">
-              <label htmlFor="new-deal-title" className="block text-sm font-medium text-slate-700 mb-1.5">Titolo *</label>
+              <label htmlFor="new-deal-title" className="block text-sm font-medium text-slate-700 mb-1.5">Immobile *</label>
               <input
                 id="new-deal-title"
                 required
                 disabled={creating || !!createdDeal}
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="Es. Acquisizione Azienda XYZ"
+                placeholder="Es. Appartamento in via Roma 1, Milano"
                 className={inputClass}
               />
-            </div>
-            <div className="sm:col-span-2">
-              <label htmlFor="new-deal-targets" className="block text-sm font-medium text-slate-700 mb-1.5">Società target *</label>
-              <textarea
-                id="new-deal-targets"
-                required
-                disabled={creating || !!createdDeal}
-                rows={2}
-                value={targetCompanies}
-                onChange={(e) => setTargetCompanies(e.target.value)}
-                aria-describedby="new-deal-targets-help"
-                placeholder="Esempio S.r.l."
-                className={inputClass + ' resize-y'}
-              />
-              <p id="new-deal-targets-help" className="text-xs text-slate-500 mt-1.5">
-                Inserisci la ragione sociale completa, inclusa la forma giuridica. Per più società, una per riga (massimo 20). Gli agenti useranno questo perimetro per distinguere le società target da clienti, fornitori e altre controparti.
-              </p>
             </div>
             <div className="sm:col-span-2">
               <label htmlFor="new-deal-description" className="block text-sm font-medium text-slate-700 mb-1.5">Descrizione</label>
@@ -252,12 +224,12 @@ export default function DashboardPage() {
                 rows={2}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="Breve descrizione dell'operazione…"
+                placeholder="Es. acquisto prima casa, con box auto e cantina…"
                 className={inputClass + ' resize-none'}
               />
             </div>
             <div>
-              <label htmlFor="new-deal-value" className="block text-sm font-medium text-slate-700 mb-1.5">Valore deal (€)</label>
+              <label htmlFor="new-deal-value" className="block text-sm font-medium text-slate-700 mb-1.5">Prezzo (€)</label>
               <input
                 id="new-deal-value"
                 disabled={creating || !!createdDeal}
@@ -271,7 +243,7 @@ export default function DashboardPage() {
               />
             </div>
             <div className="sm:col-span-2">
-              <label htmlFor="new-deal-loi" className="block text-sm font-medium text-slate-700 mb-1.5">Lettera di intenti (LOI) — facoltativa</label>
+              <label htmlFor="new-deal-loi" className="block text-sm font-medium text-slate-700 mb-1.5">Proposta d’acquisto o preliminare — facoltativo</label>
               <input
                 ref={loiInputRef}
                 id="new-deal-loi"
@@ -287,7 +259,7 @@ export default function DashboardPage() {
                 className={inputClass + ' min-w-0 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1 file:text-sm'}
               />
               <p id="new-deal-loi-help" className="text-xs text-slate-500 mt-1.5">
-                PDF, DOCX o TXT, massimo 50 MB. La LOI aiuta gli agenti a leggere obiettivi e condizioni dell’operazione. Le società target restano quelle indicate sopra. L’analisi si avvia dalla pagina dell’operazione.
+                PDF, DOCX o TXT, massimo 50 MB. Aiuta gli agenti a leggere prezzo, condizioni e termini dell’acquisto. L’analisi si avvia dalla pagina della pratica.
               </p>
             </div>
             <div className="sm:col-span-2 flex flex-col items-start gap-3">
@@ -298,9 +270,9 @@ export default function DashboardPage() {
                 disabled={creating}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-50 transition-colors"
               >
-                {creating ? (createdDeal ? 'Caricamento LOI…' : 'Creazione…') : createdDeal ? 'Riprova caricamento LOI' : 'Crea Deal'}
+                {creating ? (createdDeal ? 'Caricamento proposta…' : 'Creazione…') : createdDeal ? 'Riprova caricamento proposta' : 'Crea pratica'}
               </button>
-              {createdDeal && !creating && <Link href={`/deals/${createdDeal.id}`} className="text-sm font-semibold text-blue-600 hover:underline">Apri operazione</Link>}
+              {createdDeal && !creating && <Link href={`/deals/${createdDeal.id}`} className="text-sm font-semibold text-blue-600 hover:underline">Apri pratica</Link>}
             </div>
           </form>
         </div>

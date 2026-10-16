@@ -10,6 +10,7 @@ import DealTabs from '@/components/DealTabs'
 import EmptyState from '@/components/ui/EmptyState'
 import ErrorAlert from '@/components/ui/ErrorAlert'
 import Spinner from '@/components/ui/Spinner'
+import { REPORT_PREREQUISITES } from '@/lib/pipeline'
 
 type DownloadFormat = 'pdf' | 'docx'
 
@@ -84,9 +85,7 @@ export default function ReportPage() {
       const [runs, deal] = await Promise.all([
         api.deals.agentRuns(dealId), api.deals.get(dealId),
       ])
-      const required = ['intake', 'document_router', 'contract_analysis', 'corporate_governance',
-        'corporate_intro_extraction', 'tax_analysis', 'financial_analysis', 'red_flag_aggregation']
-      setAnalysisIncomplete(deal.status === 'analyzing' || required.some((name) =>
+      setAnalysisIncomplete(deal.status === 'analyzing' || REPORT_PREREQUISITES.some((name) =>
         !runs.some((run) => run.agent_name === name && run.status === 'completed')))
       setReportFailed(runs.some((run) =>
         run.agent_name === 'report_generation' && run.status === 'failed'))

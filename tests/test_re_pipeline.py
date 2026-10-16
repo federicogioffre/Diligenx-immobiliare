@@ -227,3 +227,24 @@ def test_chain_coverage_finding():
 
 def test_no_cadastral_extract_means_no_identifier_finding():
     assert not compare_profiles([_profile(1, "atto_provenienza")])
+
+
+# ── API ──────────────────────────────────────────────────────────────────────
+
+def test_pipeline_stages_endpoint(client, auth_headers):
+    response = client.get("/deals/pipeline-stages", headers=auth_headers)
+    assert response.status_code == 200
+    assert [s["agent_name"] for s in response.json()] == [name for _, name in STAGES]
+    assert client.get("/deals/pipeline-stages").status_code == 401
+
+
+def test_property_profiles_endpoint_consolidates_units(client, auth_headers, db, test_deal, dossier):
+    run_deal_analysis_pipeline(test_deal.id, db)
+    response = client.get(f"/deals/{test_deal.id}/property-profiles", headers=auth_headers)
+    assert response.status_code == 200
+    units = response.json()
+    subs = sorted(unit["values"].get("subalterno") for unit in units)
+    assert subs == ["5", "7"]
+    deed_unit = next(unit for unit in units if unit["values"].get("subalterno") == "5")
+    assert deed_unit["source_filenames"] == ["Atto_compravendita_2015.txt"]
+    assert [h["name"] for h in deed_unit["intestatari"]] == ["Mario Rossi", "Anna Bianchi"]

@@ -1,7 +1,8 @@
 import { test, expect, Page } from '@playwright/test'
 
-const agents = ['intake', 'document_router', 'contract_analysis', 'corporate_governance',
-  'corporate_intro_extraction', 'tax_analysis', 'financial_analysis', 'red_flag_aggregation']
+const agents = ['intake', 'document_router', 'property_identity', 'title_chain_review',
+  'encumbrances_review', 'building_cadastral_review', 'condominium_occupancy_review', 'consistency_check',
+  'red_flag_aggregation']
 
 async function mockReport(page: Page, state: 'new' | 'stale' | 'current') {
   const payload = Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')

@@ -120,8 +120,8 @@ export default function LoginPage() {
             <span className="font-display font-normal italic text-gradient pr-1">in ore.</span>
           </h2>
           <p className="mt-5 text-slate-400 leading-relaxed">
-            Carica la data room e lascia che gli agenti AI leggano contratti,
-            atti societari, bilanci e documenti fiscali per te.
+            Carica i documenti dell&apos;immobile e lascia che gli agenti AI leggano
+            atti, visure, ispezioni ipotecarie e verbali di condominio per te.
           </p>
           <ul className="mt-10 space-y-4">
             {[

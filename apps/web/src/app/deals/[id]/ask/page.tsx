@@ -47,9 +47,9 @@ export default function AskPage() {
   }
 
   const suggestions = [
-    'Qual è il periodo di preavviso per il recesso?',
-    'Ci sono clausole di non concorrenza?',
-    'Quali contratti cambiano di controllo?',
+    "Ci sono ipoteche o pignoramenti sull'immobile?",
+    'Chi sono gli intestatari catastali?',
+    'Il condominio ha deliberato lavori straordinari?',
   ]
 
   return (

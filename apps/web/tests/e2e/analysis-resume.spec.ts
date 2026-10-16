@@ -1,8 +1,9 @@
 import { test, expect, Page } from '@playwright/test'
 import type { AgentRunRead, AnalysisBatchProgress, AnalysisStreamEvent, DealRead } from '../../src/lib/api'
 
-const AGENTS = ['intake', 'document_router', 'contract_analysis', 'corporate_governance',
-  'corporate_intro_extraction', 'tax_analysis', 'financial_analysis', 'red_flag_aggregation', 'report_generation']
+const AGENTS = ['intake', 'document_router', 'property_identity', 'title_chain_review',
+  'encumbrances_review', 'building_cadastral_review', 'condominium_occupancy_review', 'consistency_check',
+  'red_flag_aggregation', 'report_generation']
 const START = Date.parse('2026-09-18T06:30:00Z')
 
 function runs(finance: 'running' | 'failed' | 'completed' = 'failed'): AgentRunRead[] {
@@ -23,7 +24,7 @@ function runs(finance: 'running' | 'failed' | 'completed' = 'failed'): AgentRunR
 }
 
 function progress(completed: number): AnalysisBatchProgress {
-  return { agent_name: 'financial_analysis', run_id: 7, completed_batches: completed,
+  return { agent_name: 'condominium_occupancy_review', run_id: 7, completed_batches: completed,
     total_batches: 120, document_id: 2, updated_at: '2026-09-18T07:00:00Z' }
 }
 
@@ -58,7 +59,7 @@ async function prepare(page: Page, initialStatus: DealRead['status'] = 'draft') 
       analysis_ready: true, processing_issue: null, page_count: 4, language: 'it',
     }] })
     if (path === '/deals/4/agent-runs') return route.fulfill({ json: state.runs })
-    if (path === '/deals/4/analysis-checkpoint') return route.fulfill({ json: { available: true, completed_stages: 6, next_stage: 'financial_analysis' } })
+    if (path === '/deals/4/analysis-checkpoint') return route.fulfill({ json: { available: true, completed_stages: 6, next_stage: 'condominium_occupancy_review' } })
     if (path === '/deals/4/analysis-progress') return route.fulfill({ json: state.progress })
     if (path === '/deals/4/stream-ticket') return route.fulfill({ json: { ticket: 'test-ticket' } })
     if (path === '/deals/4/resume-analysis') {
@@ -72,7 +73,7 @@ async function prepare(page: Page, initialStatus: DealRead['status'] = 'draft') 
       return route.fulfill({ status: 500, json: { detail: 'Resume must not restart every stage' } })
     }
     if (path === '/deals/4/risk-score') return route.fulfill({ status: 404, json: { detail: 'Not available yet' } })
-    if (/^\/deals\/4\/(clause-findings|red-flags|open-questions|missing-documents|company-profiles)$/.test(path)) {
+    if (/^\/deals\/4\/(clause-findings|red-flags|open-questions|missing-documents|property-profiles)$/.test(path)) {
       return route.fulfill({ json: [] })
     }
     return route.fulfill({ status: 404, json: { detail: 'Unexpected mock request' } })
@@ -96,7 +97,7 @@ test('resume preserves the completed prefix and excludes yesterday’s report an
   expect(state.resumes).toBe(1)
   expect(state.freshStarts).toBe(0)
   await emit(page, { deal_status: 'analyzing', stages: state.runs, progress: progress(37) })
-  await expect(page.getByRole('status').filter({ hasText: 'Analisi finanziaria:' })).toContainText('37 / 120 segmenti elaborati.')
+  await expect(page.getByRole('status').filter({ hasText: 'Condominio e occupazione:' })).toContainText('37 / 120 segmenti elaborati.')
   await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '6')
   await expect(page.getByText('999.0s', { exact: true })).toHaveCount(0)
 })
@@ -114,7 +115,7 @@ test('a timeout clears the spinner and offers resume even if findings cannot be 
   await expect(page.getByText('Analisi in corso…', { exact: true })).toHaveCount(0)
   await expect(page.getByText('In esecuzione…', { exact: true })).toHaveCount(0)
   await expect(page.getByText('Ultima analisi incompleta', { exact: true })).toBeVisible()
-  await expect(page.getByRole('status').filter({ hasText: 'Analisi finanziaria:' })).toHaveCount(0)
+  await expect(page.getByRole('status').filter({ hasText: 'Condominio e occupazione:' })).toHaveCount(0)
   await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '6')
 })
 
@@ -128,6 +129,6 @@ test('polling replaces stale SSE stages and continues updating batch progress', 
   state.progress = progress(120)
   await page.evaluate(() => (window as MockWindow).analysisTestStream?.onerror?.())
   await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '7', { timeout: 12_000 })
-  await expect(page.getByRole('status').filter({ hasText: 'Analisi finanziaria:' })).toContainText('120 / 120 segmenti elaborati.')
+  await expect(page.getByRole('status').filter({ hasText: 'Condominio e occupazione:' })).toContainText('120 / 120 segmenti elaborati.')
   await expect(page.getByText('999.0s', { exact: true })).toHaveCount(0)
 })

@@ -14,7 +14,7 @@ import {
   DocumentRead,
   MissingDocumentRead,
   OpenQuestionRead,
-  CompanyProfileRead,
+  PropertyUnitRead,
   Priority,
   RedFlagRead,
   RiskScoreResponse,
@@ -26,6 +26,7 @@ import ErrorAlert from '@/components/ui/ErrorAlert'
 import Spinner from '@/components/ui/Spinner'
 import StatusBadge from '@/components/ui/StatusBadge'
 import { ApiError, getBlockedDocuments } from '@/lib/api-error'
+import { PIPELINE_STAGES, STAGE_LABELS, TOTAL_STAGES } from '@/lib/pipeline'
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -42,20 +43,6 @@ const DOC_ISSUE: Record<string, string> = {
   failed: 'Elaborazione non riuscita. Riprova il documento.',
   missing_text: 'Nessun testo disponibile per l’analisi. Riprova l’elaborazione; se il problema persiste, carica una copia leggibile.',
 }
-
-const STAGE_LABELS: Record<string, string> = {
-  intake: 'Intake',
-  document_router: 'Classificazione documenti',
-  contract_analysis: 'Analisi contratti',
-  corporate_governance: 'Governance societaria',
-  corporate_intro_extraction: 'Informazioni societarie',
-  tax_analysis: 'Analisi fiscale',
-  financial_analysis: 'Analisi finanziaria',
-  red_flag_aggregation: 'Aggregazione red flag',
-  report_generation: 'Generazione report',
-}
-
-const TOTAL_STAGES = 9
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -159,7 +146,7 @@ function AnalysisProgress({ stages, analyzing, previous, completedAt, progress }
       {/* Stage list */}
       {analyzing && progress && (
         <p role="status" className="mb-4 text-sm text-blue-700">
-          Analisi finanziaria: {progress.completed_batches} / {progress.total_batches} segmenti elaborati.
+          {STAGE_LABELS[progress.agent_name] ?? 'Analisi'}: {progress.completed_batches} / {progress.total_batches} segmenti elaborati.
           <span className="block text-xs text-slate-500">Ultimo avanzamento: {new Date(progress.updated_at).toLocaleTimeString('it-IT')}</span>
         </p>
       )}
@@ -330,126 +317,62 @@ function ReportLanguageSelect({
   )
 }
 
-function CompanyScopeEditor({ deal, disabled, onChanged }: {
-  deal: DealRead
-  disabled: boolean
-  onChanged: (deal: DealRead) => Promise<void>
-}) {
-  const savedValue = (deal.target_company_names ?? []).join('\n')
-  const [value, setValue] = useState(savedValue)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-  const [saved, setSaved] = useState(false)
-  useEffect(() => { setValue(savedValue) }, [savedValue])
+const PROPERTY_ROWS: { key: string; label: string }[] = [
+  { key: 'indirizzo',   label: 'Indirizzo' },
+  { key: 'comune',      label: 'Comune' },
+  { key: 'foglio',      label: 'Foglio' },
+  { key: 'particella',  label: 'Particella' },
+  { key: 'subalterno',  label: 'Subalterno' },
+  { key: 'categoria',   label: 'Categoria' },
+  { key: 'superficie',  label: 'Superficie' },
+  { key: 'rendita',     label: 'Rendita' },
+]
 
-  async function save() {
-    const names = Array.from(new Set(value.split(/\r?\n/).map((name) => name.trim()).filter(Boolean)))
-    setError('')
-    setSaved(false)
-    if (names.length > 20 || names.some((name) => name.length > 500)) {
-      setError('Inserisci al massimo 20 ragioni sociali, ciascuna di massimo 500 caratteri.')
-      return
-    }
-    setSaving(true)
-    try {
-      const updated = await api.deals.update(deal.id, { target_company_names: names })
-      await onChanged(updated)
-      setSaved(true)
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Errore nel salvataggio del perimetro')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <section className="mb-6 rounded-2xl border border-slate-200 bg-surface p-4 sm:p-5">
-      <label htmlFor="target-company-names" className="block text-sm font-semibold text-slate-800 mb-1">
-        Società nel perimetro
-      </label>
-      <p id="company-scope-help" className="text-xs text-slate-500 mb-3">
-        Una ragione sociale completa per riga, inclusa la forma giuridica. Queste società definiscono il perimetro per gli agenti e per la sezione societaria del report.
-        Per le operazioni già create senza perimetro, inseriscilo prima di avviare l’analisi.
-      </p>
-      <textarea
-        id="target-company-names"
-        aria-describedby="company-scope-help"
-        value={value}
-        onChange={(event) => { setValue(event.target.value); setSaved(false); setError('') }}
-        disabled={disabled || saving}
-        rows={3}
-        placeholder="Esempio S.r.l."
-        className="block w-full rounded-xl border border-slate-200 p-3 text-sm text-slate-800 focus:outline-none focus:border-blue-400 disabled:bg-slate-50 disabled:text-slate-500"
-      />
-      <div className="mt-3 flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          onClick={save}
-          disabled={disabled || saving || value === savedValue}
-          className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {saving ? 'Salvataggio…' : 'Salva perimetro'}
-        </button>
-        {disabled && <p className="text-xs text-slate-500">Modificabile al termine dell’analisi.</p>}
-        {saved && <p role="status" className="text-xs text-emerald-700">Perimetro salvato. Esegui una nuova analisi per aggiornare i rilievi e il report.</p>}
-      </div>
-      {error && <div className="mt-3"><ErrorAlert error={error} /></div>}
-    </section>
-  )
-}
-
-function CorporateIntroCard({ profiles }: { profiles: CompanyProfileRead[] }) {
-  // Rows we surface in the deal-page summary table — short, scannable.
-  // The full per-field detail (Pledge, Business, Duration, ...) is in
-  // the generated report. Here we show what an analyst needs at a glance.
-  const ROWS: { key: keyof CompanyProfileRead; label: string }[] = [
-    { key: 'legal_form',         label: 'Forma' },
-    { key: 'registered_office',  label: 'Sede legale' },
-    { key: 'corporate_capital',  label: 'Capitale' },
-    { key: 'shareholders',       label: 'Soci' },
-    { key: 'managing_body',      label: 'Organo amministrativo' },
-    { key: 'auditors',           label: 'Sindaci' },
-  ]
-
+function PropertyCard({ units }: { units: PropertyUnitRead[] }) {
+  // The scannable summary; every field and every source is in the report.
   return (
     <div className="bg-surface rounded-2xl border border-slate-200 shadow-sm p-5 space-y-5">
       <div className="flex items-baseline justify-between">
-        <h3 className="text-sm font-semibold text-slate-800">Informazioni societarie</h3>
+        <h3 className="text-sm font-semibold text-slate-800">Identificazione dell&apos;immobile</h3>
         <span className="text-xs text-slate-400 tabular-nums">
-          {profiles.length} societ{profiles.length === 1 ? 'à' : 'à'}
+          {units.length} unit{units.length === 1 ? 'à' : 'à'}
         </span>
       </div>
 
       <div className="space-y-5">
-        {profiles.map((p) => (
-          <div key={p.id} className="rounded-xl border border-slate-100 bg-slate-50/40 p-4">
-            <div className="flex items-baseline justify-between mb-3 gap-2">
-              <h4 className="text-sm font-semibold text-slate-900 truncate">
-                {p.company_name}
-              </h4>
-              {p.confidence != null && (
-                <span className="text-[11px] text-slate-400 tabular-nums shrink-0">
-                  Confidenza {(p.confidence * 100).toFixed(0)}%
-                </span>
-              )}
-            </div>
+        {units.map((unit, index) => (
+          <div key={`${unit.label}-${index}`} className="rounded-xl border border-slate-100 bg-slate-50/40 p-4">
+            <h4 className="text-sm font-semibold text-slate-900 mb-3 break-words">{unit.label}</h4>
             <dl className="grid grid-cols-1 sm:grid-cols-[8rem_1fr] gap-x-4 gap-y-2 text-sm">
-              {ROWS.map(({ key, label }) => {
-                const value = p[key]
-                if (!value || typeof value !== 'string') return null
+              {PROPERTY_ROWS.map(({ key, label }) => {
+                const value = unit.values[key]
+                if (!value) return null
+                const conflicting = unit.conflicting_fields.includes(key)
                 return (
-                  <Fragment key={String(key)}>
+                  <Fragment key={key}>
                     <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</dt>
-                    <dd className="text-slate-700 whitespace-pre-wrap">{value}</dd>
+                    <dd className={conflicting ? 'text-amber-800 font-medium' : 'text-slate-700'}>
+                      {value}{conflicting && ' (valori diversi tra i documenti)'}
+                    </dd>
                   </Fragment>
                 )
               })}
+              {unit.intestatari.length > 0 && (
+                <>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Intestatari</dt>
+                  <dd className="text-slate-700 whitespace-pre-wrap">
+                    {unit.intestatari.map((h) => [h.name, h.right, h.share].filter(Boolean).join(' ')).join('\n')}
+                  </dd>
+                </>
+              )}
             </dl>
-            {!!p.source_filenames?.length && (
-              <p className="mt-3 text-xs text-slate-500 break-words">Fonti: {p.source_filenames.join('; ')}</p>
+            {unit.source_filenames.length > 0 && (
+              <p className="mt-3 text-xs text-slate-500 break-words">Fonti: {unit.source_filenames.join('; ')}</p>
             )}
-            {!!p.conflicting_fields?.length && (
-              <p className="mt-2 text-xs text-amber-800">Le fonti riportano valori diversi. Le alternative sono conservate e richiedono verifica nel report.</p>
+            {unit.conflicting_fields.length > 0 && (
+              <p className="mt-2 text-xs text-amber-800">
+                Atto, visura e planimetria non concordano su alcuni dati: il punto va verificato prima del rogito.
+              </p>
             )}
           </div>
         ))}
@@ -654,8 +577,7 @@ export default function DealPage() {
   const [redFlags, setRedFlags]   = useState<RedFlagRead[]>([])
   const [openQuestions, setOpenQuestions]       = useState<OpenQuestionRead[]>([])
   const [missingDocs, setMissingDocs]           = useState<MissingDocumentRead[]>([])
-  const [companyProfiles, setCompanyProfiles]   = useState<CompanyProfileRead[]>([])
-  const [companyProfilesLoaded, setCompanyProfilesLoaded] = useState(false)
+  const [propertyUnits, setPropertyUnits]   = useState<PropertyUnitRead[]>([])
   const [streamStages, setStreamStages] = useState<AnalysisStageEvent[]>([])
 
   const [analyzing, setAnalyzing]   = useState(false)
@@ -701,10 +623,7 @@ export default function DealPage() {
         try { setRedFlags(await api.deals.redFlags(dealId)) } catch { /* ok */ }
         try { setOpenQuestions(await api.deals.openQuestions(dealId)) } catch { /* ok */ }
         try { setMissingDocs(await api.deals.missingDocuments(dealId)) } catch { /* ok */ }
-        try {
-          setCompanyProfiles(await api.deals.companyProfiles(dealId))
-          setCompanyProfilesLoaded(true)
-        } catch { /* ok */ }
+        try { setPropertyUnits(await api.deals.propertyProfiles(dealId)) } catch { /* ok */ }
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Errore nel caricamento')
@@ -740,13 +659,12 @@ export default function DealPage() {
         api.deals.getRiskScore(dealId).catch(() => null),
         api.deals.openQuestions(dealId).catch(() => [] as OpenQuestionRead[]),
         api.deals.missingDocuments(dealId).catch(() => [] as MissingDocumentRead[]),
-        api.deals.companyProfiles(dealId).catch(() => null),
+        api.deals.propertyProfiles(dealId).catch(() => null),
       ])
       setDeal(d); setAgentRuns(runs); setRedFlags(flags)
       setBatchProgress(null)
       try { setCanResume((await api.deals.analysisCheckpoint(dealId)).available) } catch { setCanResume(false) }
-      setOpenQuestions(questions); setMissingDocs(missing); setCompanyProfiles(profiles ?? [])
-      setCompanyProfilesLoaded(profiles !== null)
+      setOpenQuestions(questions); setMissingDocs(missing); setPropertyUnits(profiles ?? [])
       if (score) setRiskScore(score)
       setSummary({ clauseCount: clauses.length, redFlagCount: flags.length, documentCount: docs.filter((d) => d.status === 'processed').length })
     } catch { /* best-effort */ }
@@ -860,7 +778,7 @@ export default function DealPage() {
   }
 
   function buildStageRows(): StageRow[] {
-    const STAGE_ORDER = Object.keys(STAGE_LABELS)
+    const STAGE_ORDER = PIPELINE_STAGES.map((stage) => stage.agent_name)
     const source = analyzing && streamStages.length > 0 ? streamStages : agentRuns
     if (source.length > 0) {
       const runByName = Object.fromEntries(currentAnalysisRuns(source).map((run) => [run.agent_name, run]))
@@ -890,7 +808,6 @@ export default function DealPage() {
   const processedCount = docs.filter((d) => d.status === 'processed').length
   const blockedDocs = docs.filter((d) => !d.analysis_ready)
   const readyCount = docs.length - blockedDocs.length
-  const unmatchedCompanies = (deal.target_company_names ?? []).filter((name) => !companyProfiles.some((profile) => profile.company_name === name))
   const completedAt = currentAnalysisRuns(agentRuns).map((run) => run.completed_at)
     .filter((value): value is string => !!value).sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1)
 
@@ -916,25 +833,6 @@ export default function DealPage() {
       {deal.description && <p className="text-sm text-slate-500 mb-5">{deal.description}</p>}
 
       <DealTabs dealId={dealId} />
-
-      <CompanyScopeEditor
-        deal={deal}
-        disabled={analyzing || startingAnalysis || deal.status === 'analyzing'}
-        onChanged={async (updated) => {
-          setDeal(updated)
-          // Do not retain cards from the previous perimeter while refreshing.
-          setCompanyProfiles([])
-          setCompanyProfilesLoaded(false)
-          setCanResume(false)
-          const [profiles, checkpoint] = await Promise.all([
-            api.deals.companyProfiles(dealId).catch(() => null),
-            api.deals.analysisCheckpoint(dealId).catch(() => ({ available: false })),
-          ])
-          setCompanyProfiles(profiles ?? [])
-          setCompanyProfilesLoaded(profiles !== null)
-          setCanResume(checkpoint.available)
-        }}
-      />
 
       {/* Documents section */}
       <section className="mb-8">
@@ -978,7 +876,7 @@ export default function DealPage() {
                     <tr key={doc.id} className="flex flex-col py-2 md:table-row md:py-0 hover:bg-slate-50 transition-colors">
                       <td className="block px-4 pt-2 pb-1 md:py-3 md:table-cell font-medium text-slate-800 break-words" title={doc.filename}>
                         {doc.filename}
-                        {doc.document_role === 'loi' && <span className="ml-2 inline-flex rounded-md bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">LOI</span>}
+                        {doc.document_role === 'loi' && <span className="ml-2 inline-flex rounded-md bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">Proposta</span>}
                       </td>
                       <td className="block px-4 py-2 md:py-3 md:table-cell">
                         <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full ${ds.cls}`}>
@@ -1094,7 +992,7 @@ export default function DealPage() {
           <div className="grid grid-cols-3 gap-3">
             {[
               { label: 'Documenti',  value: summary.documentCount, icon: '📄', color: 'text-slate-700' },
-              { label: 'Clausole',   value: summary.clauseCount,   icon: '📋', color: 'text-blue-700' },
+              { label: 'Unità',      value: propertyUnits.length,  icon: '🏠', color: 'text-blue-700' },
               { label: 'Red Flags',  value: summary.redFlagCount,  icon: '⚑',  color: 'text-red-600' },
             ].map(({ label, value, icon, color }) => (
               <div key={label} className="bg-surface rounded-2xl border border-slate-200 shadow-sm p-4 text-center">
@@ -1107,13 +1005,8 @@ export default function DealPage() {
 
         {summary && redFlags.length > 0 && <RedFlagSeverityWidget flags={redFlags} />}
 
-        {companyProfiles.length > 0 && (
-          <CorporateIntroCard profiles={companyProfiles} />
-        )}
-        {!analyzing && companyProfilesLoaded && unmatchedCompanies.length > 0 && (
-          <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            Nessun profilo estratto corrisponde a: {unmatchedCompanies.join('; ')}. Verifica le ragioni sociali e i documenti societari disponibili.
-          </p>
+        {propertyUnits.length > 0 && (
+          <PropertyCard units={propertyUnits} />
         )}
 
         {summary && (openQuestions.length > 0 || missingDocs.length > 0) && (

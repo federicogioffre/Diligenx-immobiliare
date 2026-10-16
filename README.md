@@ -1,6 +1,17 @@
-# Diligenx
+# Diligenx Immobiliare
 
-AI-powered deal intelligence platform. Analyze, score, and track deals using OpenAI GPT-5.6 Luna.
+Due diligence assistita da AI per l'acquisto di un immobile residenziale in Italia.
+Si caricano i documenti della compravendita (atto di provenienza, visura e
+planimetria catastale, ispezione ipotecaria, titoli edilizi, documenti del
+condominio, contratti di locazione) e si ottiene una relazione con le criticità da
+risolvere prima del preliminare o del rogito: provenienza ventennale, ipoteche e
+pignoramenti, conformità catastale e urbanistica, condominio, stato di occupazione,
+e le incongruenze tra i documenti (intestatari, subalterni, categoria, superficie).
+
+Il progetto nasce da [Diligenx](https://github.com/federicogioffre/diligenx) (due
+diligence M&A) e ne conserva la storia git e il motore: lettura dei documenti, OCR,
+verifica delle citazioni, crediti, accesso e isolamento dei dati. Vedi `CLAUDE.md`,
+sezione "Relationship with Diligenx", per come portare le correzioni del motore.
 
 ## Stack
 
@@ -65,7 +76,8 @@ Embeddings continue using `text-embedding-3-small` and their existing dimensions
 apps/api/       → FastAPI backend
 apps/web/       → Next.js frontend
 packages/
-  agents/       → AI agent logic (DealAnalysisAgent)
+  real_estate/  → The property domain: checklist, document types, reviewers, cross-document checks, dated rules
+  agents/       → Engine shared with Diligenx: orchestrator, providers, aggregation, source review, report
   schemas/      → Shared Pydantic models
   prompts/      → Prompt templates
   parsing/      → Document parsers (PDF, text)

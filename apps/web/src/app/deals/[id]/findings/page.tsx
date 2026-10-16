@@ -45,45 +45,42 @@ function ExpandableText({ text }: { text: string }) {
 
 // ── Remedy and impact ──────────────────────────────────────────────────────
 
-// Two axes, because the two professions tag a finding differently: the
-// remedy is the instrument that answers it (what a law firm's risk memo
-// assigns), the impact is what it hits (what a financial adviser's
-// key-findings page assigns).
+// Two axes: the remedy is the instrument that answers a finding before the
+// preliminary contract or the deed, the impact is what it hits — the deed
+// itself or the value of the property.
 
 type Remedy = NonNullable<RedFlagRead['remedy_type']>
 type Impact = NonNullable<RedFlagRead['impact']>
 
 const REMEDY: Record<Remedy, string> = {
-  indemnity: 'Indennizzo',
-  warranty: 'Garanzia',
-  price_adjustment: 'Prezzo',
-  earn_out: 'Earn-out',
   condition_precedent: 'Condizione sospensiva',
-  pre_closing_verification: 'Verifica pre-closing',
-  post_closing_action: 'Post-closing',
+  seller_undertaking: 'Impegno del venditore',
+  escrow: 'Deposito presso il notaio',
+  warranty: 'Garanzia del venditore',
+  price_adjustment: 'Riduzione del prezzo',
+  pre_closing_verification: 'Verifica prima del rogito',
   information_request: 'Informazioni',
 }
 
 // Order used for the filter chips: the instruments that change the contract
 // come first, the ones that only require an action come last.
 const REMEDY_ORDER: Remedy[] = [
-  'indemnity',
+  'condition_precedent',
+  'seller_undertaking',
+  'escrow',
   'warranty',
   'price_adjustment',
-  'earn_out',
-  'condition_precedent',
   'pre_closing_verification',
-  'post_closing_action',
   'information_request',
 ]
 
 const IMPACT: Record<Impact, string> = {
   value: 'Valore',
-  spa: 'Contratto',
+  deed: 'Rogito',
   other: 'Altro',
 }
 
-const IMPACT_ORDER: Impact[] = ['value', 'spa', 'other']
+const IMPACT_ORDER: Impact[] = ['value', 'deed', 'other']
 
 /** "Euro 240.000 · es. 2022" — the figures the source document stated. */
 function formatFigures(f: RedFlagRead): string | null {
@@ -325,7 +322,8 @@ export default function FindingsPage() {
     <div>
       <DealTabs dealId={dealId} />
 
-      {/* ── Clause Findings ── */}
+      {/* ── Clause Findings (only legacy analyses carry them) ── */}
+      {clauses.length > 0 && (
       <section className="mb-10">
         <div className="flex flex-wrap items-center gap-3 mb-4">
           <div>
@@ -361,12 +359,13 @@ export default function FindingsPage() {
           </div>
         )}
       </section>
+      )}
 
       {/* ── Red Flags ── */}
       <section>
         <div className="flex flex-wrap items-center gap-3 mb-4">
           <div>
-            <h2 className="text-base font-semibold text-slate-900">Red Flags</h2>
+            <h2 className="text-base font-semibold text-slate-900">Rilievi</h2>
             <p className="text-xs text-slate-400 mt-0.5">
               {visibleFlags.length}{visibleFlags.length !== flags.length ? ` di ${flags.length}` : ''} segnalazioni
             </p>

@@ -7,8 +7,9 @@ const makeDocument = (id: number, overrides: Partial<DocumentRead> = {}): Docume
   file_size: 1200, status: 'processed', analysis_ready: true, processing_issue: null,
   page_count: 1, language: 'it', created_at: '2026-09-17T10:00:00Z', ...overrides,
 })
-const agents = ['intake', 'document_router', 'contract_analysis', 'corporate_governance',
-  'corporate_intro_extraction', 'tax_analysis', 'financial_analysis', 'red_flag_aggregation', 'report_generation']
+const agents = ['intake', 'document_router', 'property_identity', 'title_chain_review',
+  'encumbrances_review', 'building_cadastral_review', 'condominium_occupancy_review', 'consistency_check',
+  'red_flag_aggregation', 'report_generation']
 
 async function mockDeal(page: Page, initialDocs: DocumentRead[]) {
   let docs = initialDocs

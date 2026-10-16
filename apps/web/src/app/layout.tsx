@@ -22,7 +22,7 @@ const display = Instrument_Serif({
 
 const SITE_URL = 'https://diligenx.it'
 const SITE_DESCRIPTION =
-  'Diligenx — piattaforma di due diligence legale assistita da AI: analisi di contratti e documenti societari, red flag e report professionali.'
+  'Diligenx Immobiliare — due diligence assistita da AI per l’acquisto di un immobile: provenienza, ipoteche, catasto, urbanistica, condominio e relazione per il rogito.'
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
