@@ -18,7 +18,8 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.orm import Session
 
-from packages.agents.deal_analysis_agent import FakeLLMProvider, _safe_json
+from packages.real_estate.fake_provider import FakeRealEstateLLMProvider
+from packages.agents.deal_analysis_agent import _safe_json
 from tests.conftest import TestingSession
 
 
@@ -67,28 +68,23 @@ def test_safe_json_stray_quote_repair_does_not_touch_valid_json():
 
 @pytest.fixture
 def processed_doc(db: Session, test_deal):
-    """Fully processed contract document (post-ingestion state)."""
+    """Fully processed property document (post-ingestion state)."""
     from app.models.document import Document, DocumentStatus
 
     doc = Document(
         deal_id=test_deal.id,
-        filename="service_agreement.txt",
-        file_path="/tmp/service_agreement.txt",
+        filename="ispezione_ipotecaria.txt",
+        file_path="/tmp/ispezione_ipotecaria.txt",
         mime_type="text/plain",
         file_size=2048,
         status=DocumentStatus.processed,
         raw_text=(
-            "SERVICE AGREEMENT\n\n"
-            "This agreement is entered into by and between Party A (Client) "
-            "and Party B (Provider).\n\n"
-            "TERMINATION: Either party may terminate this agreement with 30 days "
-            "written notice.\n\n"
-            "LIABILITY: In no event shall either party be liable for indirect, "
-            "incidental, or consequential damages.\n\n"
-            "CONFIDENTIALITY: Both parties agree to keep all information "
-            "disclosed under this agreement strictly confidential."
+            "ISPEZIONE IPOTECARIA - elenco sintetico delle formalità\n"
+            "Immobile in Milano, Foglio 12 particella 345 sub. 5.\n"
+            "Ipoteca volontaria iscritta in data 01/06/2015 a favore di Banca Esempio S.p.A. "
+            "a garanzia di mutuo fondiario.\n"
         ),
-        language="en",
+        language="it",
         page_count=3,
     )
     db.add(doc)
@@ -100,8 +96,8 @@ def processed_doc(db: Session, test_deal):
 # ── Probing provider ───────────────────────────────────────────────────────
 
 
-class _ProbeProvider(FakeLLMProvider):
-    """FakeLLMProvider that records the DB state seen during each LLM call."""
+class _ProbeProvider(FakeRealEstateLLMProvider):
+    """Test provider that records the DB state seen during each LLM call."""
 
     def __init__(self, db: Session, agent_name: str):
         from packages.agents.orchestrator import AGENT_ROUTER
@@ -136,39 +132,28 @@ class _ProbeProvider(FakeLLMProvider):
 
 def _run_agent(agent_name: str, db: Session, deal_id: int, doc_id: int, provider) -> None:
     # Document ids are passed explicitly so every agent actually calls the
-    # LLM on the fixture document (the specialists otherwise auto-detect by
-    # keyword and would skip a plain service agreement).
-    if agent_name == "contract_analysis":
-        from packages.agents.contract_agent import ContractAgent
-        ContractAgent(provider=provider).run(deal_id, db, contract_document_ids={doc_id})
-    elif agent_name == "corporate_governance":
-        from packages.agents.corporate_agent import CorporateAgent
-        CorporateAgent(provider=provider).run(deal_id, db, document_ids={doc_id})
-    elif agent_name == "corporate_intro_extraction":
-        from packages.agents.corporate_intro_agent import CorporateIntroAgent
-        CorporateIntroAgent(provider=provider).run(deal_id, db, document_ids={doc_id})
-    elif agent_name == "tax_analysis":
-        from packages.agents.tax_agent import TaxAgent
-        TaxAgent(provider=provider).run(deal_id, db, document_ids={doc_id})
-    elif agent_name == "financial_analysis":
-        from packages.agents.financial_agent import FinancialAgent
-        FinancialAgent(provider=provider).run(deal_id, db, document_ids={doc_id})
-    elif agent_name == "document_routing":
+    # LLM on the fixture document.
+    if agent_name == "document_routing":
         from packages.agents.orchestrator import _stage_document_routing
         _stage_document_routing(deal_id, db, provider)
-    else:  # pragma: no cover
-        raise AssertionError(agent_name)
+    elif agent_name == "property_identity":
+        from packages.real_estate.property_identity_agent import PropertyIdentityAgent
+        PropertyIdentityAgent(provider=provider).run(deal_id, db, document_ids={doc_id})
+    else:
+        from packages.real_estate.specialists import SPECIALISTS
+        agent_cls = next(cls for cls in SPECIALISTS if cls.AGENT_NAME == agent_name)
+        agent_cls(provider=provider).run(deal_id, db, document_ids={doc_id})
 
 
 @pytest.mark.parametrize(
     "agent_name",
     [
         "document_routing",
-        "contract_analysis",
-        "corporate_governance",
-        "corporate_intro_extraction",
-        "tax_analysis",
-        "financial_analysis",
+        "property_identity",
+        "title_chain_review",
+        "encumbrances_review",
+        "building_cadastral_review",
+        "condominium_occupancy_review",
     ],
 )
 def test_no_open_transaction_during_llm_phase(db, test_deal, processed_doc, agent_name):
@@ -187,16 +172,16 @@ def test_no_open_transaction_during_llm_phase(db, test_deal, processed_doc, agen
 def test_running_row_is_replaced_by_a_single_completed_row(db, test_deal, processed_doc):
     """Committing the running row early must not leave a duplicate behind."""
     from app.models.agent_run import AgentRun, AgentRunStatus
-    from packages.agents.contract_agent import ContractAgent
+    from packages.real_estate.specialists import EncumbrancesAgent
 
-    ContractAgent(provider=FakeLLMProvider()).run(test_deal.id, db)
+    EncumbrancesAgent(provider=FakeRealEstateLLMProvider()).run(test_deal.id, db)
     db.commit()
-    ContractAgent(provider=FakeLLMProvider()).run(test_deal.id, db)
+    EncumbrancesAgent(provider=FakeRealEstateLLMProvider()).run(test_deal.id, db)
     db.commit()
 
     rows = (
         db.query(AgentRun)
-        .filter(AgentRun.deal_id == test_deal.id, AgentRun.agent_name == "contract_analysis")
+        .filter(AgentRun.deal_id == test_deal.id, AgentRun.agent_name == "encumbrances_review")
         .all()
     )
     assert len(rows) == 1
@@ -206,44 +191,39 @@ def test_running_row_is_replaced_by_a_single_completed_row(db, test_deal, proces
 # ── Rollback semantics are preserved ──────────────────────────────────────
 
 
-class _FailingContractProvider(FakeLLMProvider):
+class _FailingEncumbrancesProvider(FakeRealEstateLLMProvider):
     def complete(self, prompt: str, max_tokens: int = 2048) -> str:
-        if "EXTRACT CLAUSES" in prompt.upper():
+        if "REVIEW ENCUMBRANCES" in prompt.upper():
             raise RuntimeError("simulated LLM outage")
         return super().complete(prompt, max_tokens)
 
 
-def test_failed_contract_stage_keeps_previous_clause_findings(db, test_deal, processed_doc):
-    """Deleting the previous outputs now happens *after* the LLM phase, in
-    the persistence transaction — so a failed stage still rolls the deletes
-    back and the previous run's clauses survive."""
+def test_failed_review_stage_keeps_previous_findings(db, test_deal, processed_doc):
+    """Deleting the previous outputs happens *after* the LLM phase, in the
+    persistence transaction — so a failed stage still rolls the deletes back
+    and the previous run's findings survive."""
+    from app.models.agent_finding import AgentFinding
     from app.models.agent_run import AgentRun, AgentRunStatus
-    from app.models.clause_finding import ClauseFinding
     from packages.agents.orchestrator import run_deal_analysis_pipeline
 
-    run_deal_analysis_pipeline(test_deal.id, db, provider=FakeLLMProvider())
-    before = (
-        db.query(ClauseFinding)
-        .filter(ClauseFinding.document_id == processed_doc.id)
-        .count()
-    )
-    assert before > 0, "fixture should yield at least one clause"
+    def findings():
+        return (
+            db.query(AgentFinding)
+            .filter(AgentFinding.deal_id == test_deal.id, AgentFinding.agent_name == "encumbrances_review")
+            .count()
+        )
 
-    result = run_deal_analysis_pipeline(
-        test_deal.id, db, provider=_FailingContractProvider()
-    )
-    assert "error" in result["stages"]["specialist_analysis"]
+    run_deal_analysis_pipeline(test_deal.id, db, provider=FakeRealEstateLLMProvider())
+    before = findings()
+    assert before > 0, "fixture should yield at least one finding"
 
-    after = (
-        db.query(ClauseFinding)
-        .filter(ClauseFinding.document_id == processed_doc.id)
-        .count()
-    )
-    assert after == before
+    result = run_deal_analysis_pipeline(test_deal.id, db, provider=_FailingEncumbrancesProvider())
+    assert "error" in result["stages"]["encumbrances_review"]
+    assert findings() == before
 
     runs = (
         db.query(AgentRun)
-        .filter(AgentRun.deal_id == test_deal.id, AgentRun.agent_name == "contract_analysis")
+        .filter(AgentRun.deal_id == test_deal.id, AgentRun.agent_name == "encumbrances_review")
         .all()
     )
     assert len(runs) == 1

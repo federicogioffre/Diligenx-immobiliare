@@ -7,8 +7,7 @@ import pytest
 
 from app.models.agent_finding import AgentFinding
 from app.models.agent_run import AgentRun, AgentRunStatus
-from app.models.clause_finding import ClauseFinding
-from app.models.company_profile import CompanyProfile
+from app.models.property_profile import PropertyProfile
 from app.models.deal import DealStatus
 from app.models.document import Document, DocumentStatus
 from app.models.open_question import OpenQuestion
@@ -20,9 +19,29 @@ from packages.agents.deal_analysis_agent import (
 )
 from packages.agents.orchestrator import run_deal_analysis_pipeline
 from packages.agents.report_agent import generate_due_diligence_report
+from packages.real_estate.fake_provider import FakeRealEstateLLMProvider
+
+DOSSIER = {
+    'Atto_compravendita.txt': (
+        'ATTO DI COMPRAVENDITA in data 12/03/2015. Appartamento al Foglio 12 particella 345 sub. 5, '
+        'categoria A/2. ACQUIRENTI: Mario Rossi\nPervenuto per atto di donazione trascritto il 10/05/2010.'
+    ),
+    'Visura_catastale.txt': (
+        'VISURA CATASTALE. Foglio 12 particella 345 sub. 5 categoria A/2. INTESTATI: Mario Rossi'
+    ),
+    'Ispezione_ipotecaria.txt': (
+        'ISPEZIONE IPOTECARIA. Ipoteca volontaria iscritta in data 01/06/2015 a favore di Banca S.p.A.'
+    ),
+    'Perizia_tecnica.txt': (
+        'PERIZIA. Foglio 12 particella 345 sub. 5. Certificato di agibilità non rilasciato.'
+    ),
+    'Verbale_assemblea.txt': (
+        'VERBALE DI ASSEMBLEA. Approvati lavori straordinari di rifacimento della facciata.'
+    ),
+}
 
 
-class BadResponse(FakeLLMProvider):
+class BadResponse(FakeRealEstateLLMProvider):
     def __init__(self, marker, response='[{"title": "partial"}, {"title":'):
         self.marker = marker
         self.response = response
@@ -35,16 +54,14 @@ class BadResponse(FakeLLMProvider):
 
 @pytest.fixture
 def analyzed(db, test_deal):
-    for filename in ('contract.txt', 'bylaws.txt', 'avviso_di_accertamento.txt', 'financial_statements.txt'):
+    for filename, text in DOSSIER.items():
         db.add(Document(
             deal_id=test_deal.id, filename=filename, file_path='/tmp/' + filename,
             mime_type='text/plain', file_size=200, status=DocumentStatus.processed,
-            raw_text='Either party may terminate with 30 days written notice. '
-                     'Liability shall not exceed the total contract value.',
-            language='en',
+            raw_text=text, language='it',
         ))
     db.commit()
-    result = run_deal_analysis_pipeline(test_deal.id, db, provider=FakeLLMProvider())
+    result = run_deal_analysis_pipeline(test_deal.id, db, provider=FakeRealEstateLLMProvider())
     assert result['completed'], result
     return test_deal
 
@@ -56,11 +73,13 @@ def rows(db, model, **filters):
 
 @pytest.mark.parametrize(('stage', 'marker', 'model', 'filters'), [
     ('document_routing', 'CLASSIFY', AgentFinding, {'agent_name': 'document_router'}),
-    ('specialist_analysis', 'EXTRACT CLAUSES', ClauseFinding, {}),
-    ('corporate_analysis', 'CORPORATE GOVERNANCE', AgentFinding, {'agent_name': 'corporate_governance'}),
-    ('corporate_intro_extraction', 'CORPORATE INTRODUCTORY INFORMATION', CompanyProfile, {}),
-    ('tax_analysis', 'ANALYZE TAX MATTERS', AgentFinding, {'agent_name': 'tax_analysis'}),
-    ('financial_analysis', 'ANALYZE FINANCIAL STATEMENTS', AgentFinding, {'agent_name': 'financial_analysis'}),
+    ('property_identity', 'EXTRACT PROPERTY IDENTIFICATION', PropertyProfile, {}),
+    ('title_chain_review', 'REVIEW TITLE CHAIN', AgentFinding, {'agent_name': 'title_chain_review'}),
+    ('encumbrances_review', 'REVIEW ENCUMBRANCES', AgentFinding, {'agent_name': 'encumbrances_review'}),
+    ('building_cadastral_review', 'REVIEW BUILDING AND CADASTRAL COMPLIANCE', AgentFinding,
+     {'agent_name': 'building_cadastral_review'}),
+    ('condominium_occupancy_review', 'REVIEW CONDOMINIUM AND OCCUPANCY', AgentFinding,
+     {'agent_name': 'condominium_occupancy_review'}),
     ('red_flag_aggregation', 'RED FLAGS', RedFlag, {}),
     ('report_generation', 'EXECUTIVE SUMMARY', Report, {}),
 ])
@@ -113,47 +132,36 @@ def test_valid_empty_array_can_replace_old_findings(db, analyzed):
 def test_successful_retry_recovers_after_failed_analysis(db, analyzed):
     failed = run_deal_analysis_pipeline(analyzed.id, db, provider=BadResponse('CLASSIFY', '[]'))
     assert not failed['completed']
-    recovered = run_deal_analysis_pipeline(analyzed.id, db, provider=FakeLLMProvider())
+    recovered = run_deal_analysis_pipeline(analyzed.id, db, provider=FakeRealEstateLLMProvider())
     assert recovered['completed'], recovered
     assert all(run.status == AgentRunStatus.completed for run in db.query(AgentRun))
     assert analyzed.status == DealStatus.reviewed
 
 
-def test_incomplete_relevance_preserves_clauses(db, analyzed):
-    before = rows(db, ClauseFinding)
-    result = run_deal_analysis_pipeline(
-        analyzed.id, db, provider=BadResponse('RELEVANCE FILTERING', '[]'),
-    )
-    assert 'error' in result['stages']['specialist_analysis']
-    assert rows(db, ClauseFinding) == before
+def test_later_review_batch_failure_preserves_the_documents_previous_findings(db, analyzed, monkeypatch):
+    from packages.real_estate.review_agent import DocumentReviewAgent
 
-
-def test_later_contract_batch_failure_preserves_all_previous_clauses(db, analyzed, monkeypatch):
-    from packages.agents.deal_analysis_agent import DealAnalysisAgent
-
-    monkeypatch.setattr(DealAnalysisAgent, '_BATCH_CHARS', 1000)
-    doc = db.query(Document).filter_by(filename='contract.txt').one()
-    doc.raw_text = (doc.raw_text + '\n') * 20
+    monkeypatch.setattr(DocumentReviewAgent, 'BATCH_CHARS', 1000)
+    doc = db.query(Document).filter_by(filename='Ispezione_ipotecaria.txt').one()
+    doc.raw_text = doc.raw_text + ('\nAnnotazione di rito senza effetti.' * 60)
     db.commit()
-    before = rows(db, ClauseFinding)
+    before_failed_doc = rows(db, AgentFinding, agent_name='encumbrances_review', document_id=doc.id)
+    assert before_failed_doc
 
-    class FailSecondBatch(FakeLLMProvider):
+    class FailLaterBatch(FakeRealEstateLLMProvider):
         def complete(self, prompt, max_tokens=2048):
-            if 'EXTRACT CLAUSES' in prompt.upper() and '(Part 2 of' in prompt:
-                return '[{"content":'
+            if ('REVIEW ENCUMBRANCES' in prompt.upper() and 'Annotazione di rito' in prompt
+                    and 'Ipoteca volontaria' not in prompt):
+                return '[{"finding_type":'
             return super().complete(prompt, max_tokens)
 
-    before_failed_doc = rows(db, ClauseFinding, document_id=doc.id)
-    other_before = [row for row in before if row not in before_failed_doc]
-
-    result = run_deal_analysis_pipeline(analyzed.id, db, provider=FailSecondBatch())
+    result = run_deal_analysis_pipeline(analyzed.id, db, provider=FailLaterBatch())
     # One document's failed request is a recorded gap, not a failed stage:
-    # that document keeps its previous clauses, the others are re-analysed.
-    stage = result['stages']['specialist_analysis']
+    # that document keeps its previous findings, the others are re-analysed.
+    stage = result['stages']['encumbrances_review']
     assert 'error' not in stage
-    assert [entry['filename'] for entry in stage['failed_documents']] == ['contract.txt']
-    assert rows(db, ClauseFinding, document_id=doc.id) == before_failed_doc
-    assert len([row for row in rows(db, ClauseFinding) if row not in before_failed_doc]) == len(other_before)
+    assert [entry['filename'] for entry in stage['failed_documents']] == ['Ispezione_ipotecaria.txt']
+    assert rows(db, AgentFinding, agent_name='encumbrances_review', document_id=doc.id) == before_failed_doc
 
 
 def test_manual_report_failure_preserves_published_report(db, analyzed):
@@ -173,7 +181,7 @@ def test_manual_report_retry_clears_failure_in_progress_view(db, analyzed):
         analyzed.id, db, provider=BadResponse('EXECUTIVE SUMMARY', ' '),
     )
     assert not failed['completed']
-    generate_due_diligence_report(analyzed.id, db, provider=FakeLLMProvider())
+    generate_due_diligence_report(analyzed.id, db, provider=FakeRealEstateLLMProvider())
     run = db.query(AgentRun).filter_by(agent_name='report_generation').one()
     assert run.status == AgentRunStatus.completed
     assert run.error_message is None
@@ -185,7 +193,7 @@ def test_manual_report_endpoint_blocks_incomplete_analysis(
     db, analyzed, client, auth_headers, status,
 ):
     old_report = rows(db, Report)
-    run = db.query(AgentRun).filter_by(agent_name='tax_analysis').one()
+    run = db.query(AgentRun).filter_by(agent_name='encumbrances_review').one()
     run.status = status
     db.commit()
     response = client.post(f'/deals/{analyzed.id}/report', headers=auth_headers)

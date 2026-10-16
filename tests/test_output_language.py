@@ -71,7 +71,7 @@ class TestItalianReport:
         md = generate_due_diligence_report(test_deal.id, db)["markdown"]
         # Section numbering (1., 1.1, ...) is applied at render time.
         assert "## 1. Introduzione" in md
-        assert "### 1.1 Scopo del Report" in md
+        assert "### 1.1 Scopo della Relazione" in md
         assert "_STRETTAMENTE CONFIDENZIALE_" in md
         # The Allegato keeps its roman numeral (skipped by the numbering pass).
         assert "## Allegato I: Lista dei Documenti Esaminati" in md

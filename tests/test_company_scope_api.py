@@ -44,29 +44,6 @@ def seed_report(db, deal, content=None):
     return report
 
 
-def test_company_profiles_filters_and_consolidates_existing_evidence(client, auth_headers, db, test_deal):
-    rows = seed_profiles(db, test_deal)
-    response = client.get(f"/deals/{test_deal.id}/company-profiles", headers=auth_headers)
-    assert response.status_code == 200
-    profiles = response.json()
-    assert len(profiles) == 1
-    assert profiles[0]["registered_office"] == "Milano"
-    assert profiles[0]["corporate_capital"] == "Euro 100.000"
-    assert profiles[0]["source_document_ids"] == [rows[0].source_document_id, rows[1].source_document_id]
-    assert len(profiles[0]["source_filenames"]) == 2
-    assert db.query(CompanyProfile).count() == 4  # source evidence is retained
-
-
-def test_no_scope_does_not_guess_from_title_or_profile_frequency(client, auth_headers, db, test_deal):
-    seed_profiles(db, test_deal)
-    test_deal.target_company_names = None
-    test_deal.title = "Acquisition of TargetCo S.p.A."
-    db.commit()
-    response = client.get(f"/deals/{test_deal.id}/company-profiles", headers=auth_headers)
-    assert response.status_code == 200
-    assert response.json() == []
-
-
 def test_setting_scope_preserves_saved_report_and_requires_new_analysis(client, auth_headers, db, test_deal):
     seed_profiles(db, test_deal)
     report = seed_report(db, test_deal)
@@ -157,6 +134,6 @@ def test_scope_update_and_profiles_are_owner_scoped(client, auth_headers, db, te
     deal = Deal(workspace_id=workspace.id, title="Other", target_company_names=["Private S.r.l."])
     db.add(deal)
     db.commit()
-    assert client.get(f"/deals/{deal.id}/company-profiles", headers=auth_headers).status_code == 404
+    assert client.get(f"/deals/{deal.id}/property-profiles", headers=auth_headers).status_code == 404
     assert client.patch(f"/deals/{deal.id}", headers=auth_headers,
                         json={"target_company_names": ["Changed"]}).status_code == 404

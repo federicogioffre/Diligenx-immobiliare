@@ -1033,11 +1033,11 @@ def _flag_llm(**overrides) -> LLMProvider:
     return _Stub()
 
 
-def _tax_finding(db, deal, *, category="tax_assessment", payload=None) -> AgentFinding:
+def _source_finding(db, deal, *, category="tax_assessment", payload=None) -> AgentFinding:
     af = AgentFinding(
         deal_id=deal.id,
         document_id=None,
-        agent_name="tax_analysis",
+        agent_name="encumbrances_review",
         category=category,
         title="Assessment",
         description="An assessment was notified.",
@@ -1056,11 +1056,11 @@ class TestRemedyAndImpactTags:
 
     def test_tags_are_persisted(self, db, test_deal):
         agent = RedFlagAggregationAgent(
-            provider=_flag_llm(remedy_type="indemnity", impact="value")
+            provider=_flag_llm(remedy_type="seller_undertaking", impact="value")
         )
         agent.run(test_deal.id, db)
         flag = _red_flags(db, test_deal)[0]
-        assert flag.remedy_type == "indemnity"
+        assert flag.remedy_type == "seller_undertaking"
         assert flag.impact == "value"
 
     @pytest.mark.parametrize("remedy", _VALID_REMEDY_TYPES)
@@ -1083,13 +1083,13 @@ class TestRemedyAndImpactTags:
 
     def test_normalisation_of_spacing_and_case(self, db, test_deal):
         RedFlagAggregationAgent(
-            provider=_flag_llm(remedy_type="Condition Precedent", impact="SPA")
+            provider=_flag_llm(remedy_type="Condition Precedent", impact="DEED")
         ).run(test_deal.id, db)
         flag = _red_flags(db, test_deal)[0]
         assert flag.remedy_type == "condition_precedent"
-        assert flag.impact == "spa"
+        assert flag.impact == "deed"
 
-    @pytest.mark.parametrize("bad", ["escrow", "", None, 7, "value_or_spa"])
+    @pytest.mark.parametrize("bad", ["indemnity", "earn_out", "", None, 7, "value_or_deed"])
     def test_unknown_tag_becomes_null_rather_than_a_guess(
         self, db, test_deal, bad
     ):
@@ -1145,24 +1145,26 @@ class TestCarriedFigures:
 class TestSeverityFloor:
     """A finding with no available defence cannot be reported as medium."""
 
-    def test_actual_defensibility_raises_the_flag(self, db, test_deal):
-        _tax_finding(db, test_deal, payload={"defensibility": "actual"})
-        RedFlagAggregationAgent(provider=_flag_llm(severity="medium")).run(
-            test_deal.id, db
-        )
+    def test_open_donation_window_raises_the_flag(self, db, test_deal):
+        _source_finding(db, test_deal, category="donation_in_chain", payload={"donation_window_open": True})
+        RedFlagAggregationAgent(
+            provider=_flag_llm(severity="medium", category="donation_in_chain")
+        ).run(test_deal.id, db)
         flag = _red_flags(db, test_deal)[0]
         assert flag.severity == Severity.high
         assert flag.structured_payload_json["severity_floored"] is True
 
-    def test_capital_loss_is_never_below_high(self, db, test_deal):
-        _tax_finding(db, test_deal, category="capital_loss")
+    @pytest.mark.parametrize("category", ["foreclosure", "seizure", "judicial_claim",
+                                          "cadastral_owner_mismatch", "seller_owner_mismatch"])
+    def test_non_negotiable_categories_are_never_below_high(self, db, test_deal, category):
+        _source_finding(db, test_deal, category=category)
         RedFlagAggregationAgent(
-            provider=_flag_llm(severity="low", category="capital_loss")
+            provider=_flag_llm(severity="low", category=category)
         ).run(test_deal.id, db)
         assert _red_flags(db, test_deal)[0].severity == Severity.high
 
     def test_floor_never_lowers_a_severity(self, db, test_deal):
-        _tax_finding(db, test_deal, payload={"defensibility": "actual"})
+        _source_finding(db, test_deal, payload={"donation_window_open": True})
         RedFlagAggregationAgent(provider=_flag_llm(severity="high")).run(
             test_deal.id, db
         )
@@ -1173,14 +1175,14 @@ class TestSeverityFloor:
 
     def test_no_floor_without_a_matching_category(self, db, test_deal):
         """The floor is a safety net; a missed match costs nothing."""
-        _tax_finding(db, test_deal, category="tax_debt", payload={"defensibility": "actual"})
+        _source_finding(db, test_deal, category="donation_in_chain", payload={"donation_window_open": True})
         RedFlagAggregationAgent(
             provider=_flag_llm(severity="medium", category="something_else")
         ).run(test_deal.id, db)
         assert _red_flags(db, test_deal)[0].severity == Severity.medium
 
-    def test_interpretative_grade_creates_no_floor(self, db, test_deal):
-        _tax_finding(db, test_deal, payload={"defensibility": "high"})
+    def test_closed_donation_window_creates_no_floor(self, db, test_deal):
+        _source_finding(db, test_deal, payload={"donation_window_open": False})
         RedFlagAggregationAgent(provider=_flag_llm(severity="medium")).run(
             test_deal.id, db
         )
@@ -1197,7 +1199,7 @@ class TestFloorHelpers:
         assert _apply_severity_floor("high", None) == "high"
 
     def test_findings_without_a_category_are_ignored(self, db, test_deal):
-        af = _tax_finding(db, test_deal, category="", payload={"defensibility": "actual"})
+        af = _source_finding(db, test_deal, category="", payload={"donation_window_open": True})
         assert _build_severity_floors([af]) == {}
 
 
@@ -1206,43 +1208,36 @@ class TestPayloadSummary:
 
     def test_present_fields_only(self):
         summary = _summarize_payload({
-            "defensibility": "actual",
-            "tax_kind": "iva",
+            "event_date": "10/05/2010",
+            "parties": ["Banca Esempio S.p.A."],
+            "registry_reference": "R.G. 1234 R.P. 567",
             "amount_eur": 85000,
             "amount_source": "document",
-            "fiscal_years": [2021, 2022],
-            "mitigating_factors": ["instalment_plan_in_force"],
-            "legal_basis": "art. 13 D.Lgs. 471/1997",
+            "donation_window_open": True,
+            "donation_window_ends": "2030-05-10",
         })
-        assert "defensibility=actual" in summary
-        assert "tax=iva" in summary
+        assert "date=10/05/2010" in summary
+        assert "parties: Banca Esempio S.p.A." in summary
+        assert "registry=R.G. 1234" in summary
         assert "EUR 85,000" in summary
-        assert "FY 2021, 2022" in summary
-        assert "instalment_plan_in_force" in summary
-        assert "art. 13" in summary
+        assert "twenty-year window until 2030-05-10" in summary
 
     def test_empty_payload_renders_nothing(self):
         assert _summarize_payload(None) == ""
         assert _summarize_payload({}) == ""
 
-    def test_generic_tax_kind_is_not_noise(self):
-        assert _summarize_payload({"tax_kind": "altro"}) == ""
-
-    def test_time_barred_years_are_surfaced(self):
-        summary = _summarize_payload({
-            "assessment_periods": [
-                {"fiscal_year": 2004, "time_barred": True},
-                {"fiscal_year": 2022, "time_barred": False},
-            ]
-        })
-        assert "time-barred: FY 2004" in summary
-        assert "2022" not in summary
+    def test_lapsed_mortgage_is_never_called_cancelled(self):
+        summary = _summarize_payload({"registration_over_twenty_years": True})
+        assert "lapsed unless renewed" in summary
 
     def test_keyword_floor_origin_is_disclosed(self):
         assert "keyword floor" in _summarize_payload({"source": "heuristic"})
 
-    def test_covenant_flags_only_when_true(self):
-        assert "change-of-control clause: yes" in _summarize_payload(
-            {"change_of_control_clause": True}
-        )
-        assert _summarize_payload({"change_of_control_clause": False}) == ""
+    def test_cross_document_check_names_both_documents(self):
+        summary = _summarize_payload({
+            "source": "deterministic",
+            "compared_documents": [{"document_id": 1, "filename": "atto.pdf"},
+                                   {"document_id": 2, "filename": "visura.pdf"}],
+        })
+        assert "document 1 (atto.pdf)" in summary and "document 2 (visura.pdf)" in summary
+        assert "not model output" in summary

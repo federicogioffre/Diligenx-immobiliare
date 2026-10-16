@@ -295,17 +295,16 @@ class TestDuplicateDocumentDetection:
 # ── 4. Missing checklist-item detection ────────────────────────────────────
 
 class TestMissingChecklistDetection:
-    """Verifies that the NM Standard Legal Checklist drives missing-document
-    creation.
+    """Verifies that the property checklist drives missing-document creation.
 
-    The checklist defines ~80 items across 17 firm sections (A-Q). With
-    an empty data room every item must be flagged; uploading a document
-    that covers a given checklist key must remove THAT key from the
+    The checklist groups the documents a buyer should receive in sections
+    A-I. With an empty dossier every item must be flagged; uploading a
+    document that covers a given checklist key must remove THAT key from the
     missing list (without spuriously removing unrelated items).
     """
 
     def test_all_items_missing_when_no_documents(self, db, test_deal, agent):
-        from packages.agents.dd_checklist import CHECKLIST
+        from packages.real_estate.checklist import CHECKLIST
         agent.run(test_deal.id, db)
         keys = {
             m.document_category
@@ -315,36 +314,10 @@ class TestMissingChecklistDetection:
         }
         assert keys == {item["key"] for item in CHECKLIST}
 
-    def test_bylaws_detected_via_filename(self, db, test_deal, agent):
-        # A.2 — Atto costitutivo e statuto sociale vigente
-        _make_doc(db, test_deal, filename="statuto_aggiornato.pdf",
-                  raw_text="Statuto della società" * 20)
-        agent.run(test_deal.id, db)
-        missing = {
-            m.document_category
-            for m in db.query(MissingDocument)
-            .filter(MissingDocument.deal_id == test_deal.id)
-            .all()
-        }
-        assert "A.2" not in missing
-
-    def test_visura_detected_via_raw_text(self, db, test_deal, agent):
-        # A.1 — Visure estratte dal Registro Imprese
-        _make_doc(db, test_deal, filename="company_overview.pdf",
-                  raw_text="VISURA CAMERALE Registro Imprese di Milano" * 20)
-        agent.run(test_deal.id, db)
-        missing = {
-            m.document_category
-            for m in db.query(MissingDocument)
-            .filter(MissingDocument.deal_id == test_deal.id)
-            .all()
-        }
-        assert "A.1" not in missing
-
-    def test_loan_agreement_detected_via_raw_text(self, db, test_deal, agent):
-        # C.2 — Contratti di mutuo, finanziamento e leasing finanziario
-        _make_doc(db, test_deal, filename="financing.pdf",
-                  raw_text="LOAN AGREEMENT dated 1 January between Lender and Borrower." * 5)
+    def test_floor_plan_detected_via_filename(self, db, test_deal, agent):
+        # C.2 — Planimetria catastale
+        _make_doc(db, test_deal, filename="planimetria_appartamento.pdf",
+                  raw_text="Scala 1:200, piano secondo" * 20)
         agent.run(test_deal.id, db)
         missing = {
             m.document_category
@@ -354,10 +327,10 @@ class TestMissingChecklistDetection:
         }
         assert "C.2" not in missing
 
-    def test_litigation_list_detected_via_italian_keyword(self, db, test_deal, agent):
-        # I.1 — Elenco contenziosi pendenti
-        _make_doc(db, test_deal, filename="elenco_contenziosi.pdf",
-                  raw_text="Elenco contenziosi pendenti alla data odierna." * 10)
+    def test_visura_detected_via_raw_text(self, db, test_deal, agent):
+        # C.1 — Visura catastale storica
+        _make_doc(db, test_deal, filename="documento.pdf",
+                  raw_text="VISURA CATASTALE STORICA per immobile, Comune di Milano " * 20)
         agent.run(test_deal.id, db)
         missing = {
             m.document_category
@@ -365,7 +338,33 @@ class TestMissingChecklistDetection:
             .filter(MissingDocument.deal_id == test_deal.id)
             .all()
         }
-        assert "I.1" not in missing
+        assert "C.1" not in missing
+
+    def test_registry_search_detected_via_raw_text(self, db, test_deal, agent):
+        # B.1 — Ispezione ipotecaria
+        _make_doc(db, test_deal, filename="documento2.pdf",
+                  raw_text="Ispezione ipotecaria telematica, elenco sintetico delle formalità." * 5)
+        agent.run(test_deal.id, db)
+        missing = {
+            m.document_category
+            for m in db.query(MissingDocument)
+            .filter(MissingDocument.deal_id == test_deal.id)
+            .all()
+        }
+        assert "B.1" not in missing
+
+    def test_minutes_detected_via_italian_keyword(self, db, test_deal, agent):
+        # E.2 — Verbali assemblea condominiale
+        _make_doc(db, test_deal, filename="verbale_assemblea_2025.pdf",
+                  raw_text="Assemblea ordinaria del condominio." * 10)
+        agent.run(test_deal.id, db)
+        missing = {
+            m.document_category
+            for m in db.query(MissingDocument)
+            .filter(MissingDocument.deal_id == test_deal.id)
+            .all()
+        }
+        assert "E.2" not in missing
 
     def test_missing_doc_reason_holds_full_request(self, db, test_deal, agent):
         """The intake stores the verbatim request text in `reason`."""
@@ -380,7 +379,7 @@ class TestMissingChecklistDetection:
             .first()
         )
         assert md is not None
-        assert "Registro Imprese" in md.reason
+        assert "atto di provenienza" in md.reason
 
     def test_missing_doc_expected_item_carries_section_label(self, db, test_deal, agent):
         agent.run(test_deal.id, db)
@@ -394,11 +393,11 @@ class TestMissingChecklistDetection:
         )
         assert md is not None
         assert md.expected_item.startswith("A.1")
-        assert "societari" in md.expected_item.lower()
+        assert "provenienza" in md.expected_item.lower()
 
     def test_missing_doc_priority_comes_from_checklist(self, db, test_deal, agent):
         """High-priority items keep high; medium/low items follow the checklist."""
-        from packages.agents.dd_checklist import CHECKLIST
+        from packages.real_estate.checklist import CHECKLIST
         agent.run(test_deal.id, db)
         by_key = {
             m.document_category: m
@@ -410,7 +409,7 @@ class TestMissingChecklistDetection:
             assert by_key[item["key"]].priority == item["priority"]
 
     def test_result_missing_checklist_items_list(self, db, test_deal, agent):
-        from packages.agents.dd_checklist import CHECKLIST
+        from packages.real_estate.checklist import CHECKLIST
         result = agent.run(test_deal.id, db)
         assert set(result["missing_checklist_items"]) == {
             item["key"] for item in CHECKLIST
@@ -586,7 +585,7 @@ class TestEdgeCases:
         }
 
     def test_no_documents_all_checklist_items_missing(self, db, test_deal, agent):
-        from packages.agents.dd_checklist import CHECKLIST
+        from packages.real_estate.checklist import CHECKLIST
         result = agent.run(test_deal.id, db)
         assert result["missing_documents_count"] == len(CHECKLIST)
 

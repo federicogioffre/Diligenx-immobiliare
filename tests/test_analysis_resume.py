@@ -14,14 +14,26 @@ from packages.agents import orchestrator
 from packages.agents.analysis_checkpoint import (
     CheckpointError, STAGES, adopt_legacy_checkpoint, corpus_fingerprint, validate_resume,
 )
-from packages.agents.deal_analysis_agent import FakeLLMProvider
+from packages.real_estate.fake_provider import FakeRealEstateLLMProvider as FakeLLMProvider
 
 
+# The fixture interrupts the run at the seventh stage (the condominium
+# review): the six stages before it form the resumable prefix.
 PREFIX = tuple(key for key, _ in STAGES[:6])
-PREFIX_FUNCTIONS = (
-    "_stage_intake", "_stage_document_routing", "_stage_specialist_analysis",
-    "_stage_corporate_analysis", "_stage_corporate_intro_extraction", "_stage_tax_analysis",
-)
+INTERRUPTED = STAGES[6][0]
+PREFIX_FUNCTIONS = ("_stage_intake", "_stage_document_routing", "_stage_property_identity")
+
+
+def _guard_prefix_specialists(monkeypatch):
+    """Fail if a specialist of the checkpointed prefix runs again."""
+    original = orchestrator._stage_specialist
+
+    def guarded(agent_cls, *args, **kwargs):
+        if agent_cls.AGENT_NAME in PREFIX:
+            fail_if_called()
+        return original(agent_cls, *args, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "_stage_specialist", guarded)
 TEXT = ("Either party may terminate with 30 days written notice. "
         "Liability shall not exceed the total contract value.")
 
@@ -34,7 +46,7 @@ def checkpoint_case(db, test_deal):
     test_deal.report_language = "it"
     test_deal.updated_at = start - timedelta(seconds=1)
     docs = []
-    for filename in ("contract.txt", "financial_statements.txt"):
+    for filename in ("atto_compravendita.txt", "verbale_assemblea.txt"):
         doc = Document(deal_id=test_deal.id, filename=filename, file_path="fixture/" + filename,
                        mime_type="text/plain", file_size=len(TEXT), status=DocumentStatus.processed,
                        raw_text=TEXT, language="en", page_count=1,
@@ -50,16 +62,16 @@ def checkpoint_case(db, test_deal):
         run = AgentRun(deal_id=test_deal.id, agent_name=name,
                        status=AgentRunStatus.failed if index == 6 else AgentRunStatus.completed,
                        started_at=run_start, completed_at=run_start + timedelta(seconds=5),
-                       error_message="Interrupted finance" if index == 6 else None,
+                       error_message="Interrupted review" if index == 6 else None,
                        input_hash=fingerprint if index == 0 else None)
         db.add(run)
         runs[key] = run
-    for doc, kind in zip(docs, ("contract", "financial_statement")):
+    for doc, kind in zip(docs, ("atto_provenienza", "verbale_assemblea")):
         db.add(AgentFinding(deal_id=test_deal.id, document_id=doc.id, agent_name="document_router",
                             category="document_classification", title="Classified", description="Fixture routing",
                             severity=Severity.low, structured_payload_json={"document_type": kind, "confidence": 0.9}))
-    preserved = AgentFinding(deal_id=test_deal.id, document_id=docs[0].id, agent_name="contract_analysis",
-                             category="contract", title="Preserved contract result", description=TEXT,
+    preserved = AgentFinding(deal_id=test_deal.id, document_id=docs[0].id, agent_name="title_chain_review",
+                             category="other_title", title="Preserved review result", description=TEXT,
                              severity=Severity.medium)
     report = Report(deal_id=test_deal.id, report_type=ReportType.due_diligence,
                     title="Previous published report", content="Do not replace on failure",
@@ -86,7 +98,7 @@ def test_checkpoint_contains_exact_completed_prefix_and_saved_routing(db, checkp
     assert plan.completed == PREFIX
     assert plan.fingerprint == case.fingerprint
     assert {row["document_id"] for row in plan.classifications} == {doc.id for doc in case.docs}
-    assert {row["document_type"] for row in plan.classifications} == {"contract", "financial_statement"}
+    assert {row["document_type"] for row in plan.classifications} == {"atto_provenienza", "verbale_assemblea"}
 
 
 @pytest.mark.parametrize("mutation", [
@@ -98,7 +110,7 @@ def test_resume_rejects_changed_documents_or_deal_inputs(db, checkpoint_case, mu
     doc = case.docs[0]
     changes = {
         "text": (doc, "raw_text", TEXT + " Amended liability clause."),
-        "filename": (doc, "filename", "amended-contract.txt"),
+        "filename": (doc, "filename", "amended-deed.txt"),
         "storage_key": (doc, "file_path", "replacement/object"),
         "language": (doc, "language", "it"),
         "page_count": (doc, "page_count", 2),
@@ -219,9 +231,9 @@ def test_failed_legacy_adoption_restores_missing_fingerprint(db, checkpoint_case
     assert case.runs["intake"].input_hash is None
 
 
-def test_old_completed_finance_does_not_count_as_current_checkpoint(db, checkpoint_case):
+def test_old_completed_review_does_not_count_as_current_checkpoint(db, checkpoint_case):
     case = checkpoint_case
-    run = case.runs["financial_analysis"]
+    run = case.runs[INTERRUPTED]
     run.status = AgentRunStatus.completed
     run.started_at = case.start - timedelta(days=1)
     run.completed_at = run.started_at + timedelta(seconds=10)
@@ -240,62 +252,64 @@ def test_a_new_intake_cannot_reuse_completed_stages_from_older_run(db, checkpoin
     assert plan.classifications == []
 
 
-def test_resuming_finance_skips_first_six_stages_and_preserves_their_results(db, checkpoint_case, monkeypatch):
+def test_resuming_skips_first_six_stages_and_preserves_their_results(db, checkpoint_case, monkeypatch):
     case = checkpoint_case
     names = [name for _, name in STAGES[:6]]
     before = run_snapshot(db, case.deal.id, names)
     for function in PREFIX_FUNCTIONS:
         monkeypatch.setattr(orchestrator, function, fail_if_called)
+    _guard_prefix_specialists(monkeypatch)
     result = orchestrator.run_deal_analysis_pipeline(case.deal.id, db, provider=FakeLLMProvider(), resume=True)
     assert result["completed"], result
     assert all(result["stages"][key]["resumed_from_checkpoint"] for key in PREFIX)
     assert run_snapshot(db, case.deal.id, names) == before
-    assert db.get(AgentFinding, case.preserved.id).title == "Preserved contract result"
-    assert db.query(AgentRun).filter_by(deal_id=case.deal.id, agent_name="financial_analysis").one().status == AgentRunStatus.completed
+    assert db.get(AgentFinding, case.preserved.id).title == "Preserved review result"
+    assert db.query(AgentRun).filter_by(deal_id=case.deal.id, agent_name=INTERRUPTED).one().status == AgentRunStatus.completed
     assert db.query(Report).filter_by(deal_id=case.deal.id).count() > 0
     db.refresh(case.deal)
     assert case.deal.status == DealStatus.reviewed
 
 
-def test_failed_resumed_finance_blocks_publication_and_keeps_previous_report(db, checkpoint_case, monkeypatch):
+def test_failed_resumed_review_blocks_publication_and_keeps_previous_report(db, checkpoint_case, monkeypatch):
     case = checkpoint_case
     before = run_snapshot(db, case.deal.id, [name for _, name in STAGES[:6]])
     for function in (*PREFIX_FUNCTIONS, "_stage_red_flag_aggregation", "_stage_report_generation"):
         monkeypatch.setattr(orchestrator, function, fail_if_called)
+    _guard_prefix_specialists(monkeypatch)
 
-    class FailedFinance(FakeLLMProvider):
+    class FailedReview(FakeLLMProvider):
         def complete(self, prompt, max_tokens=2048):
-            if "ANALYZE FINANCIAL STATEMENTS" in prompt.upper():
+            if "REVIEW CONDOMINIUM AND OCCUPANCY" in prompt.upper():
                 return "{broken"
             return super().complete(prompt, max_tokens)
 
-    result = orchestrator.run_deal_analysis_pipeline(case.deal.id, db, provider=FailedFinance(), resume=True)
+    result = orchestrator.run_deal_analysis_pipeline(case.deal.id, db, provider=FailedReview(), resume=True)
     assert not result["completed"]
-    for key in ("financial_analysis", "red_flag_aggregation", "report_generation"):
+    for key in (INTERRUPTED, "red_flag_aggregation", "report_generation"):
         assert "error" in result["stages"][key]
     assert run_snapshot(db, case.deal.id, [name for _, name in STAGES[:6]]) == before
     assert db.get(Report, case.report.id).content == "Do not replace on failure"
-    assert db.get(AgentFinding, case.preserved.id).title == "Preserved contract result"
+    assert db.get(AgentFinding, case.preserved.id).title == "Preserved review result"
     db.refresh(case.deal)
     assert case.deal.status == DealStatus.draft
 
 
 def test_normal_intake_writes_fingerprint_before_later_failure(db, test_deal):
-    doc = Document(deal_id=test_deal.id, filename="financial_statements.txt", file_path="fixture/financial.txt",
+    doc = Document(deal_id=test_deal.id, filename="verbale_assemblea.txt", file_path="fixture/verbale.txt",
                    mime_type="text/plain", file_size=len(TEXT), status=DocumentStatus.processed,
                    raw_text=TEXT, language="en")
     db.add(doc)
     db.commit()
 
-    class FailedFinance(FakeLLMProvider):
+    class FailedReview(FakeLLMProvider):
         def complete(self, prompt, max_tokens=2048):
-            if "ANALYZE FINANCIAL STATEMENTS" in prompt.upper():
+            if "REVIEW CONDOMINIUM AND OCCUPANCY" in prompt.upper():
                 return "{broken"
             return super().complete(prompt, max_tokens)
 
-    result = orchestrator.run_deal_analysis_pipeline(test_deal.id, db, provider=FailedFinance())
+    result = orchestrator.run_deal_analysis_pipeline(test_deal.id, db, provider=FailedReview())
     assert not result["completed"]
-    assert "error" in result["stages"]["financial_analysis"]
+    assert "error" in result["stages"][INTERRUPTED]
     intake = db.query(AgentRun).filter_by(deal_id=test_deal.id, agent_name="intake").one()
     assert intake.input_hash == corpus_fingerprint(db, test_deal.id)[0]
     assert validate_resume(db, test_deal.id).completed == PREFIX

@@ -95,18 +95,23 @@ def test_object_transport_for_classification_and_qa():
 def test_all_pipeline_stages_use_luna_sdk_transport(db, test_deal):
     from app.models.document import Document, DocumentStatus
     from app.models.agent_run import AgentRun, AgentRunStatus
-    from packages.agents.deal_analysis_agent import FakeLLMProvider
     from packages.agents.orchestrator import run_deal_analysis_pipeline
+    from packages.real_estate.fake_provider import FakeRealEstateLLMProvider
+    from packages.real_estate.pipeline import AGENT_NAMES
 
-    for filename in ("contract.txt", "bylaws.txt", "avviso_di_accertamento.txt", "financial_statements.txt"):
+    dossier = {
+        "atto_compravendita.txt": "ATTO DI COMPRAVENDITA in data 12/03/2015. Foglio 12 particella 345 sub. 5.",
+        "ispezione_ipotecaria.txt": "ISPEZIONE IPOTECARIA. Ipoteca volontaria iscritta in data 01/06/2015.",
+        "verbale_assemblea.txt": "VERBALE DI ASSEMBLEA. Lavori straordinari approvati.",
+    }
+    for filename, text in dossier.items():
         db.add(Document(
             deal_id=test_deal.id, filename=filename, file_path="/tmp/" + filename,
             mime_type="text/plain", file_size=200, status=DocumentStatus.processed,
-            raw_text="Either party may terminate with 30 days written notice. "
-                     "Liability shall not exceed the total contract value.", language="en",
+            raw_text=text, language="it",
         ))
     db.commit()
-    fake = FakeLLMProvider()
+    fake = FakeRealEstateLLMProvider()
 
     def respond(payload):
         raw = fake.complete(payload["input"], max_tokens=payload["max_output_tokens"])
@@ -117,7 +122,7 @@ def test_all_pipeline_stages_use_luna_sdk_transport(db, test_deal):
         result = run_deal_analysis_pipeline(test_deal.id, db, provider=provider)
     assert result["completed"], result
     runs = db.query(AgentRun).all()
-    assert len(runs) == 9
+    assert len(runs) == len(AGENT_NAMES)
     assert all(run.status == AgentRunStatus.completed for run in runs)
     assert len(requests) >= 9
     assert all(request["model"] == "gpt-5.6-luna" for request in requests)

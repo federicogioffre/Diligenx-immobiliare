@@ -181,44 +181,30 @@ def test_role_and_context_version_invalidate_checkpoint(db, test_deal, monkeypat
     assert corpus_fingerprint(db, test_deal.id)[0] != changed
 
 
-def test_marked_loi_forced_to_contract_agent_with_complete_document(db, test_deal):
-    from packages.agents.orchestrator import _stage_specialist_analysis
-    text = "START " + "proposed acquisition terms " * 700 + " MIDDLE-PROVISION " + "terms " * 1500 + " FINAL-PROVISION"
-    loi = document(db, test_deal, text)
-    ordinary = document(db, test_deal, "Ordinary record.", role="data_room")
-    db.commit()
-    base = RecordingProvider()
-    result = _stage_specialist_analysis(test_deal.id, db,
-        with_deal_context(base, db, test_deal.id),
-        [{"document_id": loi.id, "document_type": "other"},
-         {"document_id": ordinary.id, "document_type": "other"}])
-    assert "error" not in result
-    assert result["contract_documents"] == 1
-    # Middle text is outside the shared excerpt but must appear in a source batch.
-    assert "MIDDLE-PROVISION" not in payload(base.calls[0][0])["loi_excerpts"][0]["text"]
-    assert any("MIDDLE-PROVISION" in prompt.split("</transaction_context_json>", 1)[1]
-               for prompt, _ in base.calls)
-    assert any("FINAL-PROVISION" in prompt.split("</transaction_context_json>", 1)[1]
-               for prompt, _ in base.calls)
-
-
 def test_pipeline_passes_same_context_snapshot_to_every_model_stage(db, test_deal, monkeypatch):
     from packages.agents import orchestrator
-    names = ["_stage_document_routing", "_stage_specialist_analysis", "_stage_corporate_analysis",
-             "_stage_corporate_intro_extraction", "_stage_tax_analysis", "_stage_financial_analysis",
+    from packages.real_estate.specialists import SPECIALISTS
+    names = ["_stage_document_routing", "_stage_property_identity",
              "_stage_red_flag_aggregation", "_stage_report_generation"]
     seen = []
     monkeypatch.setattr(orchestrator, "_stage_intake", lambda *args: {})
+    monkeypatch.setattr(orchestrator, "_stage_consistency_check", lambda *args: {})
     for name in names:
         def stage(deal_id, session, llm, *rest, label=name):
             seen.append(llm)
             llm.complete(label)
             return {}
         monkeypatch.setattr(orchestrator, name, stage)
+
+    def specialist(agent_cls, deal_id, session, llm, *rest):
+        seen.append(llm)
+        llm.complete(agent_cls.AGENT_NAME)
+        return {}
+    monkeypatch.setattr(orchestrator, "_stage_specialist", specialist)
     base = RecordingProvider()
     result = orchestrator.run_deal_analysis_pipeline(test_deal.id, db, provider=base)
     assert result["completed"]
-    assert len(base.calls) == len(names)
+    assert len(base.calls) == len(names) + len(SPECIALISTS)
     assert len({id(provider) for provider in seen}) == 1
     assert isinstance(seen[0], DealContextProvider)
     assert all(payload(prompt)["confirmed_target_company_names"] == ["TargetCo S.p.A."]
@@ -248,17 +234,21 @@ def test_regenerated_report_and_qa_receive_context_without_double_wrap(db, test_
 
 
 def test_context_never_grounding_source_for_unrelated_document(db, test_deal):
-    from packages.agents.orchestrator import _stage_specialist_analysis
-    from app.models.clause_finding import ClauseFinding
+    from app.models.agent_finding import AgentFinding
+    from packages.real_estate.specialists import EncumbrancesAgent
     quote = "The buyer pays EUR 998877 for the proposed acquisition."
     document(db, test_deal, quote)
-    ordinary = document(db, test_deal, "Either party may terminate with written notice.", role="data_room")
+    ordinary = document(db, test_deal, "Ipoteca volontaria iscritta a favore della banca.", role="data_room")
     db.commit()
-    base = RecordingProvider(json.dumps([{"clause_type": "payment_terms", "title": "Price",
-                                          "content": quote, "confidence": 0.99}]))
-    _stage_specialist_analysis(test_deal.id, db, with_deal_context(base, db, test_deal.id),
-                              [{"document_id": ordinary.id, "document_type": "contract"}])
-    assert db.query(ClauseFinding).filter(ClauseFinding.document_id == ordinary.id).count() == 0
+    base = RecordingProvider(json.dumps([{"finding_type": "mortgage", "title": "Ipoteca",
+                                          "description": "Ipoteca volontaria iscritta.", "severity": "high",
+                                          "amount_eur": 998877, "amount_evidence": "EUR 998877",
+                                          "confidence": 0.99}]))
+    EncumbrancesAgent(provider=with_deal_context(base, db, test_deal.id)).run(
+        test_deal.id, db, document_ids={ordinary.id})
+    finding = db.query(AgentFinding).filter(AgentFinding.document_id == ordinary.id).one()
+    assert finding.structured_payload_json["amount_eur"] is None
+    assert finding.structured_payload_json["amount_source"] == "unverified"
 
 
 def test_missing_deal_is_rejected_before_building_context(db):

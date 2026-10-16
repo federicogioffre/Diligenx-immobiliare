@@ -177,19 +177,25 @@ def test_valid_empty_native_response_is_successful_without_retry():
     assert len(requests) == 1
 
 
-def test_pipeline_recovers_transient_format_errors_in_all_four_affected_stages(db, test_deal):
-    for filename in ("contract.txt", "bylaws.txt", "avviso_di_accertamento.txt", "financial_statements.txt"):
+def test_pipeline_recovers_transient_format_errors_in_every_review_stage(db, test_deal):
+    from packages.real_estate.fake_provider import FakeRealEstateLLMProvider
+    dossier = {
+        "atto_compravendita.txt": "ATTO DI COMPRAVENDITA. Foglio 12 particella 345 sub. 5. Atto di donazione del 2010.",
+        "ispezione_ipotecaria.txt": "ISPEZIONE IPOTECARIA. Ipoteca volontaria iscritta in data 01/06/2015.",
+        "perizia.txt": "PERIZIA. Certificato di agibilità non rilasciato. Difformità rispetto al titolo.",
+        "verbale_assemblea.txt": "VERBALE DI ASSEMBLEA del condominio. Lavori straordinari approvati.",
+    }
+    for filename, text in dossier.items():
         db.add(Document(
             deal_id=test_deal.id, filename=filename, file_path="/tmp/" + filename,
             mime_type="text/plain", file_size=200, status=DocumentStatus.processed,
-            raw_text="Either party may terminate with 30 days written notice. "
-                     "Liability shall not exceed the total contract value.", language="en",
+            raw_text=text, language="it",
         ))
     db.commit()
 
-    class IncidentProvider(FakeLLMProvider):
-        markers = ("EXTRACT CLAUSES", "CORPORATE INTRODUCTORY INFORMATION", "ANALYZE TAX MATTERS",
-                   "ANALYZE FINANCIAL STATEMENTS")
+    class IncidentProvider(FakeRealEstateLLMProvider):
+        markers = ("EXTRACT PROPERTY IDENTIFICATION", "REVIEW TITLE CHAIN", "REVIEW ENCUMBRANCES",
+                   "REVIEW BUILDING AND CADASTRAL COMPLIANCE", "REVIEW CONDOMINIUM AND OCCUPANCY")
 
         def __init__(self):
             self.failed = set()

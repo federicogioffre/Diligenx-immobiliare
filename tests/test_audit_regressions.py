@@ -61,8 +61,7 @@ from app.models.red_flag import RedFlag, Severity
 from app.models.clause_finding import ClauseFinding, ClauseType
 from packages.agents.report_agent import generate_due_diligence_report
 from packages.agents.red_flag_aggregator import RedFlagAggregationAgent
-from packages.agents.contract_agent import ContractAgent
-from packages.agents.financial_agent import FinancialAgent
+from packages.real_estate.specialists import EncumbrancesAgent
 from packages.agents.analysis_checkpoint import corpus_fingerprint, STAGES
 
 
@@ -193,12 +192,8 @@ def test_A06_model_page_999_rejected_on_one_page_document(db, seeded, monkeypatc
     deal = seeded[2]
     source = "The purchaser shall obtain prior written lender consent before any change of control."
     doc = document(db, deal.id, raw_text=source)
-    reply = [{"title": "Consent", "clause_type": "change_of_control", "content": source, "page_number": 999, "confidence": 0.99}]
-    contract = ContractAgent(provider=StubLLM(json.dumps(reply)))
-    payload = contract._extract_clause_payloads(doc.id, source)[0]
-    assert payload["page_number"] == 999
     db.add(ClauseFinding(document_id=doc.id, clause_type=ClauseType.change_of_control,
-                         title=payload["title"], content=payload["content"], page_number=payload["page_number"], confidence=0.99))
+                         title="Consent", content=source, page_number=999, confidence=0.99))
     db.commit()
     aggregator = RedFlagAggregationAgent(provider=llm)
     monkeypatch.setattr(aggregator, "_call_llm_for_flags", lambda *args: [flag_payload(doc.id, source_page=999)])
@@ -248,22 +243,22 @@ def test_A08_delete_deal_removes_original_file(client, db, seeded, auth, tmp_pat
     assert not original.exists()
 
 
-def test_A09_change_of_control_retains_high_floor():
-    agent = FinancialAgent(provider=StubLLM("[]"))
-    standalone = agent._heuristic_payloads("Financing: change of control requires lender consent.", [])
-    combined = agent._heuristic_payloads("Financial covenant. Financing: change of control requires lender consent.", [])
-    assert len(standalone) == len(combined) == 1
-    assert standalone[0]["severity"] == "high"
-    assert combined[0]["severity"] == "high"
-    assert "change-of-control" in combined[0]["title"].lower()
+def test_A09_foreclosure_floor_is_high_even_beside_a_weaker_finding():
+    agent = EncumbrancesAgent(provider=StubLLM("[]"))
+    text = "Elenco formalità: pignoramento immobiliare trascritto a favore di Creditore S.r.l."
+    weaker = [{"finding_type": "foreclosure", "severity": "medium"}]
+    assert agent.floor_payloads(text, [])[0]["severity"] == "high"
+    floor = agent.floor_payloads(text, weaker)
+    assert len(floor) == 1 and floor[0]["severity"] == "high"
+    assert agent.floor_payloads(text, [{"finding_type": "foreclosure", "severity": "high"}]) == []
 
 
 def test_A10_unverified_amount_is_not_document_evidence(db, seeded):
     doc = document(db, seeded[2].id, raw_text="Esiste un finanziamento bancario; il documento non riporta alcun importo.")
-    reply = [{"finding_type": "debt_like_item", "title": "Debt", "description": "Debt noted", "severity": "medium", "amount_eur": 987654321.0, "confidence": 0.99}]
-    agent = FinancialAgent(provider=StubLLM(json.dumps(reply)))
-    payload = agent._financial_payloads_batch(doc.filename, doc.raw_text, doc.id)
-    findings = agent._persist_findings(doc, payload, seeded[2].id, db)
+    reply = [{"finding_type": "mortgage", "title": "Debt", "description": "Debt noted", "severity": "medium", "amount_eur": 987654321.0, "confidence": 0.99}]
+    agent = EncumbrancesAgent(provider=StubLLM(json.dumps(reply)))
+    payload = agent._payloads(doc.id, doc.filename, doc.raw_text)
+    findings = agent._persist(db, seeded[2].id, doc.id, doc.filename, payload)
     assert "987654321" not in doc.raw_text
     assert findings[0].structured_payload_json["amount_eur"] is None
     assert findings[0].structured_payload_json["amount_source"] == "unverified"
@@ -282,21 +277,11 @@ def test_A12_password_80_utf8_bytes_returns_validation_error(client):
     assert response.status_code == 422, response.text
 
 
-def test_A13_clause_relevance_receives_complete_tail():
-    provider = StubLLM('[{"clause_index": 0, "relevance": "low", "reason": "Boilerplate"}]')
-    agent = ContractAgent(provider=provider)
-    content = "The following definitions apply. " * 15 + " UNIQUE_RISK_MARKER: termination is immediate if the purchaser changes."
-    result = agent._classify_relevance_payloads([dict(clause_type="other", title="General terms", content=content)], "contract.txt", False)
-    assert "UNIQUE_RISK_MARKER" in provider.prompts[0]
-    assert not result
-
-
 def test_A14_document_types_normalized_and_validated():
-    from packages.agents.deal_analysis_agent import _parse_classification
-    assert _parse_classification('{"document_type":"Contract"}')["document_type"] == "contract"
-    from packages.agents.deal_analysis_agent import LLMResponseError
-    with pytest.raises(LLMResponseError):
-        _parse_classification('{"document_type":"made_up_type"}')
+    from packages.real_estate.document_types import normalize_document_type
+    assert normalize_document_type("Visura Catastale") == "visura_catastale"
+    # An unknown type is "other", never a failed routing stage.
+    assert normalize_document_type("made_up_type") == "other"
 
 
 def test_password_reset_revokes_previously_issued_access_token(client, db, seeded, auth):

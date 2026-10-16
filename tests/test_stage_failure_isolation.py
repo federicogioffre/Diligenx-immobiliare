@@ -12,15 +12,18 @@ import json
 import pytest
 
 from app.models.agent_run import AgentRun, AgentRunStatus
-from app.models.clause_finding import ClauseFinding
+from app.models.agent_finding import AgentFinding
 from app.models.document import Document, DocumentStatus
 from app.models.open_question import OpenQuestion, Priority
 from packages.agents.concurrency import TaskFailure, run_llm_tasks
-from packages.agents.contract_agent import AGENT_NAME, ContractAgent
 from packages.agents.deal_analysis_agent import (
     FakeLLMProvider, LLMResponseError, LLMTruncatedError, _complete_json, set_llm_provider,
 )
 from packages.agents.document_coverage import collect_documents_payloads, text_batches
+from packages.real_estate.fake_provider import FakeRealEstateLLMProvider
+from packages.real_estate.specialists import EncumbrancesAgent
+
+AGENT_NAME = EncumbrancesAgent.AGENT_NAME
 
 
 @pytest.fixture(autouse=True)
@@ -129,65 +132,58 @@ def test_a_second_truncation_is_final():
         _complete_json(Runaway(), "TASK", max_tokens=100, context="ctx", response_type="array")
 
 
-# ── contract stage end to end ──────────────────────────────────────────────
+# ── review stage end to end ────────────────────────────────────────────────
 
-class RunawayOnLeasing(FakeLLMProvider):
-    """Loops forever on the leasing contract, answers normally elsewhere."""
-
-    def __init__(self):
-        super().__init__()
-        self.max_tokens_seen = []
+class RunawayOnOneSearch(FakeRealEstateLLMProvider):
+    """Loops forever on one registry search, answers normally elsewhere."""
 
     def complete(self, prompt, max_tokens=2048):
-        if "EXTRACT CLAUSES" in prompt.upper():
-            self.max_tokens_seen.append(max_tokens)
-            if "LEASING FURGONE" in prompt:
-                raise LLMTruncatedError("AI response was truncated at the output token limit")
+        if "REVIEW ENCUMBRANCES" in prompt.upper() and "ISPEZIONE ROSSI" in prompt:
+            raise LLMTruncatedError("AI response was truncated at the output token limit")
         return super().complete(prompt, max_tokens)
 
 
-def test_contract_stage_keeps_the_other_documents_and_records_the_failed_one(db, test_deal):
+GOOD = "ISPEZIONE IPOTECARIA BIANCHI\nIpoteca volontaria iscritta in data 01/06/2015 a favore di Banca.\n"
+BAD = "ISPEZIONE ROSSI\nIspezione ipotecaria. Ipoteca volontaria iscritta in data 02/02/2012.\n"
+
+
+def test_review_stage_keeps_the_other_documents_and_records_the_failed_one(db, test_deal):
     test_deal.report_language = "it"
-    good = _document(db, test_deal, "service_agreement.txt",
-                     "SERVICE AGREEMENT\n\nTERMINATION: Either party may terminate with 30 days written notice.\n"
-                     "LIABILITY: Liability shall not exceed the total contract value.\n")
-    bad = _document(db, test_deal, "CONTRATTO LEASING FURGONE.pdf",
-                    "CONTRATTO DI LEASING FURGONE\nCanone mensile Euro 450,00. Durata 48 mesi.\n")
+    good = _document(db, test_deal, "ispezione_bianchi.pdf", GOOD)
+    bad = _document(db, test_deal, "ISPEZIONE ROSSI.pdf", BAD)
     db.commit()
 
-    provider = RunawayOnLeasing()
-    result = ContractAgent(provider=provider).run(test_deal.id, db)
+    result = EncumbrancesAgent(provider=RunawayOnOneSearch()).run(test_deal.id, db)
 
-    assert db.query(ClauseFinding).filter_by(document_id=good.id).count() >= 1
-    assert db.query(ClauseFinding).filter_by(document_id=bad.id).count() == 0
+    assert db.query(AgentFinding).filter_by(document_id=good.id, agent_name=AGENT_NAME).count() >= 1
+    assert db.query(AgentFinding).filter_by(document_id=bad.id, agent_name=AGENT_NAME).count() == 0
     assert result["failed_documents"] == [{
         "document_id": bad.id, "filename": bad.filename,
-        "error": "Contract document %d, batch 1: AI response was truncated at the output token limit (after 2 attempts)" % bad.id,
+        "error": "%s, document %d: AI response was truncated at the output token limit (after 2 attempts)"
+                 % (AGENT_NAME, bad.id),
     }]
     question = db.query(OpenQuestion).filter_by(deal_id=test_deal.id, agent_name=AGENT_NAME).one()
     assert question.priority == Priority.medium
     assert question.document_id == bad.id
     assert question.question.startswith("Documento non analizzato")
-    assert "CONTRATTO LEASING FURGONE.pdf" in question.question
-    # The output budget for a short batch is proportional to the batch, not 12k.
-    assert provider.max_tokens_seen and max(provider.max_tokens_seen) == 3072
+    assert "ISPEZIONE ROSSI.pdf" in question.question
 
     run = db.query(AgentRun).filter_by(deal_id=test_deal.id, agent_name=AGENT_NAME).one()
     assert run.status == AgentRunStatus.completed
 
 
 def test_a_document_that_analyses_on_the_next_run_clears_its_question(db, test_deal):
-    _document(db, test_deal, "CONTRATTO LEASING FURGONE.pdf", "CONTRATTO DI LEASING FURGONE\nCanone mensile.\n")
-    _document(db, test_deal, "other.txt", "TERMINATION: 30 days notice.\n")
+    _document(db, test_deal, "ISPEZIONE ROSSI.pdf", BAD)
+    _document(db, test_deal, "ispezione_bianchi.pdf", GOOD)
     db.commit()
-    ContractAgent(provider=RunawayOnLeasing()).run(test_deal.id, db)
+    EncumbrancesAgent(provider=RunawayOnOneSearch()).run(test_deal.id, db)
     assert db.query(OpenQuestion).filter_by(agent_name=AGENT_NAME).count() == 1
-    ContractAgent(provider=FakeLLMProvider()).run(test_deal.id, db)
+    EncumbrancesAgent(provider=FakeRealEstateLLMProvider()).run(test_deal.id, db)
     assert db.query(OpenQuestion).filter_by(agent_name=AGENT_NAME).count() == 0
 
 
-def test_every_document_failing_still_fails_the_contract_stage(db, test_deal):
-    _document(db, test_deal, "CONTRATTO LEASING FURGONE.pdf", "CONTRATTO DI LEASING FURGONE\nCanone.\n")
+def test_every_document_failing_still_fails_the_review_stage(db, test_deal):
+    _document(db, test_deal, "ISPEZIONE ROSSI.pdf", BAD)
     db.commit()
     with pytest.raises(LLMResponseError, match="truncated"):
-        ContractAgent(provider=RunawayOnLeasing()).run(test_deal.id, db)
+        EncumbrancesAgent(provider=RunawayOnOneSearch()).run(test_deal.id, db)

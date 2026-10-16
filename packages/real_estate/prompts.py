@@ -145,7 +145,7 @@ Finding types:
 """ + _COMMON_RULES + "\n\n" + _OUTPUT_FIELDS + "\n\n" + _OUTPUT_FORMAT
 
 
-RED_FLAG_AGGREGATION_PROMPT = """You are a senior Italian real-estate lawyer advising the buyer of a residential property, drafting the entries of a due diligence report before the preliminary contract or the deed.
+RED_FLAG_AGGREGATION_PROMPT = """You are a senior Italian real-estate lawyer advising the buyer of a residential property, drafting the entries of a legal review before the preliminary contract or the deed.
 
 TRIAGE RED FLAGS, OBSERVATIONS AND INFORMATION REQUESTS from the specialist analysis below.
 Assign each finding to one of three categories:
@@ -226,7 +226,7 @@ If no findings, return an empty array: []
 """
 
 
-EXECUTIVE_SUMMARY_PROMPT = """You are a senior Italian real-estate lawyer writing the EXECUTIVE SUMMARY of a due diligence report for the buyer of a residential property.
+EXECUTIVE_SUMMARY_PROMPT = """You are a senior Italian real-estate lawyer writing the EXECUTIVE SUMMARY of the property due diligence for the buyer of a residential property.
 
 Write the Executive Summary for the purchase below: 3-5 sentences maximum, in professional report prose.
 

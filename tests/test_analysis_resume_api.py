@@ -90,10 +90,10 @@ def test_active_deal_metadata_and_delete_are_locked(client, db, test_deal, auth_
 
 def test_progress_is_bound_to_current_run(client, db, test_deal, auth_headers, queue):
     test_deal.status = DealStatus.analyzing
-    run = AgentRun(deal_id=test_deal.id, agent_name='financial_analysis', status=AgentRunStatus.running)
+    run = AgentRun(deal_id=test_deal.id, agent_name='encumbrances_review', status=AgentRunStatus.running)
     db.add(run)
     db.commit()
-    data = dict(agent_name='financial_analysis', run_id=run.id, completed_batches=3,
+    data = dict(agent_name='encumbrances_review', run_id=run.id, completed_batches=3,
                 total_batches=20, document_id=1, updated_at='2026-09-18T07:00:00Z')
     queue.get.return_value = json.dumps(data)
     assert client.get(f'/deals/{test_deal.id}/analysis-progress', headers=auth_headers).json() == data

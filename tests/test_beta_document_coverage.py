@@ -11,16 +11,14 @@ from app.models.document import Document, DocumentStatus
 from app.models.document_chunk import DocumentChunk, EMBEDDING_DIM
 from app.models.report import Report, ReportStatus, ReportType
 from app.models.red_flag import RedFlag
-from packages.agents.contract_agent import ContractAgent
-from packages.agents.corporate_agent import CorporateAgent
-from packages.agents.corporate_intro_agent import CorporateIntroAgent
 from packages.agents.deal_analysis_agent import FakeLLMProvider, LLMResponseError
 from packages.agents.document_coverage import aggregation_batches, collect_document_payloads, text_batches
-from packages.agents.financial_agent import FinancialAgent
 from packages.agents.orchestrator import run_deal_analysis_pipeline
 from packages.agents.red_flag_aggregator import RedFlagAggregationAgent
 from packages.agents.report_agent import generate_due_diligence_report
-from packages.agents.tax_agent import TaxAgent
+from packages.real_estate.property_identity import consolidate_property_profiles
+from packages.real_estate.property_identity_agent import PropertyIdentityAgent
+from packages.real_estate.specialists import SPECIALISTS, EncumbrancesAgent
 from packages.parsing.docx_parser import extract_docx
 from packages.parsing.ingestion_pipeline import process_document
 from packages.parsing.pdf_parser import PageText, extract_pdf
@@ -150,7 +148,7 @@ def test_batches_cover_every_character_with_overlap_and_bounds():
     assert all(right.start < left.end for left, right in zip(batches, batches[1:]))
 
 
-@pytest.mark.parametrize("kind", ["tax", "financial", "corporate", "ccnl", "profile"])
+@pytest.mark.parametrize("kind", [cls.AGENT_NAME for cls in SPECIALISTS] + ["property_identity"])
 def test_specialists_analyze_tail_past_old_prefix_limits(kind):
     prompts = []
 
@@ -160,21 +158,17 @@ def test_specialists_analyze_tail_past_old_prefix_limits(kind):
             if "TAIL_FINDING_250000" not in prompt:
                 return "[]"
             return json.dumps([dict(title="Tail finding", description="TAIL_FINDING_250000",
-                finding_type="other_tax", insight_type="unusual_clause", category="compensation",
-                confidence=0.9, severity="high", company_name="TailCo")])
+                finding_type="other", severity="high", confidence=0.9,
+                indirizzo="Via Coda 1", foglio="250000")])
 
-    text = "Front matter. " * 1800 + "TAIL_FINDING_250000"
+    text = "Front matter. " * 2400 + "TAIL_FINDING_250000"
     provider = TailOnly()
-    if kind == "tax":
-        items = TaxAgent(provider=provider)._tax_payloads("tax.txt", text, 1)
-    elif kind == "financial":
-        items = FinancialAgent(provider=provider)._financial_payloads("accounts.txt", text, 1)
-    elif kind == "corporate":
-        items = CorporateAgent(provider=provider)._governance_payloads("bylaws.txt", text, 1)
-    elif kind == "ccnl":
-        items = ContractAgent(provider=provider)._ccnl_compliance_payloads(1, "ccnl.txt", text)
+    if kind == "property_identity":
+        items = PropertyIdentityAgent(provider=provider)._units(1, "visura.txt", text)
     else:
-        items = CorporateIntroAgent(provider=provider)._profile_payloads("visura.txt", text, 1, ["TailCo"])
+        agent = next(cls for cls in SPECIALISTS if cls.AGENT_NAME == kind)(provider=provider)
+        items = collect_document_payloads(text, lambda batch: agent._payloads(1, "doc.txt", batch),
+                                          max_chars=agent.BATCH_CHARS)
     assert len(prompts) >= 3
     assert len(items) == 1
     assert items[0]["source_spans"][-1]["end"] == len(text)
@@ -191,8 +185,8 @@ def test_overlap_merges_identical_findings_but_keeps_different_amounts():
 
 def test_later_specialist_batch_failure_preserves_previous_persisted_findings(db, test_deal):
     doc = document(db, test_deal, text="Matter. " * 2100)
-    db.add(AgentFinding(deal_id=test_deal.id, document_id=doc.id, agent_name="tax_analysis",
-        category="tax_assessment", title="Previous finding", description="Preserve me", severity="high"))
+    db.add(AgentFinding(deal_id=test_deal.id, document_id=doc.id, agent_name="encumbrances_review",
+        category="mortgage", title="Previous finding", description="Preserve me", severity="high"))
     db.commit()
 
     class FailLater(FakeLLMProvider):
@@ -202,9 +196,9 @@ def test_later_specialist_batch_failure_preserves_previous_persisted_findings(db
             return "[]" if self.calls == 1 else "[{broken"
 
     with pytest.raises(LLMResponseError):
-        TaxAgent(provider=FailLater()).run(test_deal.id, db)
+        EncumbrancesAgent(provider=FailLater()).run(test_deal.id, db, document_ids={doc.id})
     db.rollback()
-    assert db.query(AgentFinding).filter_by(agent_name="tax_analysis").one().title == "Previous finding"
+    assert db.query(AgentFinding).filter_by(agent_name="encumbrances_review").one().title == "Previous finding"
 
 
 def test_aggregation_batches_include_every_document_and_repeated_identity():
@@ -249,42 +243,25 @@ def test_later_aggregation_batch_failure_preserves_prior_flags(db, test_deal, mo
     assert db.query(RedFlag).one().title == "Previous flag"
 
 
-def test_long_profile_merges_fields_from_first_and_last_parts():
-    from packages.agents.company_identity import consolidate_company_profiles
+def test_long_identity_document_merges_fields_from_first_and_last_parts():
     class Profiles(FakeLLMProvider):
         def complete(self, prompt, max_tokens=2048):
-            item = {"company_name": "Company A", "confidence": 0.9}
+            item = {"foglio": "12", "particella": "345", "confidence": 0.9}
             if "FIRST_MARKER" in prompt:
-                item["registered_office"] = "Milan"
+                item["categoria"] = "A/2"
             if "LAST_MARKER" in prompt:
-                item["corporate_capital"] = "EUR 250000"
+                item["rendita"] = "Euro 812,00"
             return json.dumps([item])
 
-    text = "FIRST_MARKER\n" + "Other content.\n" * 2200 + "LAST_MARKER"
-    items = CorporateIntroAgent(provider=Profiles())._profile_payloads("visura.txt", text, 1, ["Company A"])
-    views = consolidate_company_profiles([SimpleNamespace(**item) for item in items], ["Company A"])
-    assert len(views) == 1
-    assert views[0].registered_office == "Milan"
-    assert views[0].corporate_capital == "EUR 250000"
-
-
-def test_relevance_processes_all_clauses_in_bounded_requests():
-    sizes = []
-
-    class Decisions(FakeLLMProvider):
-        def complete(self, prompt, max_tokens=2048):
-            raw = prompt.split("INPUT CLAUSES:\n", 1)[1].split("\n\nReturn ONLY", 1)[0]
-            clauses = json.loads(raw)
-            sizes.append(len(clauses))
-            return json.dumps([{"clause_index": item["clause_index"], "relevance": "high", "reason": "Relevant"}
-                               for item in clauses])
-
-    payloads = [{"title": str(i), "content": f"Obligation number {i}", "clause_type": "other"}
-                for i in range(61)]
-    kept = ContractAgent(provider=Decisions())._classify_relevance_payloads(payloads, "contract.txt", False)
-    assert [item["title"] for item in kept] == [str(i) for i in range(61)]
-    assert sum(sizes) == 61
-    assert max(sizes) <= 30
+    text = ("FIRST_MARKER Foglio 12 particella 345\n" + "Other content.\n" * 2200
+            + "LAST_MARKER Foglio 12 particella 345")
+    items = PropertyIdentityAgent(provider=Profiles())._units(1, "visura.txt", text)
+    rows = [SimpleNamespace(id=index, source_document_id=1, source_kind="visura_catastale", **item)
+            for index, item in enumerate(items)]
+    units = consolidate_property_profiles(rows)
+    assert len(units) == 1
+    assert units[0].values["categoria"] == "A/2"
+    assert units[0].values["rendita"] == "Euro 812,00"
 
 
 def test_same_titled_flags_keep_different_documents_amounts_and_years():

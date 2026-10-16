@@ -3,6 +3,8 @@ from unittest.mock import patch
 
 import pytest
 
+from packages.real_estate.fake_provider import FakeRealEstateLLMProvider
+
 from packages.agents import deal_analysis_agent as llm
 from packages.agents.deal_analysis_agent import (
     AnthropicLLMProvider, FakeLLMProvider, OpenAILLMProvider, set_llm_provider,
@@ -68,14 +70,14 @@ def test_beta_requires_the_judgment_model_key(monkeypatch):
         validate_beta_configuration()
 
 
-class Recording(FakeLLMProvider):
+class Recording(FakeRealEstateLLMProvider):
     def __init__(self, name):
         super().__init__()
         self.name = name
         self.markers = []
 
     def complete(self, prompt, max_tokens=3072):
-        for marker in ("CLASSIFY", "EXTRACT CLAUSES", "RED FLAGS", "GROUNDING REVIEW", "EXECUTIVE SUMMARY"):
+        for marker in ("CLASSIFY", "REVIEW ENCUMBRANCES", "RED FLAGS", "GROUNDING REVIEW", "EXECUTIVE SUMMARY"):
             if marker in prompt.upper():
                 self.markers.append(marker)
                 break
@@ -85,9 +87,9 @@ class Recording(FakeLLMProvider):
 def test_pipeline_routes_judgment_stages_to_the_judgment_provider(db, test_deal, monkeypatch):
     from app.models.document import Document, DocumentStatus
     from packages.agents.orchestrator import run_deal_analysis_pipeline
-    db.add(Document(deal_id=test_deal.id, filename="service_agreement.txt", file_path="/tmp/x",
+    db.add(Document(deal_id=test_deal.id, filename="ispezione_ipotecaria.txt", file_path="/tmp/x",
                     mime_type="text/plain", file_size=100, status=DocumentStatus.processed,
-                    raw_text="SERVICE AGREEMENT\nTERMINATION: Either party may terminate with 30 days notice.\n"))
+                    raw_text="ISPEZIONE IPOTECARIA\nIpoteca volontaria iscritta in data 01/06/2015 a favore di Banca.\n"))
     db.commit()
     reading, judgment = Recording("reading"), Recording("judgment")
     monkeypatch.setattr(llm, "get_llm_provider", lambda: reading)
@@ -97,6 +99,6 @@ def test_pipeline_routes_judgment_stages_to_the_judgment_provider(db, test_deal,
 
     result = run_deal_analysis_pipeline(test_deal.id, db)
     assert result["completed"], result
-    assert "CLASSIFY" in reading.markers and "EXTRACT CLAUSES" in reading.markers
+    assert "CLASSIFY" in reading.markers and "REVIEW ENCUMBRANCES" in reading.markers
     assert "RED FLAGS" in judgment.markers and "GROUNDING REVIEW" in judgment.markers
     assert "RED FLAGS" not in reading.markers and "CLASSIFY" not in judgment.markers

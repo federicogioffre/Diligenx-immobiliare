@@ -18,11 +18,10 @@ class TargetScope(BaseModel):
     def distinct_names(cls, names):
         if names is None:
             return None
-        from packages.agents.company_identity import normalize_company_name
         seen = set()
         result = []
         for name in names:
-            key = normalize_company_name(name)
+            key = "".join(char for char in name.casefold() if char.isalnum())
             if not key or not any(char.isalnum() for char in key):
                 raise ValueError("Inserisci una ragione sociale valida.")
             if key not in seen:

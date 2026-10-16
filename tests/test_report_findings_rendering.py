@@ -5,8 +5,8 @@ Covers:
   Findings row, in the conventions of the report's language
 - The remedy tag is rendered at the end of the recommendation cell
 - Rows without figures or without a tag render exactly as before
-- The tax scope sentence distinguishes document coverage from assessment windows
-- The new legal-rules entries reach the aggregation context
+- The chain-of-title scope sentence is computed from the titles on file
+- The dated property rules reach the aggregation context
 """
 from datetime import date
 from types import SimpleNamespace
@@ -14,8 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.models.red_flag import DueDiligenceArea, Severity
-from packages.agents import tax_rules_registry
-from packages.agents.legal_rules import build_legal_rules_context
+from packages.real_estate import rules_registry
 from packages.agents.report_agent import (
     _format_amount,
     _format_figures,
@@ -26,12 +25,12 @@ from packages.agents.report_agent import (
 
 def _flag(**overrides) -> SimpleNamespace:
     base = dict(
-        title="Notified tax assessment",
-        issue="An avviso di accertamento was notified for FY2022.",
-        risk="The target bears the assessed amount.",
-        recommendation="Insert a specific indemnity in the SPA.",
+        title="Mortgage to be cancelled",
+        issue="A voluntary mortgage registered in 2015 secures the seller's loan.",
+        risk="The buyer acquires the property subject to the mortgage.",
+        recommendation="Provide in the preliminary contract that the seller cancels it at the deed.",
         severity=Severity.high,
-        area=DueDiligenceArea.tax,
+        area=DueDiligenceArea.encumbrances,
         source_document_id=None,
         source_page=None,
         remedy_type=None,
@@ -95,9 +94,11 @@ class TestRemedyTag:
     @pytest.mark.parametrize(
         "remedy,en,it",
         [
-            ("indemnity", "[Indemnity]", "[Indennizzo]"),
+            ("seller_undertaking", "[Seller's undertaking]", "[Impegno del venditore]"),
+            ("escrow", "[Escrow with the notary]", "[Deposito presso il notaio]"),
             ("condition_precedent", "[Condition precedent]", "[Condizione sospensiva]"),
-            ("price_adjustment", "[Price adjustment]", "[Aggiustamento prezzo]"),
+            ("price_adjustment", "[Price reduction]", "[Riduzione del prezzo]"),
+            ("pre_closing_verification", "[Verification before the deed]", "[Verifica prima del rogito]"),
             ("information_request", "[Information request]", "[Richiesta di informazioni]"),
         ],
     )
@@ -112,63 +113,56 @@ class TestRemedyTag:
 
     def test_unknown_tag_is_ignored_rather_than_printed(self):
         """A value outside the vocabulary must not leak into the report."""
-        markdown = _render_key_findings([_flag(remedy_type="escrow")], "en")
-        assert "escrow" not in markdown.lower()
+        markdown = _render_key_findings([_flag(remedy_type="earn_out")], "en")
+        assert "earn" not in markdown.lower()
 
     def test_tag_survives_a_missing_recommendation(self):
         flag = _flag(recommendation=None, remedy_type="warranty")
-        assert "[Warranty]" in _render_key_findings([flag], "en")
+        assert "[Seller's warranty]" in _render_key_findings([flag], "en")
 
 
 # ── Scope sentence ──────────────────────────────────────────────────────────
 
 
-class TestTaxScopeSentence:
-    def test_assessment_window_does_not_claim_documentary_coverage(self):
-        intro = _render_introduction("Project X", ["Tax"], "en")
-        assert "periods expressly documented in the findings" in intro
-        assert "still open to assessment" not in intro
-        assert "2020" not in intro
+class TestChainScopeSentence:
+    def test_without_dated_titles_the_chain_is_not_verified(self):
+        assert "twenty-year chain of title is not verified" in _render_introduction("Via Roma 1", [], "en")
+        assert "la provenienza ventennale non è verificata" in _render_introduction("Via Roma 1", [], "it")
 
-    def test_italian_sentence(self):
-        intro = _render_introduction("Project X", ["Fiscale"], "it")
-        assert "periodi espressamente documentati nei rilievi" in intro
-        assert "periodi d'imposta ancora accertabili" not in intro
+    def test_covered_chain(self):
+        coverage = rules_registry.chain_coverage([date(2001, 3, 1)], as_of=date(2026, 10, 16))
+        intro = _render_introduction("Via Roma 1", [], "it", coverage)
+        assert "1 marzo 2001" in intro and "coprono il ventennio" in intro
+
+    def test_gap_in_the_chain(self):
+        coverage = rules_registry.chain_coverage([date(2015, 3, 12)], as_of=date(2026, 10, 16))
+        intro = _render_introduction("Via Roma 1", [], "en", coverage)
+        assert "12 March 2015" in intro and "is not covered" in intro and "16 October 2006" in intro
 
     @pytest.mark.parametrize("lang,phrase", [
-        ("en", "left to the client's tax advisors"),
-        ("it", "rimessa ai consulenti fiscali del cliente"),
+        ("en", "left to the notary and the technician"),
+        ("it", "rimessi al notaio e al tecnico"),
     ])
-    def test_quantification_is_disclaimed(self, lang: str, phrase: str):
-        """The report states that it does not price an exposure itself."""
-        assert phrase in _render_introduction("Project X", [], lang)
+    def test_costs_are_disclaimed(self, lang: str, phrase: str):
+        """The report states that it does not price a regularisation itself."""
+        assert phrase in _render_introduction("Via Roma 1", [], lang)
 
-    def test_sentence_matches_the_registry_for_a_past_date(self):
-        """A review run in late 2020 reached back to fiscal year 2015."""
-        sentence = tax_rules_registry.describe_scope(as_of=date(2020, 11, 11))
-        assert "2015" in sentence
+    @pytest.mark.parametrize("lang,phrase", [
+        ("en", "does not include an inspection of the property"),
+        ("it", "non comprende il sopralluogo"),
+    ])
+    def test_inspection_is_excluded(self, lang: str, phrase: str):
+        assert phrase in _render_introduction("Via Roma 1", [], lang)
 
 
-# ── Legal rules reaching the aggregation ────────────────────────────────────
+class TestRulesContext:
+    @pytest.mark.parametrize("fragment", [
+        "563 c.c.", "29, comma 1-bis, L. 52/1985", "D.P.R. 380/2001",
+        "63, quarto e quinto comma", "2847", "D.M. 37/2008", "D.Lgs. 192/2005",
+    ])
+    def test_rules_in_force_are_in_the_context(self, fragment: str):
+        assert fragment in rules_registry.rules_context(date(2026, 10, 16))
 
-
-class TestLegalRulesContext:
-    @pytest.mark.parametrize(
-        "fragment",
-        [
-            "25-novies",              # overdue public debts → crisis reporting
-            "2484",                   # negative equity → dissolution cause
-            "change-of-control",      # financing clauses the deal can trigger
-            "release or replacement",  # sellers' guarantees
-            "hold-harmless",          # side agreements shifting tax liabilities
-            "former shareholders",    # positions from the target's own deals
-            "not reconciled",         # documents not provided
-        ],
-    )
-    def test_new_priorities_are_in_the_context(self, fragment: str):
-        assert fragment in build_legal_rules_context()
-
-    @pytest.mark.parametrize("fragment", ["art. 2477 c.c.", "more than 50 employees in 2006"])
-    def test_new_safe_harbours_are_in_the_context(self, fragment: str):
-        """An unaudited micro-company and an ordinary TFR are not findings."""
-        assert fragment in build_legal_rules_context()
+    def test_superseded_version_is_not_cited(self):
+        assert "testo anteriore alla L. 220/2012" not in rules_registry.rules_context(date(2026, 10, 16))
+        assert "testo anteriore alla L. 220/2012" in rules_registry.rules_context(date(2010, 1, 1))

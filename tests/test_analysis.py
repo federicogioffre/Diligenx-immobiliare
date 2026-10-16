@@ -380,23 +380,18 @@ class TestAnalyzeRoute:
         assert data["report_id"] is not None
         assert isinstance(data["report_id"], int)
 
-    def test_analyze_stages_contains_all_seven(
+    def test_analyze_writes_one_run_per_stage(
         self, client, auth_headers, test_deal: Deal, processed_doc: Document, db: Session
     ):
-        """Six agent-run records are written (one per pipeline stage)."""
+        """One agent-run record is written per pipeline stage."""
+        from packages.real_estate.pipeline import AGENT_NAMES
         client.post(f"/deals/{test_deal.id}/analyze", headers=auth_headers)
         runs_resp = client.get(
             f"/deals/{test_deal.id}/agent-runs", headers=auth_headers
         )
         assert runs_resp.status_code == 200
         stage_names = {r["agent_name"] for r in runs_resp.json()}
-        expected = {
-            "intake", "document_router", "contract_analysis",
-            "corporate_governance", "corporate_intro_extraction",
-            "tax_analysis", "financial_analysis",
-            "red_flag_aggregation", "report_generation",
-        }
-        assert stage_names == expected
+        assert stage_names == set(AGENT_NAMES)
 
     def test_analyze_open_questions_count_in_response(
         self, client, auth_headers, test_deal: Deal, processed_doc: Document, db: Session

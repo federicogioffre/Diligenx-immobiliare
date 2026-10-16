@@ -1,4 +1,4 @@
-"""A large financial document shares one bounded queue with all other documents."""
+"""A large document shares one bounded batch queue with all the other documents of a review."""
 import logging
 import threading
 import time
@@ -14,7 +14,10 @@ from packages.agents.deal_analysis_agent import FakeLLMProvider, LLMResponseErro
 from packages.agents.document_coverage import (
     collect_document_payloads, collect_documents_payloads, text_batches,
 )
-from packages.agents.financial_agent import FinancialAgent
+from packages.real_estate.specialists import EncumbrancesAgent
+
+BATCH = EncumbrancesAgent.BATCH_CHARS
+AGENT = EncumbrancesAgent.AGENT_NAME
 
 
 def _document(db, deal, text):
@@ -26,20 +29,20 @@ def _document(db, deal, text):
     return doc
 
 
-def test_single_huge_financial_document_uses_two_workers_and_all_original_spans(db, test_deal, monkeypatch, caplog):
+def test_single_huge_document_uses_two_workers_and_all_original_spans(db, test_deal, monkeypatch, caplog):
     monkeypatch.setattr(settings, "LLM_MAX_CONCURRENCY", 4)
     monkeypatch.setattr(settings, "LLM_MAX_IN_FLIGHT", 4)
     text = "".join(f"Row {index:06d}: synthetic ledger evidence for this regression.\n"
                    for index in range(16000)) + "PRIVATE_TAIL_MARKER"
     doc = _document(db, test_deal, text)
     document_id = doc.id
-    expected = [batch.text for batch in text_batches(text)]
+    expected = [batch.text for batch in text_batches(text, max_chars=BATCH)]
     assert len(expected) > 100
     lock, first_pair = threading.Lock(), threading.Barrier(2)
     active = peak = calls = 0
     seen = []
 
-    def analyze(filename, batch, doc_id):
+    def analyze(doc_id, filename, batch):
         nonlocal active, peak, calls
         assert doc_id == document_id
         with lock:
@@ -57,8 +60,8 @@ def test_single_huge_financial_document_uses_two_workers_and_all_original_spans(
             with lock:
                 active -= 1
 
-    agent = FinancialAgent(provider=FakeLLMProvider())
-    monkeypatch.setattr(agent, "_financial_payloads_batch", analyze)
+    agent = EncumbrancesAgent(provider=FakeLLMProvider())
+    monkeypatch.setattr(agent, "_payloads", analyze)
     with caplog.at_level(logging.INFO, logger="packages.agents.document_coverage"):
         result = agent.run(test_deal.id, db, document_ids={document_id})
     assert result["documents_analyzed"] == 1
@@ -73,7 +76,7 @@ def test_single_huge_financial_document_uses_two_workers_and_all_original_spans(
 
 
 @pytest.mark.parametrize("limited_setting", ["LLM_MAX_CONCURRENCY", "LLM_MAX_IN_FLIGHT"])
-def test_financial_stage_respects_a_lower_configured_ceiling(db, test_deal, monkeypatch, limited_setting):
+def test_review_stage_respects_a_lower_configured_ceiling(db, test_deal, monkeypatch, limited_setting):
     monkeypatch.setattr(settings, "LLM_MAX_CONCURRENCY", 4)
     monkeypatch.setattr(settings, "LLM_MAX_IN_FLIGHT", 4)
     monkeypatch.setattr(settings, limited_setting, 1)
@@ -91,8 +94,8 @@ def test_financial_stage_respects_a_lower_configured_ceiling(db, test_deal, monk
             active -= 1
         return []
 
-    agent = FinancialAgent(provider=FakeLLMProvider())
-    monkeypatch.setattr(agent, "_financial_payloads_batch", analyze)
+    agent = EncumbrancesAgent(provider=FakeLLMProvider())
+    monkeypatch.setattr(agent, "_payloads", analyze)
     result = agent.run(test_deal.id, db, document_ids={doc.id for doc in docs})
     assert result["documents_analyzed"] == 3
     assert peak == 1
@@ -175,25 +178,25 @@ def test_one_failed_batch_aborts_stage_without_replacing_previous_findings(db, t
     monkeypatch.setattr(settings, "LLM_MAX_IN_FLIGHT", 4)
     text = "".join(f"Evidence row {i:06d}\n" for i in range(4000))
     doc = _document(db, test_deal, text)
-    original = AgentFinding(deal_id=test_deal.id, document_id=doc.id, agent_name="financial_analysis",
-                            category="equity_position", title="Previous result", description="Keep me",
+    original = AgentFinding(deal_id=test_deal.id, document_id=doc.id, agent_name=AGENT,
+                            category="mortgage", title="Previous result", description="Keep me",
                             severity="low", confidence=0.9)
     db.add(original)
     db.commit()
-    failed_text = list(text_batches(text))[2].text
+    failed_text = list(text_batches(text, max_chars=BATCH))[2].text
 
-    def analyze(filename, batch, doc_id):
+    def analyze(doc_id, filename, batch):
         if batch == failed_text:
             raise LLMResponseError("Synthetic batch failure")
-        return [{"finding_type": "equity_position", "title": "New finding", "description": "New",
+        return [{"finding_type": "mortgage", "title": "New finding", "description": "New",
                  "severity": "low", "confidence": 0.9, "source": "llm"}]
 
-    agent = FinancialAgent(provider=FakeLLMProvider())
-    monkeypatch.setattr(agent, "_financial_payloads_batch", analyze)
+    agent = EncumbrancesAgent(provider=FakeLLMProvider())
+    monkeypatch.setattr(agent, "_payloads", analyze)
     with pytest.raises(LLMResponseError, match="Synthetic batch failure"):
         agent.run(test_deal.id, db, document_ids={doc.id})
     db.rollback()
-    remaining = db.query(AgentFinding).filter_by(agent_name="financial_analysis").all()
+    remaining = db.query(AgentFinding).filter_by(agent_name=AGENT).all()
     assert len(remaining) == 1
     assert remaining[0].title == "Previous result"
 
